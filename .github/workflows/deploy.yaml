@@ -86,29 +86,22 @@ jobs:
 
         uses: aws-actions/setup-sam@v2
 
+      
       - name: Check required templates and lint CloudFormation
-
         shell: bash
-
         run: |
-
           set -euo pipefail
 
-          for template in \
+          for template in cloudformation/network-stack.yaml cloudformation/data-stack.yaml cloudformation/iam-stack.yaml cloudformation/authentication.yaml; do
+            if [[ ! -s "$template" ]]; then
+              echo "::error::Missing or empty template: $template"
+              exit 1
+            fi
 
-            cloudformation/network-stack.yaml \
-
-            cloudformation/data-stack.yaml \
-
-            cloudformation/iam-stack.yaml \
-
-            cloudformation/authentication.yaml; do
-
-            test -s "$template" || { echo "::error::Missing or empty template: $template"; exit 1; }
-
+            echo "Linting $template"
             cfn-lint "$template"
-
           done
+
 
       - name: Validate SAM templates
 
