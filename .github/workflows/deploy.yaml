@@ -102,17 +102,6 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Check deployment artifact bucket
-        shell: bash
-        env:
-          ARTIFACT_BUCKET: ${{ vars.DEPLOYMENT_ARTIFACT_BUCKET }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$ARTIFACT_BUCKET" ]]; then
-            echo "::error::Set repository variable DEPLOYMENT_ARTIFACT_BUCKET."
-            exit 1
-          fi
-          aws s3api head-bucket --bucket "$ARTIFACT_BUCKET"
       - name: Provision SSM SecureString parameters
         id: ssm
         shell: bash
@@ -186,10 +175,23 @@ jobs:
           else
             aws cloudformation wait stack-update-complete --stack-name "$NETWORK_STACK"
           fi
+      - name: Resolve deployment artifact bucket created by network stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARTIFACT_BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "$NETWORK_STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='DeploymentArtifactsBucketName'].OutputValue | [0]" \
+            --output text)
+          if [[ -z "$ARTIFACT_BUCKET" || "$ARTIFACT_BUCKET" == "None" ]]; then
+            echo "::error::DeploymentArtifactsBucketName output was not found in $NETWORK_STACK."
+            exit 1
+          fi
+          aws s3api head-bucket --bucket "$ARTIFACT_BUCKET"
+          echo "ARTIFACT_BUCKET=$ARTIFACT_BUCKET" >> "$GITHUB_ENV"
+          echo "Using CloudFormation-managed deployment artifact bucket: $ARTIFACT_BUCKET"
       - name: Package SAM templates
         shell: bash
-        env:
-          ARTIFACT_BUCKET: ${{ vars.DEPLOYMENT_ARTIFACT_BUCKET }}
         run: |
           set -euo pipefail
           sam package \
@@ -254,7 +256,6 @@ jobs:
       - name: Deploy IAM stack using Change Set
         shell: bash
         env:
-          ARTIFACT_BUCKET: ${{ vars.DEPLOYMENT_ARTIFACT_BUCKET }}
           OIDC_PROVIDER_ARN: ${{ vars.GITHUB_OIDC_PROVIDER_ARN }}
         run: |
           set -euo pipefail
