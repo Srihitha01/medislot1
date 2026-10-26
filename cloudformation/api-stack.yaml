@@ -51,7 +51,9 @@ Resources:
     Properties:
       QueueName: !Sub medislot-${Environment}-application-dlq
       MessageRetentionPeriod: 1209600
-      SqsManagedSseEnabled: true
+      # Use the AWS-managed SQS KMS key: encrypted at rest without a customer-managed key charge.
+      KmsMasterKeyId: alias/aws/sqs
+      KmsDataKeyReusePeriodSeconds: 300
       Tags:
         - Key: Project
           Value: MediSlot
