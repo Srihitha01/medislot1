@@ -46,7 +46,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for template in cloudformation/network-stack.yaml cloudformation/data-stack.yaml cloudformation/iam-stack.yaml cloudformation/authentication.yaml; do
+          for template in cloudformation/network-stack.yaml cloudformation/data-stack.yaml cloudformation/iam-stack.yaml cloudformation/authentication.yaml cloudformation/api-stack.yaml; do
             if [[ ! -s "$template" ]]; then
               echo "::error::Missing or empty template: $template"
               exit 1
@@ -58,6 +58,7 @@ jobs:
         run: |
           sam validate --template-file cloudformation/data-stack.yaml
           sam validate --template-file cloudformation/authentication.yaml
+          sam validate --template-file cloudformation/api-stack.yaml
       - name: Compile Python source
         run: python -m compileall -q src
       - name: Run unit tests
@@ -203,6 +204,12 @@ jobs:
             --s3-prefix medislot/authentication \
             --region "$AWS_REGION" \
             --output-template-file /tmp/auth-packaged.yaml
+          sam package \
+            --template-file cloudformation/api-stack.yaml \
+            --s3-bucket "$ARTIFACT_BUCKET" \
+            --s3-prefix medislot/api \
+            --region "$AWS_REGION" \
+            --output-template-file /tmp/api-packaged.yaml
       - name: Deploy data stack using Change Set
         shell: bash
         env:
@@ -333,12 +340,48 @@ jobs:
           else
             aws cloudformation wait stack-update-complete --stack-name "$AUTH_STACK"
           fi
+      - name: Deploy application API stack using Change Set
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_STACK="medislot-api-${ENVIRONMENT}"
+          if aws cloudformation describe-stacks --stack-name "$APP_STACK" >/dev/null 2>&1; then
+            change_type=UPDATE
+          else
+            change_type=CREATE
+          fi
+          change_set="${APP_STACK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          aws cloudformation create-change-set \
+            --stack-name "$APP_STACK" \
+            --change-set-name "$change_set" \
+            --change-set-type "$change_type" \
+            --template-body file:///tmp/api-packaged.yaml \
+            --parameters ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+            --description "GitHub Actions run ${GITHUB_RUN_ID}"
+          if ! aws cloudformation wait change-set-create-complete --stack-name "$APP_STACK" --change-set-name "$change_set"; then
+            reason=$(aws cloudformation describe-change-set --stack-name "$APP_STACK" --change-set-name "$change_set" --query StatusReason --output text 2>/dev/null || true)
+            if [[ "$reason" == *"didn't contain changes"* ]]; then
+              echo "Application API stack has no changes."
+              aws cloudformation delete-change-set --stack-name "$APP_STACK" --change-set-name "$change_set"
+              exit 0
+            fi
+            echo "::error::Application API Change Set creation failed: $reason"
+            exit 1
+          fi
+          aws cloudformation describe-change-set --stack-name "$APP_STACK" --change-set-name "$change_set" --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' --output table
+          aws cloudformation execute-change-set --stack-name "$APP_STACK" --change-set-name "$change_set"
+          if [[ "$change_type" == CREATE ]]; then
+            aws cloudformation wait stack-create-complete --stack-name "$APP_STACK"
+          else
+            aws cloudformation wait stack-update-complete --stack-name "$APP_STACK"
+          fi
       - name: Show deployed stack outputs
         if: success()
         shell: bash
         run: |
           set -euo pipefail
-          for stack in "$NETWORK_STACK" "$DATA_STACK" "$IAM_STACK" "$AUTH_STACK"; do
+          for stack in "$NETWORK_STACK" "$DATA_STACK" "$IAM_STACK" "$AUTH_STACK" "medislot-api-${ENVIRONMENT}"; do
             echo "Outputs for $stack"
             aws cloudformation describe-stacks \
               --stack-name "$stack" \
