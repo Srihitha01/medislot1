@@ -1,7 +1,7 @@
 
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: MediSlot authentication infrastructure using SSM Parameter Store
+Description: MediSlot authentication API and Lambda functions using centralized IAM roles
 
 Parameters:
   Environment:
@@ -41,6 +41,10 @@ Globals:
         JWT_SECRET_PARAMETER: !Sub /medislot/${Environment}/auth/jwt-secret
         JWT_SECRET_PARAMETER_VERSION: !Ref JWTSecretParameterVersion
         AUTH_TOKENS_TABLE: !Sub medislot-${Environment}-auth-tokens
+        ACCESS_TOKEN_MINUTES: "15"
+        REFRESH_TOKEN_DAYS: "7"
+        PASSWORD_MIN_LENGTH: "10"
+        BCRYPT_ROUNDS: "12"
 
 Resources:
   MediSlotAuthApi:
@@ -56,72 +60,20 @@ Resources:
         AllowHeaders: "'Content-Type,Authorization,Idempotency-Key,X-Correlation-Id'"
         AllowOrigin: "'*'"
 
-  AuthFunctionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub medislot-${Environment}-auth-role
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - lambda.amazonaws.com
-            Action:
-              - sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
-      Policies:
-        - PolicyName: ReadMediSlotSSMParameters
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - ssm:GetParameter
-                Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/host
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/port
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/app-password
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/jwt-secret
-              - Effect: Allow
-                Action:
-                  - kms:Decrypt
-                Resource: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*
-                Condition:
-                  StringEquals:
-                    kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
-        - PolicyName: UseAuthenticationTokenTable
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:PutItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:Query
-                Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-auth-tokens
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-auth-tokens/index/*
-
   RegisterFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub medislot-${Environment}-register
       CodeUri: ../src/auth/
       Handler: register/register.lambda_handler
-      Role: !GetAtt AuthFunctionRole.Arn
+      Role:
+        Fn::ImportValue: !Sub medislot-${Environment}-RegisterLambdaRoleArn
       VpcConfig:
         SecurityGroupIds:
-          - Fn::ImportValue:
-              !Sub medislot-${Environment}-LambdaSecurityGroup
+          - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup
         SubnetIds:
-          - Fn::ImportValue:
-              !Sub medislot-${Environment}-PrivateSubnetA
-          - Fn::ImportValue:
-              !Sub medislot-${Environment}-PrivateSubnetB
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
       Events:
         DoctorRegister:
           Type: Api
@@ -142,16 +94,14 @@ Resources:
       FunctionName: !Sub medislot-${Environment}-login
       CodeUri: ../src/auth/
       Handler: login/login.lambda_handler
-      Role: !GetAtt AuthFunctionRole.Arn
+      Role:
+        Fn::ImportValue: !Sub medislot-${Environment}-LoginLambdaRoleArn
       VpcConfig:
         SecurityGroupIds:
-          - Fn::ImportValue:
-              !Sub medislot-${Environment}-LambdaSecurityGroup
+          - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup
         SubnetIds:
-          - Fn::ImportValue:
-              !Sub medislot-${Environment}-PrivateSubnetA
-          - Fn::ImportValue:
-              !Sub medislot-${Environment}-PrivateSubnetB
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
       Events:
         DoctorLogin:
           Type: Api
@@ -172,16 +122,14 @@ Resources:
       FunctionName: !Sub medislot-${Environment}-refresh
       CodeUri: ../src/auth/
       Handler: refresh/refresh.lambda_handler
-      Role: !GetAtt AuthFunctionRole.Arn
+      Role:
+        Fn::ImportValue: !Sub medislot-${Environment}-RefreshLambdaRoleArn
       VpcConfig:
         SecurityGroupIds:
-          - Fn::ImportValue:
-              !Sub medislot-${Environment}-LambdaSecurityGroup
+          - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup
         SubnetIds:
-          - Fn::ImportValue:
-              !Sub medislot-${Environment}-PrivateSubnetA
-          - Fn::ImportValue:
-              !Sub medislot-${Environment}-PrivateSubnetB
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
       Events:
         Refresh:
           Type: Api
@@ -196,16 +144,14 @@ Resources:
       FunctionName: !Sub medislot-${Environment}-logout
       CodeUri: ../src/auth/
       Handler: logout/logout.lambda_handler
-      Role: !GetAtt AuthFunctionRole.Arn
+      Role:
+        Fn::ImportValue: !Sub medislot-${Environment}-LogoutLambdaRoleArn
       VpcConfig:
         SecurityGroupIds:
-          - Fn::ImportValue:
-              !Sub medislot-${Environment}-LambdaSecurityGroup
+          - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup
         SubnetIds:
-          - Fn::ImportValue:
-              !Sub medislot-${Environment}-PrivateSubnetA
-          - Fn::ImportValue:
-              !Sub medislot-${Environment}-PrivateSubnetB
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
       Events:
         Logout:
           Type: Api
@@ -220,16 +166,14 @@ Resources:
       FunctionName: !Sub medislot-${Environment}-authorizer
       CodeUri: ../src/auth/
       Handler: authorizer/authorizer.lambda_handler
-      Role: !GetAtt AuthFunctionRole.Arn
+      Role:
+        Fn::ImportValue: !Sub medislot-${Environment}-AuthorizerLambdaRoleArn
       VpcConfig:
         SecurityGroupIds:
-          - Fn::ImportValue:
-              !Sub medislot-${Environment}-LambdaSecurityGroup
+          - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup
         SubnetIds:
-          - Fn::ImportValue:
-              !Sub medislot-${Environment}-PrivateSubnetA
-          - Fn::ImportValue:
-              !Sub medislot-${Environment}-PrivateSubnetB
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
 
 Outputs:
   AuthApiId:
