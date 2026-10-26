@@ -81,8 +81,8 @@ jobs:
   deploy:
     name: Deploy MediSlot using CloudFormation Change Sets
     needs: validate
-    # Feature branches and pull requests validate only. Deployment runs on main.
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    # Deploy on main and the authentication feature branch; pull requests remain validation-only.
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/authentication')
     runs-on: ubuntu-latest
     environment: development
     permissions:
