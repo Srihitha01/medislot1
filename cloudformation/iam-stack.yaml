@@ -38,6 +38,20 @@ Parameters:
 
     Default: medislot1
 
+  # Immutable IDs are included in GitHub's OIDC subject for repositories
+  # using GitHub's immutable subject-claim format.
+  GitHubOwnerId:
+
+    Type: String
+
+    Default: "168816985"
+
+  GitHubRepositoryId:
+
+    Type: String
+
+    Default: "1434045145"
+
   GitHubOidcProviderArn:
 
     Type: String
@@ -94,7 +108,13 @@ Resources:
 
               StringLike:
 
-                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOwner}/${GitHubRepository}:*"
+                # This matches immutable GitHub OIDC subjects for jobs
+                # that use a GitHub Environment. Keep the environment names
+                # aligned with the workflow's `environment:` values.
+                token.actions.githubusercontent.com:sub:
+                  - !Sub "repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepository}@${GitHubRepositoryId}:environment:development"
+                  - !Sub "repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepository}@${GitHubRepositoryId}:environment:test"
+                  - !Sub "repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepository}@${GitHubRepositoryId}:environment:production"
 
       Policies:
 
