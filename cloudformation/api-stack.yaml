@@ -1,4 +1,3 @@
-
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: MediSlot application API Gateway and Lambda integration
@@ -11,11 +10,6 @@ Parameters:
       - dev
       - test
       - prod
-
-  AppRouterCodeUri:
-    Type: String
-    Default: ../src/api/
-    Description: Directory containing the application API router Lambda code
 
   AppRouterHandler:
     Type: String
@@ -136,7 +130,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub medislot-${Environment}-app-router
-      CodeUri: !Ref AppRouterCodeUri
+      CodeUri: ../src/api/
       Handler: !Ref AppRouterHandler
       Role: !GetAtt AppRouterRole.Arn
       VpcConfig:
