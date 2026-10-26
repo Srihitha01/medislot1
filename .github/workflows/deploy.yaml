@@ -1,0 +1,163 @@
+name: MediSlot CI/CD
+
+on:
+  push:
+    branches:
+      - feature/network-stack
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ap-south-1
+  ENVIRONMENT: dev
+
+jobs:
+  validate:
+    name: Validate CloudFormation and SAM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install cfn-lint
+        run: python -m pip install cfn-lint
+
+      - name: Set up AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
+
+      - name: Validate Network Stack
+        run: |
+          test -s cloudformation/network-stack.yaml
+          cfn-lint cloudformation/network-stack.yaml
+
+      - name: Validate Data Stack
+        run: |
+          test -s cloudformation/data-stack.yaml
+          cfn-lint cloudformation/data-stack.yaml
+          sam validate --template-file cloudformation/data-stack.yaml
+
+  network-stack:
+    name: Deploy Network Stack
+    needs: validate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy Network Stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name medislot-network-dev \
+            --template-file cloudformation/network-stack.yaml \
+            --parameter-overrides Environment=dev \
+            --no-fail-on-empty-changeset
+
+      - name: Show Network Stack outputs
+        if: success()
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name medislot-network-dev \
+            --query 'Stacks[0].Outputs[*].[OutputKey,OutputValue]' \
+            --output table
+
+  data-stack:
+    name: Deploy Data Stack with SAM
+    needs: network-stack
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Store database password in SSM SecureString
+        id: store-db-password
+        env:
+          MEDISLOT_DB_PWD: ${{ secrets.MEDISLOT_DB_PWD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$MEDISLOT_DB_PWD" ]]; then
+            echo "::error::GitHub Actions secret MEDISLOT_DB_PWD is missing or empty."
+            exit 1
+          fi
+
+          # RDS MySQL master passwords must be 8-41 characters and cannot
+          # contain slash, single quote, double quote, @, or spaces.
+          if [[ ${#MEDISLOT_DB_PWD} -lt 8 || ${#MEDISLOT_DB_PWD} -gt 41 ]]; then
+            echo "::error::MEDISLOT_DB_PWD must be between 8 and 41 characters for RDS MySQL."
+            exit 1
+          fi
+          if [[ "$MEDISLOT_DB_PWD" == *"/"* || "$MEDISLOT_DB_PWD" == *"'"* || "$MEDISLOT_DB_PWD" == *'"'* || "$MEDISLOT_DB_PWD" == *"@"* || "$MEDISLOT_DB_PWD" == *" "* ]]; then
+            echo "::error::MEDISLOT_DB_PWD contains a character not allowed for an RDS MySQL master password."
+            exit 1
+          fi
+
+          VERSION=$(aws ssm put-parameter \
+            --name "/medislot/${ENVIRONMENT}/db/password" \
+            --type SecureString \
+            --value "$MEDISLOT_DB_PWD" \
+            --overwrite \
+            --query 'Version' \
+            --output text)
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Database password stored in SSM SecureString (version $VERSION)."
+
+      - name: Deploy Data Stack with SAM
+        shell: bash
+        env:
+          DB_PASSWORD_VERSION: ${{ steps.store-db-password.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          sam deploy \
+            --template-file cloudformation/data-stack.yaml \
+            --stack-name medislot-data-dev \
+            --region "$AWS_REGION" \
+            --parameter-overrides \
+              Environment=dev \
+              DBInstanceClass=db.t3.micro \
+              DBAllocatedStorage=20 \
+              DBPasswordParameterVersion="$DB_PASSWORD_VERSION" \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset
+
+      - name: Show Data Stack outputs
+        if: success()
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name medislot-data-dev \
+            --query 'Stacks[0].Outputs[*].[OutputKey,OutputValue]' \
+            --output table
