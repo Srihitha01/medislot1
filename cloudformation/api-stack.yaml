@@ -38,14 +38,38 @@ Globals:
         DISPATCH_LOG_TABLE: !Sub medislot-${Environment}-dispatch-log
 
 Resources:
+  ApplicationApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/medislot-${Environment}-application-api
+      RetentionInDays: 365
+      KmsKeyId:
+        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+
+  ApplicationDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub medislot-${Environment}-application-dlq
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Patient-specific dynamic routes are intentionally uncached.
   MediSlotApplicationApi:
-    Type: AWS::Serverless::Api
+    Type: AWS::Serverless::Api #checkov:skip=CKV_AWS_120:Patient-specific dynamic responses must not be shared or cached; API Gateway cache clusters add hourly cost.
     Properties:
       Name: !Sub medislot-${Environment}-application-api
       StageName: !Ref Environment
       EndpointConfiguration:
         Type: REGIONAL
       TracingEnabled: true
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApplicationApiAccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath","status":"$context.status","responseLength":"$context.responseLength"}'
       Cors:
         AllowMethods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
         AllowHeaders: "'Content-Type,Authorization,Idempotency-Key,X-Correlation-Id'"
@@ -61,78 +85,19 @@ Resources:
               Header: Authorization
               ReauthorizeEvery: 0
 
-  AppRouterRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub medislot-${Environment}-app-router-role
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - lambda.amazonaws.com
-            Action:
-              - sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
-      Policies:
-        - PolicyName: ReadMediSlotApplicationParameters
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - ssm:GetParameter
-                Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/host
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/port
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/app-password
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/jwt-secret
-              - Effect: Allow
-                Action:
-                  - kms:Decrypt
-                Resource: "*"
-                Condition:
-                  StringEquals:
-                    kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
-              - Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:PutItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:Query
-                  - dynamodb:Scan
-                  - dynamodb:TransactWriteItems
-                  - dynamodb:ConditionCheckItem
-                Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/*
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-idempotency
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist/index/*
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers/index/*
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-auth-tokens
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-dispatch-log
-        - PolicyName: PublishMediSlotLogsAndTracing
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - xray:PutTraceSegments
-                  - xray:PutTelemetryRecords
-                Resource: "*"
-
   AppRouterFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub medislot-${Environment}-app-router
       CodeUri: ../src/api/
       Handler: !Ref AppRouterHandler
-      Role: !GetAtt AppRouterRole.Arn
+      Role:
+        Fn::ImportValue: !Sub medislot-${Environment}-ApplicationLambdaRoleArn
+      KmsKeyArn: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/lambda
+      ReservedConcurrentExecutions: 5
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt ApplicationDeadLetterQueue.Arn
       VpcConfig:
         SecurityGroupIds:
           - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup

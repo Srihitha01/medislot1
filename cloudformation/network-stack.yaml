@@ -189,6 +189,30 @@ Resources:
         - Key: Name
           Value: !Sub medislot-${Environment}-ssm-endpoint-sg
 
+  ApiGatewayCloudWatchLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-apigateway-cloudwatch-logs
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  ApiGatewayAccountLogging:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchLogsRole.Arn
+
   SSMInterfaceEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
@@ -204,6 +228,63 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-ssm-endpoint
+
+  # Dedicated destination for S3 server access logs. This bucket intentionally does not log to itself.
+  # Dedicated access-log sink: S3 cannot write access logs to the same bucket it is logging.
+  AccessLogsBucket:
+    Type: AWS::S3::Bucket #checkov:skip=CKV_AWS_18:Dedicated destination bucket cannot log to itself.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub medislot-${AWS::AccountId}-${AWS::Region}-${Environment}-access-logs
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireAccessLogsAfter90Days
+            Status: Enabled
+            ExpirationInDays: 90
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  AccessLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AccessLogsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowS3ServerAccessLogDelivery
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource:
+              - !Sub ${AccessLogsBucket.Arn}/deployment-artifacts/*
+              - !Sub ${AccessLogsBucket.Arn}/doctor-photos/*
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt AccessLogsBucket.Arn
+              - !Sub ${AccessLogsBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: false
 
   # Private deployment artifacts bucket used by AWS SAM to store packaged Lambda code.
   DeploymentArtifactsBucket:
@@ -223,6 +304,9 @@ Resources:
               SSEAlgorithm: AES256
       VersioningConfiguration:
         Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: deployment-artifacts/
       LifecycleConfiguration:
         Rules:
           - Id: ExpireOldDeploymentArtifacts
@@ -289,6 +373,12 @@ Outputs:
     Value: !Ref DeploymentArtifactsBucket
     Export:
       Name: !Sub medislot-${Environment}-DeploymentArtifactsBucketName
+
+  AccessLogsBucketName:
+    Description: Central S3 server access log destination bucket
+    Value: !Ref AccessLogsBucket
+    Export:
+      Name: !Sub medislot-${Environment}-AccessLogsBucketName
 
   SSMInterfaceEndpointId:
     Description: Private SSM interface endpoint ID

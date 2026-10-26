@@ -168,7 +168,7 @@ Resources:
 
                   - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-auth-${Environment}/*
 
-                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-api-${Environment}/*
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-application-${Environment}/*
 
               - Sid: ReadCloudFormationDeploymentState
 
@@ -194,7 +194,7 @@ Resources:
 
                   - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-auth-${Environment}/*
 
-                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-api-${Environment}/*
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-application-${Environment}/*
 
               - Sid: ReadArtifactBucketMetadata
 
@@ -340,6 +340,14 @@ Resources:
 
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/app-password
 
+        - PolicyName: SendAuthenticationFailuresToDLQ
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-auth-dlq
+
   # ---------------------------------------------------------
 
   # Login Lambda role
@@ -412,6 +420,28 @@ Resources:
 
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-auth-tokens
 
+        - PolicyName: SendAuthenticationFailuresToDLQ
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-auth-dlq
+
+        - PolicyName: UseMediSlotDynamoDBCustomerManagedKey
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                  - kms:ReEncrypt*
+                Resource:
+                  Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+
   # ---------------------------------------------------------
 
   # Refresh Lambda role
@@ -482,6 +512,28 @@ Resources:
 
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-auth-tokens
 
+        - PolicyName: SendAuthenticationFailuresToDLQ
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-auth-dlq
+
+        - PolicyName: UseMediSlotDynamoDBCustomerManagedKey
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                  - kms:ReEncrypt*
+                Resource:
+                  Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+
   # ---------------------------------------------------------
 
   # Logout Lambda role
@@ -550,6 +602,28 @@ Resources:
 
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-auth-tokens
 
+        - PolicyName: SendAuthenticationFailuresToDLQ
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-auth-dlq
+
+        - PolicyName: UseMediSlotDynamoDBCustomerManagedKey
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                  - kms:ReEncrypt*
+                Resource:
+                  Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+
   # ---------------------------------------------------------
 
   # Lambda authorizer role
@@ -613,6 +687,28 @@ Resources:
                 Resource:
 
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-auth-tokens
+
+        - PolicyName: SendAuthenticationFailuresToDLQ
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-auth-dlq
+
+        - PolicyName: UseMediSlotDynamoDBCustomerManagedKey
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                  - kms:ReEncrypt*
+                Resource:
+                  Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
 
   # ---------------------------------------------------------
 
@@ -688,6 +784,8 @@ Resources:
 
                   - dynamodb:Query
 
+                  - dynamodb:Scan
+
                   - dynamodb:TransactWriteItems
 
                   - dynamodb:ConditionCheckItem
@@ -695,16 +793,51 @@ Resources:
                 Resource:
 
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/*
 
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-idempotency
 
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist/index/*
 
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers/index/*
 
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-auth-tokens
 
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-dispatch-log
+
+        - PolicyName: UseMediSlotDynamoDBCustomerManagedKey
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                  - kms:ReEncrypt*
+                Resource:
+                  Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+
+        - PolicyName: SendApplicationFailuresToDLQ
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-application-dlq
+
+        - PolicyName: PublishMediSlotLogsAndTracing
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: "*"
 
 Outputs:
 
