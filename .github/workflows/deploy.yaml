@@ -119,6 +119,7 @@ jobs:
             --change-set-type "$change_type" \
             --template-body file://cloudformation/network-stack.yaml \
             --parameters ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --description "GitHub Actions run ${GITHUB_RUN_ID}"
           if ! aws cloudformation wait change-set-create-complete --stack-name "$NETWORK_STACK" --change-set-name "$change_set"; then
             reason=$(aws cloudformation describe-change-set --stack-name "$NETWORK_STACK" --change-set-name "$change_set" --query StatusReason --output text 2>/dev/null || true)
