@@ -3,7 +3,7 @@ name: MediSlot CI/CD
 on:
   push:
     branches:
-      - feature/network-stack
+      - feature/data-stack
       - main
   pull_request:
     branches:
