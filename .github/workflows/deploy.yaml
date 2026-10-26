@@ -284,12 +284,12 @@ jobs:
       - name: Deploy IAM stack using Change Set
         shell: bash
         env:
-          OIDC_PROVIDER_ARN: ${{ vars.GITHUB_OIDC_PROVIDER_ARN }}
+          OIDC_PROVIDER_ARN: ${{ vars.OIDC_PROVIDER_ARN }}
           ARTIFACT_BUCKET: ${{ needs.deploy_network.outputs.artifact_bucket }}
         run: |
           set -euo pipefail
           if [[ -z "$OIDC_PROVIDER_ARN" ]]; then
-            echo "::error::Set repository variable GITHUB_OIDC_PROVIDER_ARN to the existing GitHub OIDC provider ARN."
+            echo "::error::Set repository variable OIDC_PROVIDER_ARN to the existing GitHub OIDC provider ARN."
             exit 1
           fi
           if aws cloudformation describe-stacks --stack-name "$IAM_STACK" >/dev/null 2>&1; then change_type=UPDATE; else change_type=CREATE; fi
