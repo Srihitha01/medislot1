@@ -67,7 +67,7 @@ Resources:
             Fn::Sub: medislot-${Environment}-RDSSecurityGroup
       PubliclyAccessible: false
       MultiAZ: false
-      BackupRetentionPeriod: 7
+      BackupRetentionPeriod: 1
       AutoMinorVersionUpgrade: true
       CopyTagsToSnapshot: true
       Tags:
