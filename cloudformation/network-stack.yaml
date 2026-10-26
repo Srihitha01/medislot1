@@ -1,6 +1,6 @@
 
-AWSTemplateFormatVersion: '2010-09-09'
-Description: MediSlot network foundation
+AWSTemplateFormatVersion: "2010-09-09"
+Description: MediSlot network foundation with private SSM access
 
 Parameters:
   Environment:
@@ -42,7 +42,7 @@ Resources:
       CidrBlock: 10.0.1.0/24
       AvailabilityZone: !Select
         - 0
-        - !GetAZs ''
+        - !GetAZs ""
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
@@ -55,7 +55,7 @@ Resources:
       CidrBlock: 10.0.2.0/24
       AvailabilityZone: !Select
         - 1
-        - !GetAZs ''
+        - !GetAZs ""
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
@@ -68,7 +68,7 @@ Resources:
       CidrBlock: 10.0.11.0/24
       AvailabilityZone: !Select
         - 0
-        - !GetAZs ''
+        - !GetAZs ""
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
@@ -81,7 +81,7 @@ Resources:
       CidrBlock: 10.0.12.0/24
       AvailabilityZone: !Select
         - 1
-        - !GetAZs ''
+        - !GetAZs ""
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
@@ -191,6 +191,36 @@ Resources:
         - !Ref PrivateRouteTableA
         - !Ref PrivateRouteTableB
 
+  SSMEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTPS from MediSlot Lambda to SSM endpoint
+      VpcId: !Ref MediSlotVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-ssm-endpoint-sg
+
+  SSMInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref MediSlotVPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref SSMEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-ssm-endpoint
+
 Outputs:
   VpcId:
     Value: !Ref MediSlotVPC
@@ -226,3 +256,9 @@ Outputs:
     Value: !Ref RDSSecurityGroup
     Export:
       Name: !Sub medislot-${Environment}-RDSSecurityGroup
+
+  SSMInterfaceEndpointId:
+    Description: Private SSM interface endpoint ID
+    Value: !Ref SSMInterfaceEndpoint
+    Export:
+      Name: !Sub medislot-${Environment}-SSMInterfaceEndpointId

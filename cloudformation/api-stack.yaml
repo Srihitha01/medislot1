@@ -1,0 +1,184 @@
+
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: MediSlot application API Gateway and Lambda integration
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+
+  AppRouterCodeUri:
+    Type: String
+    Default: ../src/api/
+    Description: Directory containing the application API router Lambda code
+
+  AppRouterHandler:
+    Type: String
+    Default: app.lambda_handler
+    Description: Python module and handler for the application API router
+
+Globals:
+  Function:
+    Runtime: python3.12
+    MemorySize: 256
+    Timeout: 20
+    Tracing: Active
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        DB_NAME: medislot
+        DB_HOST_PARAMETER: !Sub /medislot/${Environment}/db/host
+        DB_PORT_PARAMETER: !Sub /medislot/${Environment}/db/port
+        DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/app-password
+        JWT_SECRET_PARAMETER: !Sub /medislot/${Environment}/auth/jwt-secret
+        SLOTS_TABLE: !Sub medislot-${Environment}-slots
+        IDEMPOTENCY_TABLE: !Sub medislot-${Environment}-idempotency
+        WAITLIST_TABLE: !Sub medislot-${Environment}-waitlist
+        HOLD_OFFERS_TABLE: !Sub medislot-${Environment}-hold-offers
+        AUTH_TOKENS_TABLE: !Sub medislot-${Environment}-auth-tokens
+        DISPATCH_LOG_TABLE: !Sub medislot-${Environment}-dispatch-log
+
+Resources:
+  MediSlotApplicationApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub medislot-${Environment}-application-api
+      StageName: !Ref Environment
+      EndpointConfiguration:
+        Type: REGIONAL
+      TracingEnabled: true
+      Cors:
+        AllowMethods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization,Idempotency-Key,X-Correlation-Id'"
+        AllowOrigin: "'*'"
+      Auth:
+        DefaultAuthorizer: MediSlotAuthorizer
+        Authorizers:
+          MediSlotAuthorizer:
+            FunctionArn:
+              Fn::ImportValue: !Sub medislot-${Environment}-AuthorizerFunctionArn
+            FunctionPayloadType: TOKEN
+            Identity:
+              Header: Authorization
+              ReauthorizeEvery: 0
+
+  AppRouterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-app-router-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: ReadMediSlotApplicationParameters
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/host
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/port
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/app-password
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/jwt-secret
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:TransactWriteItems
+                  - dynamodb:ConditionCheckItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/*
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-idempotency
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist/index/*
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers/index/*
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-auth-tokens
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-dispatch-log
+        - PolicyName: PublishMediSlotLogsAndTracing
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: "*"
+
+  AppRouterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-app-router
+      CodeUri: !Ref AppRouterCodeUri
+      Handler: !Ref AppRouterHandler
+      Role: !GetAtt AppRouterRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
+      Events:
+        ApplicationRoot:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApplicationApi
+            Path: /
+            Method: ANY
+        ApplicationRoutes:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApplicationApi
+            Path: /{proxy+}
+            Method: ANY
+
+Outputs:
+  ApplicationApiId:
+    Description: MediSlot application REST API ID
+    Value: !Ref MediSlotApplicationApi
+    Export:
+      Name: !Sub medislot-${Environment}-ApplicationApiId
+
+  ApplicationApiBaseUrl:
+    Description: MediSlot application API base URL
+    Value: !Sub
+      - https://${ApiId}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Stage}
+      - ApiId: !Ref MediSlotApplicationApi
+        Stage: !Ref Environment
+
+  AppRouterFunctionName:
+    Description: Application router Lambda function name
+    Value: !Ref AppRouterFunction
+
+  AppRouterFunctionArn:
+    Description: Application router Lambda function ARN
+    Value: !GetAtt AppRouterFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-AppRouterFunctionArn

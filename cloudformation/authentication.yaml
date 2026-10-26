@@ -1,0 +1,268 @@
+
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: MediSlot authentication infrastructure using SSM Parameter Store
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+
+  DBPasswordParameterVersion:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    Description: Version of the application database password in SSM SecureString
+
+  JWTSecretParameterVersion:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    Description: Version of the JWT signing secret in SSM SecureString
+
+Globals:
+  Function:
+    Runtime: python3.12
+    MemorySize: 256
+    Timeout: 15
+    Tracing: Active
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        DB_NAME: medislot
+        DB_HOST_PARAMETER: !Sub /medislot/${Environment}/db/host
+        DB_PORT_PARAMETER: !Sub /medislot/${Environment}/db/port
+        DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/app-password
+        DB_PASSWORD_PARAMETER_VERSION: !Ref DBPasswordParameterVersion
+        JWT_SECRET_PARAMETER: !Sub /medislot/${Environment}/auth/jwt-secret
+        JWT_SECRET_PARAMETER_VERSION: !Ref JWTSecretParameterVersion
+        AUTH_TOKENS_TABLE: !Sub medislot-${Environment}-auth-tokens
+
+Resources:
+  MediSlotAuthApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub medislot-${Environment}-auth-api
+      StageName: !Ref Environment
+      EndpointConfiguration:
+        Type: REGIONAL
+      TracingEnabled: true
+      Cors:
+        AllowMethods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization,Idempotency-Key,X-Correlation-Id'"
+        AllowOrigin: "'*'"
+
+  AuthFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-auth-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: ReadMediSlotSSMParameters
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/host
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/port
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/app-password
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/jwt-secret
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
+        - PolicyName: UseAuthenticationTokenTable
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-auth-tokens
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-auth-tokens/index/*
+
+  RegisterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-register
+      CodeUri: ../src/auth/
+      Handler: register/register.lambda_handler
+      Role: !GetAtt AuthFunctionRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              !Sub medislot-${Environment}-LambdaSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue:
+              !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue:
+              !Sub medislot-${Environment}-PrivateSubnetB
+      Events:
+        DoctorRegister:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotAuthApi
+            Path: /auth/doctors/register
+            Method: POST
+        PatientRegister:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotAuthApi
+            Path: /auth/patients/register
+            Method: POST
+
+  LoginFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-login
+      CodeUri: ../src/auth/
+      Handler: login/login.lambda_handler
+      Role: !GetAtt AuthFunctionRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              !Sub medislot-${Environment}-LambdaSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue:
+              !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue:
+              !Sub medislot-${Environment}-PrivateSubnetB
+      Events:
+        DoctorLogin:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotAuthApi
+            Path: /auth/doctors/login
+            Method: POST
+        PatientLogin:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotAuthApi
+            Path: /auth/patients/login
+            Method: POST
+
+  RefreshFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-refresh
+      CodeUri: ../src/auth/
+      Handler: refresh/refresh.lambda_handler
+      Role: !GetAtt AuthFunctionRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              !Sub medislot-${Environment}-LambdaSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue:
+              !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue:
+              !Sub medislot-${Environment}-PrivateSubnetB
+      Events:
+        Refresh:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotAuthApi
+            Path: /auth/refresh
+            Method: POST
+
+  LogoutFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-logout
+      CodeUri: ../src/auth/
+      Handler: logout/logout.lambda_handler
+      Role: !GetAtt AuthFunctionRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              !Sub medislot-${Environment}-LambdaSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue:
+              !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue:
+              !Sub medislot-${Environment}-PrivateSubnetB
+      Events:
+        Logout:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotAuthApi
+            Path: /auth/logout
+            Method: POST
+
+  AuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-authorizer
+      CodeUri: ../src/auth/
+      Handler: authorizer/authorizer.lambda_handler
+      Role: !GetAtt AuthFunctionRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              !Sub medislot-${Environment}-LambdaSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue:
+              !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue:
+              !Sub medislot-${Environment}-PrivateSubnetB
+
+Outputs:
+  AuthApiId:
+    Description: Authentication API ID
+    Value: !Ref MediSlotAuthApi
+    Export:
+      Name: !Sub medislot-${Environment}-AuthApiId
+
+  AuthApiBaseUrl:
+    Description: Base URL for MediSlot authentication endpoints
+    Value: !Sub
+      - https://${ApiId}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Stage}
+      - ApiId: !Ref MediSlotAuthApi
+        Stage: !Ref Environment
+
+  RegisterFunctionName:
+    Description: Registration Lambda function name
+    Value: !Ref RegisterFunction
+
+  LoginFunctionName:
+    Description: Login Lambda function name
+    Value: !Ref LoginFunction
+
+  RefreshFunctionName:
+    Description: Refresh-token Lambda function name
+    Value: !Ref RefreshFunction
+
+  LogoutFunctionName:
+    Description: Logout Lambda function name
+    Value: !Ref LogoutFunction
+
+  AuthorizerFunctionArn:
+    Description: Lambda authorizer function ARN for protected APIs
+    Value: !GetAtt AuthorizerFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-AuthorizerFunctionArn
