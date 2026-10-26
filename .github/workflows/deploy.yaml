@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/data-stack
+      - feature/network-stack
       - main
   pull_request:
     branches:
@@ -16,7 +17,9 @@ permissions:
 
 env:
   AWS_REGION: ap-south-1
+  AWS_DEFAULT_REGION: ap-south-1
   ENVIRONMENT: dev
+  SAM_CLI_TELEMETRY: "0"
 
 jobs:
   validate:
@@ -39,12 +42,20 @@ jobs:
         uses: aws-actions/setup-sam@v2
 
       - name: Validate Network Stack
+        shell: bash
         run: |
+          set -euo pipefail
           test -s cloudformation/network-stack.yaml
           cfn-lint cloudformation/network-stack.yaml
 
       - name: Validate Data Stack
+        shell: bash
+        env:
+          AWS_REGION: ap-south-1
+          AWS_DEFAULT_REGION: ap-south-1
+          SAM_CLI_TELEMETRY: "0"
         run: |
+          set -euo pipefail
           test -s cloudformation/data-stack.yaml
           cfn-lint cloudformation/data-stack.yaml
           sam validate --template-file cloudformation/data-stack.yaml
@@ -66,7 +77,9 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy Network Stack
+        shell: bash
         run: |
+          set -euo pipefail
           aws cloudformation deploy \
             --stack-name medislot-network-dev \
             --template-file cloudformation/network-stack.yaml \
@@ -113,10 +126,10 @@ jobs:
             exit 1
           fi
 
-          # RDS MySQL master passwords must be 8-41 characters and cannot
-          # contain slash, single quote, double quote, @, or spaces.
+          # RDS for MySQL master passwords: 8-41 characters; do not use
+          # slash, single quote, double quote, @, or spaces.
           if [[ ${#MEDISLOT_DB_PWD} -lt 8 || ${#MEDISLOT_DB_PWD} -gt 41 ]]; then
-            echo "::error::MEDISLOT_DB_PWD must be between 8 and 41 characters for RDS MySQL."
+            echo "::error::MEDISLOT_DB_PWD must be between 8 and 41 characters."
             exit 1
           fi
           if [[ "$MEDISLOT_DB_PWD" == *"/"* || "$MEDISLOT_DB_PWD" == *"'"* || "$MEDISLOT_DB_PWD" == *'"'* || "$MEDISLOT_DB_PWD" == *"@"* || "$MEDISLOT_DB_PWD" == *" "* ]]; then
