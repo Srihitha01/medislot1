@@ -4,10 +4,14 @@ name: MediSlot CI/CD
 on:
   push:
     branches:
+      - feature/data-stack
+      - feature/network-stack
+      - feature/authentication
       - main
   pull_request:
     branches:
       - main
+  workflow_dispatch:
   workflow_dispatch:
 
 permissions:
