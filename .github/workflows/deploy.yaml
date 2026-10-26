@@ -297,7 +297,7 @@ jobs:
           aws cloudformation create-change-set \
             --stack-name "$IAM_STACK" --change-set-name "$change_set" --change-set-type "$change_type" \
             --template-body file://cloudformation/iam-stack.yaml \
-            --parameters ParameterKey=Environment,ParameterValue="$ENVIRONMENT" ParameterKey=GitHubOwner,ParameterValue="${GITHUB_REPOSITORY_OWNER}" ParameterKey=GitHubRepository,ParameterValue="${GITHUB_REPOSITORY#*/}" ParameterKey=GitHubDeploymentBranch,ParameterValue=main ParameterKey=GitHubOidcProviderArn,ParameterValue="$OIDC_PROVIDER_ARN" ParameterKey=DeploymentArtifactBucketName,ParameterValue="$ARTIFACT_BUCKET" \
+            --parameters ParameterKey=Environment,ParameterValue="$ENVIRONMENT" ParameterKey=GitHubOwner,ParameterValue="${GITHUB_REPOSITORY_OWNER}" ParameterKey=GitHubRepository,ParameterValue="${GITHUB_REPOSITORY#*/}" ParameterKey=GitHubOidcProviderArn,ParameterValue="$OIDC_PROVIDER_ARN" ParameterKey=DeploymentArtifactBucketName,ParameterValue="$ARTIFACT_BUCKET" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --description "GitHub Actions run ${GITHUB_RUN_ID}"
           if ! aws cloudformation wait change-set-create-complete --stack-name "$IAM_STACK" --change-set-name "$change_set"; then
