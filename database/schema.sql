@@ -1,0 +1,13 @@
+
+CREATE TABLE IF NOT EXISTS users (
+    user_id VARCHAR(36) NOT NULL,
+    name VARCHAR(120) NOT NULL,
+    email VARCHAR(254) NOT NULL,
+    password_hash VARCHAR(60) NOT NULL,
+    role ENUM('patient', 'doctor') NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id),
+    UNIQUE KEY uq_users_email (email)
+) ENGINE=InnoDB;

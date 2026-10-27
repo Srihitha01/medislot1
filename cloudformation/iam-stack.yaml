@@ -1,0 +1,940 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: MediSlot centralized IAM roles with scoped permissions
+
+# cfn-lint's current action allowlist may flag the valid DynamoDB IAM action
+# dynamodb:TransactWriteItems (W3037). Keep the required transaction permission.
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W3037
+
+Parameters:
+
+  Environment:
+
+    Type: String
+
+    Default: dev
+
+    AllowedValues:
+
+      - dev
+
+      - test
+
+      - prod
+
+  GitHubOwner:
+
+    Type: String
+
+    Default: Srihitha01
+
+  GitHubRepository:
+
+    Type: String
+
+    Default: medislot1
+
+  # Immutable IDs are included in GitHub's OIDC subject for repositories
+  # using GitHub's immutable subject-claim format.
+  GitHubOwnerId:
+
+    Type: String
+
+    Default: "168816985"
+
+  GitHubRepositoryId:
+
+    Type: String
+
+    Default: "1434045145"
+
+  DeploymentArtifactBucketName:
+
+    Type: String
+
+    Description: Existing S3 bucket used for deployment artifacts
+
+Resources:
+
+  # ---------------------------------------------------------
+
+  # GitHub Actions deployment role
+
+  # ---------------------------------------------------------
+
+  GitHubActionsDeploymentRole:
+
+    Type: AWS::IAM::Role
+
+    Properties:
+
+      RoleName: !Sub medislot-${Environment}-github-actions-deploy-role
+
+      Description: MediSlot GitHub Actions deployment role
+
+      MaxSessionDuration: 3600
+
+      AssumeRolePolicyDocument:
+
+        Version: "2012-10-17"
+
+        Statement:
+
+          - Effect: Allow
+
+            Principal:
+
+              Federated: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+
+            Action:
+
+              - sts:AssumeRoleWithWebIdentity
+
+            Condition:
+
+              StringEquals:
+
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+
+              StringLike:
+
+                # This matches immutable GitHub OIDC subjects for jobs
+                # that use a GitHub Environment. Keep the environment names
+                # aligned with the workflow's `environment:` values.
+                token.actions.githubusercontent.com:sub:
+                  - !Sub "repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepository}@${GitHubRepositoryId}:environment:development"
+                  - !Sub "repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepository}@${GitHubRepositoryId}:environment:test"
+                  - !Sub "repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepository}@${GitHubRepositoryId}:environment:production"
+
+      Policies:
+
+        - PolicyName: MediSlotCloudFormationDeployment
+
+          PolicyDocument:
+
+            Version: "2012-10-17"
+
+            Statement:
+
+              - Sid: ManageMediSlotStacks
+
+                Effect: Allow
+
+                Action:
+
+                  - cloudformation:CreateStack
+
+                  - cloudformation:UpdateStack
+
+                  - cloudformation:DeleteStack
+
+                  - cloudformation:DescribeStacks
+
+                  - cloudformation:DescribeStackEvents
+
+                  - cloudformation:DescribeStackResources
+
+                  - cloudformation:DescribeStackResource
+
+                  - cloudformation:ValidateTemplate
+
+                  - cloudformation:CreateChangeSet
+
+                  - cloudformation:DescribeChangeSet
+
+                  - cloudformation:ExecuteChangeSet
+
+                  - cloudformation:DeleteChangeSet
+
+                  - cloudformation:ListChangeSets
+
+                  - cloudformation:GetTemplate
+
+                  - cloudformation:GetTemplateSummary
+
+                  - cloudformation:DescribeStackResourceDrifts
+
+                Resource:
+
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-network-${Environment}/*
+
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-data-${Environment}/*
+
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-iam-${Environment}/*
+
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-auth-${Environment}/*
+
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-application-${Environment}/*
+
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-api-${Environment}/*
+
+              - Sid: ReadCloudFormationDeploymentState
+
+                Effect: Allow
+
+                Action:
+
+                  - cloudformation:DescribeAccountLimits
+
+                  - cloudformation:ListStacks
+
+                  - cloudformation:ListExports
+
+                  - cloudformation:ListImports
+
+                Resource:
+
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-network-${Environment}/*
+
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-data-${Environment}/*
+
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-iam-${Environment}/*
+
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-auth-${Environment}/*
+
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-application-${Environment}/*
+
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-api-${Environment}/*
+
+              - Sid: ReadArtifactBucketMetadata
+
+                Effect: Allow
+
+                Action:
+
+                  - s3:GetBucketLocation
+
+                  - s3:ListBucket
+
+                Resource:
+
+                  - !Sub arn:${AWS::Partition}:s3:::${DeploymentArtifactBucketName}
+
+              - Sid: ManageMediSlotDeploymentArtifacts
+
+                Effect: Allow
+
+                Action:
+
+                  - s3:GetObject
+
+                  - s3:PutObject
+
+                  - s3:AbortMultipartUpload
+
+                Resource:
+
+                  - !Sub arn:${AWS::Partition}:s3:::${DeploymentArtifactBucketName}/medislot/*
+
+              - Sid: UseMediSlotDataKeyForLambdaEnvironmentEncryption
+
+                Effect: Allow
+
+                Action:
+
+                  - kms:DescribeKey
+
+                  - kms:Encrypt
+
+                  - kms:Decrypt
+
+                  - kms:GenerateDataKey*
+
+                Resource:
+
+                  - Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+
+              - Sid: CreateLambdaServiceGrantForMediSlotDataKey
+
+                Effect: Allow
+
+                Action:
+
+                  - kms:CreateGrant
+
+                Resource:
+
+                  - Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+
+                Condition:
+
+                  Bool:
+
+                    kms:GrantIsForAWSResource: true
+
+              - Sid: ManageMediSlotParameters
+
+                Effect: Allow
+
+                Action:
+
+                  - ssm:PutParameter
+
+                  - ssm:GetParameter
+
+                  - ssm:GetParameters
+
+                  - ssm:AddTagsToResource
+
+                Resource:
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/password
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/app-password
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/jwt-secret
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/host
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/port
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/name
+
+              - Sid: PassMediSlotLambdaRolesToCloudFormation
+
+                Effect: Allow
+
+                Action:
+
+                  - iam:PassRole
+
+                Resource:
+
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-register-role
+
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-login-role
+
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-refresh-role
+
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-logout-role
+
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-authorizer-role
+
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-app-router-role
+
+                Condition:
+
+                  StringEquals:
+
+                    iam:PassedToService: cloudformation.amazonaws.com
+
+  # ---------------------------------------------------------
+
+  # Registration Lambda role
+
+  # ---------------------------------------------------------
+
+  RegisterLambdaRole:
+
+    Type: AWS::IAM::Role
+
+    Properties:
+
+      RoleName: !Sub medislot-${Environment}-register-role
+
+      AssumeRolePolicyDocument:
+
+        Version: "2012-10-17"
+
+        Statement:
+
+          - Effect: Allow
+
+            Principal:
+
+              Service: lambda.amazonaws.com
+
+            Action:
+
+              - sts:AssumeRole
+
+      ManagedPolicyArns:
+
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+      Policies:
+
+        - PolicyName: RegisterReadDatabaseParameters
+
+          PolicyDocument:
+
+            Version: "2012-10-17"
+
+            Statement:
+
+              - Effect: Allow
+
+                Action:
+
+                  - ssm:GetParameter
+
+                Resource:
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/host
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/port
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/app-password
+
+        - PolicyName: SendAuthenticationFailuresToDLQ
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-auth-dlq
+
+  # ---------------------------------------------------------
+
+  # Login Lambda role
+
+  # ---------------------------------------------------------
+
+  LoginLambdaRole:
+
+    Type: AWS::IAM::Role
+
+    Properties:
+
+      RoleName: !Sub medislot-${Environment}-login-role
+
+      AssumeRolePolicyDocument:
+
+        Version: "2012-10-17"
+
+        Statement:
+
+          - Effect: Allow
+
+            Principal:
+
+              Service: lambda.amazonaws.com
+
+            Action:
+
+              - sts:AssumeRole
+
+      ManagedPolicyArns:
+
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+      Policies:
+
+        - PolicyName: LoginReadParametersAndTokens
+
+          PolicyDocument:
+
+            Version: "2012-10-17"
+
+            Statement:
+
+              - Effect: Allow
+
+                Action:
+
+                  - ssm:GetParameter
+
+                Resource:
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/host
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/port
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/app-password
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/jwt-secret
+
+              - Effect: Allow
+
+                Action:
+
+                  - dynamodb:GetItem
+
+                  - dynamodb:PutItem
+
+                Resource:
+
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-auth-tokens
+
+        - PolicyName: SendAuthenticationFailuresToDLQ
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-auth-dlq
+
+        - PolicyName: UseMediSlotDynamoDBCustomerManagedKey
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                  - kms:ReEncrypt*
+                Resource:
+                  Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+
+  # ---------------------------------------------------------
+
+  # Refresh Lambda role
+
+  # ---------------------------------------------------------
+
+  RefreshLambdaRole:
+
+    Type: AWS::IAM::Role
+
+    Properties:
+
+      RoleName: !Sub medislot-${Environment}-refresh-role
+
+      AssumeRolePolicyDocument:
+
+        Version: "2012-10-17"
+
+        Statement:
+
+          - Effect: Allow
+
+            Principal:
+
+              Service: lambda.amazonaws.com
+
+            Action:
+
+              - sts:AssumeRole
+
+      ManagedPolicyArns:
+
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+      Policies:
+
+        - PolicyName: RefreshReadSecretAndRotateTokens
+
+          PolicyDocument:
+
+            Version: "2012-10-17"
+
+            Statement:
+
+              - Effect: Allow
+
+                Action:
+
+                  - ssm:GetParameter
+
+                Resource:
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/jwt-secret
+
+              - Effect: Allow
+
+                Action:
+
+                  - dynamodb:GetItem
+
+                  - dynamodb:PutItem
+
+                  - dynamodb:DeleteItem
+
+                  - dynamodb:TransactWriteItems
+
+                Resource:
+
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-auth-tokens
+
+        - PolicyName: SendAuthenticationFailuresToDLQ
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-auth-dlq
+
+        - PolicyName: UseMediSlotDynamoDBCustomerManagedKey
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                  - kms:ReEncrypt*
+                Resource:
+                  Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+
+  # ---------------------------------------------------------
+
+  # Logout Lambda role
+
+  # ---------------------------------------------------------
+
+  LogoutLambdaRole:
+
+    Type: AWS::IAM::Role
+
+    Properties:
+
+      RoleName: !Sub medislot-${Environment}-logout-role
+
+      AssumeRolePolicyDocument:
+
+        Version: "2012-10-17"
+
+        Statement:
+
+          - Effect: Allow
+
+            Principal:
+
+              Service: lambda.amazonaws.com
+
+            Action:
+
+              - sts:AssumeRole
+
+      ManagedPolicyArns:
+
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+      Policies:
+
+        - PolicyName: LogoutRevokeTokens
+
+          PolicyDocument:
+
+            Version: "2012-10-17"
+
+            Statement:
+
+              - Effect: Allow
+
+                Action:
+
+                  - ssm:GetParameter
+
+                Resource:
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/jwt-secret
+
+              - Effect: Allow
+
+                Action:
+
+                  - dynamodb:GetItem
+
+                  - dynamodb:PutItem
+
+                  - dynamodb:DeleteItem
+
+                Resource:
+
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-auth-tokens
+
+        - PolicyName: SendAuthenticationFailuresToDLQ
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-auth-dlq
+
+        - PolicyName: UseMediSlotDynamoDBCustomerManagedKey
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                  - kms:ReEncrypt*
+                Resource:
+                  Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+
+  # ---------------------------------------------------------
+
+  # Lambda authorizer role
+
+  # ---------------------------------------------------------
+
+  AuthorizerLambdaRole:
+
+    Type: AWS::IAM::Role
+
+    Properties:
+
+      RoleName: !Sub medislot-${Environment}-authorizer-role
+
+      AssumeRolePolicyDocument:
+
+        Version: "2012-10-17"
+
+        Statement:
+
+          - Effect: Allow
+
+            Principal:
+
+              Service: lambda.amazonaws.com
+
+            Action:
+
+              - sts:AssumeRole
+
+      ManagedPolicyArns:
+
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+      Policies:
+
+        - PolicyName: AuthorizerReadSecretAndRevocationState
+
+          PolicyDocument:
+
+            Version: "2012-10-17"
+
+            Statement:
+
+              - Effect: Allow
+
+                Action:
+
+                  - ssm:GetParameter
+
+                Resource:
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/jwt-secret
+
+              - Effect: Allow
+
+                Action:
+
+                  - dynamodb:GetItem
+
+                Resource:
+
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-auth-tokens
+
+        - PolicyName: SendAuthenticationFailuresToDLQ
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-auth-dlq
+
+        - PolicyName: UseMediSlotDynamoDBCustomerManagedKey
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                  - kms:ReEncrypt*
+                Resource:
+                  Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+
+  # ---------------------------------------------------------
+
+  # Application Lambda role
+
+  # ---------------------------------------------------------
+
+  ApplicationLambdaRole:
+
+    Type: AWS::IAM::Role
+
+    Properties:
+
+      RoleName: !Sub medislot-${Environment}-app-router-role
+
+      AssumeRolePolicyDocument:
+
+        Version: "2012-10-17"
+
+        Statement:
+
+          - Effect: Allow
+
+            Principal:
+
+              Service: lambda.amazonaws.com
+
+            Action:
+
+              - sts:AssumeRole
+
+      ManagedPolicyArns:
+
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+      Policies:
+
+        - PolicyName: ApplicationReadParameters
+
+          PolicyDocument:
+
+            Version: "2012-10-17"
+
+            Statement:
+
+              - Effect: Allow
+
+                Action:
+
+                  - ssm:GetParameter
+
+                Resource:
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/host
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/port
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/app-password
+
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/jwt-secret
+
+              - Effect: Allow
+
+                Action:
+
+                  - dynamodb:GetItem
+
+                  - dynamodb:PutItem
+
+                  - dynamodb:UpdateItem
+
+                  - dynamodb:DeleteItem
+
+                  - dynamodb:Query
+
+                  - dynamodb:Scan
+
+                  - dynamodb:TransactWriteItems
+
+                  - dynamodb:ConditionCheckItem
+
+                Resource:
+
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/*
+
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-idempotency
+
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist/index/*
+
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers/index/*
+
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-auth-tokens
+
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-dispatch-log
+
+        - PolicyName: UseMediSlotDynamoDBCustomerManagedKey
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                  - kms:ReEncrypt*
+                Resource:
+                  Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+
+        - PolicyName: SendApplicationFailuresToDLQ
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-application-dlq
+
+        - PolicyName: PublishMediSlotLogsAndTracing
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: "*"
+
+Outputs:
+
+  GitHubActionsDeploymentRoleArn:
+
+    Description: GitHub Actions OIDC deployment role ARN
+
+    Value: !GetAtt GitHubActionsDeploymentRole.Arn
+
+    Export:
+
+      Name: !Sub medislot-${Environment}-GitHubActionsDeploymentRoleArn
+
+  RegisterLambdaRoleArn:
+
+    Value: !GetAtt RegisterLambdaRole.Arn
+
+    Export:
+
+      Name: !Sub medislot-${Environment}-RegisterLambdaRoleArn
+
+  LoginLambdaRoleArn:
+
+    Value: !GetAtt LoginLambdaRole.Arn
+
+    Export:
+
+      Name: !Sub medislot-${Environment}-LoginLambdaRoleArn
+
+  RefreshLambdaRoleArn:
+
+    Value: !GetAtt RefreshLambdaRole.Arn
+
+    Export:
+
+      Name: !Sub medislot-${Environment}-RefreshLambdaRoleArn
+
+  LogoutLambdaRoleArn:
+
+    Value: !GetAtt LogoutLambdaRole.Arn
+
+    Export:
+
+      Name: !Sub medislot-${Environment}-LogoutLambdaRoleArn
+
+  AuthorizerLambdaRoleArn:
+
+    Value: !GetAtt AuthorizerLambdaRole.Arn
+
+    Export:
+
+      Name: !Sub medislot-${Environment}-AuthorizerLambdaRoleArn
+
+  ApplicationLambdaRoleArn:
+
+    Value: !GetAtt ApplicationLambdaRole.Arn
+
+    Export:
+
+      Name: !Sub medislot-${Environment}-ApplicationLambdaRoleArn

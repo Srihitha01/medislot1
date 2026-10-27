@@ -30,6 +30,84 @@ Parameters:
     Description: Version number of the password in SSM SecureString
 
 Resources:
+  # Customer-managed KMS key for DynamoDB table encryption. One key is shared across this environment.
+  MediSlotDataKmsKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub MediSlot ${Environment} DynamoDB encryption key
+      EnableKeyRotation: true
+      PendingWindowInDays: 7
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnableAccountIAMPermissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: "*"
+          - Sid: AllowDynamoDBToUseKeyForTableEncryption
+            Effect: Allow
+            Principal:
+              Service: dynamodb.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+              - kms:CreateGrant
+            Resource: "*"
+            Condition:
+              Bool:
+                kms:GrantIsForAWSResource: true
+          - Sid: AllowCloudWatchLogsToUseKeyForLogGroups
+            Effect: Allow
+            Principal:
+              Service: !Sub logs.${AWS::Region}.${AWS::URLSuffix}
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: "*"
+            Condition:
+              ArnLike:
+                kms:EncryptionContext:aws:logs:arn: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  MediSlotDataKmsAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/medislot-${Environment}-data
+      TargetKeyId: !Ref MediSlotDataKmsKey
+
+  RDSMonitoringRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-rds-enhanced-monitoring
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: monitoring.rds.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
   # RDS subnet group uses the private subnets exported by network-stack.yaml.
   MediSlotDBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
@@ -47,8 +125,9 @@ Resources:
           Value: !Ref Environment
 
   # Password is resolved from SSM SecureString during stack create/update.
+  # Development/test cost decision: use single-AZ here; enable Multi-AZ in production.
   MediSlotDB:
-    Type: AWS::RDS::DBInstance
+    Type: AWS::RDS::DBInstance #checkov:skip=CKV_AWS_157:Single-AZ is an intentional dev/test cost tradeoff; enable Multi-AZ for production.
     DeletionPolicy: Snapshot
     UpdateReplacePolicy: Snapshot
     Properties:
@@ -66,7 +145,10 @@ Resources:
         - Fn::ImportValue:
             Fn::Sub: medislot-${Environment}-RDSSecurityGroup
       PubliclyAccessible: false
+      EnableIAMDatabaseAuthentication: true
       MultiAZ: false
+      MonitoringInterval: 60
+      MonitoringRoleArn: !GetAtt RDSMonitoringRole.Arn
       BackupRetentionPeriod: 1
       AutoMinorVersionUpgrade: true
       CopyTagsToSnapshot: true
@@ -105,6 +187,8 @@ Resources:
         PointInTimeRecoveryEnabled: true
       SSESpecification:
         SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt MediSlotDataKmsKey.Arn
       Tags:
         - Key: Project
           Value: MediSlot
@@ -130,6 +214,8 @@ Resources:
         PointInTimeRecoveryEnabled: true
       SSESpecification:
         SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt MediSlotDataKmsKey.Arn
       Tags:
         - Key: Project
           Value: MediSlot
@@ -168,6 +254,8 @@ Resources:
         PointInTimeRecoveryEnabled: true
       SSESpecification:
         SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt MediSlotDataKmsKey.Arn
       Tags:
         - Key: Project
           Value: MediSlot
@@ -227,6 +315,8 @@ Resources:
         PointInTimeRecoveryEnabled: true
       SSESpecification:
         SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt MediSlotDataKmsKey.Arn
       Tags:
         - Key: Project
           Value: MediSlot
@@ -252,6 +342,8 @@ Resources:
         PointInTimeRecoveryEnabled: true
       SSESpecification:
         SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt MediSlotDataKmsKey.Arn
       Tags:
         - Key: Project
           Value: MediSlot
@@ -278,6 +370,8 @@ Resources:
         PointInTimeRecoveryEnabled: true
       SSESpecification:
         SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt MediSlotDataKmsKey.Arn
       Tags:
         - Key: Project
           Value: MediSlot
@@ -301,11 +395,33 @@ Resources:
               SSEAlgorithm: AES256
       VersioningConfiguration:
         Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName:
+          Fn::ImportValue: !Sub medislot-${Environment}-AccessLogsBucketName
+        LogFilePrefix: doctor-photos/
       Tags:
         - Key: Project
           Value: MediSlot
         - Key: Environment
           Value: !Ref Environment
+
+  DoctorPhotosBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DoctorPhotosBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt DoctorPhotosBucket.Arn
+              - !Sub ${DoctorPhotosBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: false
 
   # Non-secret database connection values in SSM Parameter Store.
   DBHostParameter:
@@ -342,6 +458,12 @@ Resources:
         Environment: !Ref Environment
 
 Outputs:
+  MediSlotDataKmsKeyArn:
+    Description: Customer-managed KMS key used to encrypt MediSlot DynamoDB tables
+    Value: !GetAtt MediSlotDataKmsKey.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+
   DBEndpoint:
     Description: Private RDS MySQL endpoint
     Value: !GetAtt MediSlotDB.Endpoint.Address

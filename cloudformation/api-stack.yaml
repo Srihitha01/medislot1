@@ -1,0 +1,161 @@
+
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: MediSlot application API Gateway and Lambda integration
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+
+  AppRouterHandler:
+    Type: String
+    Default: app.lambda_handler
+    Description: Python module and handler for the application API router
+
+  EnableReservedConcurrency:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Enable one reserved concurrent execution per function only after the account has sufficient unreserved concurrency.
+
+Conditions:
+  UseReservedConcurrency: !Equals [!Ref EnableReservedConcurrency, "true"]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    MemorySize: 256
+    Timeout: 20
+    Tracing: Active
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        DB_NAME: medislot
+        DB_HOST_PARAMETER: !Sub /medislot/${Environment}/db/host
+        DB_PORT_PARAMETER: !Sub /medislot/${Environment}/db/port
+        DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/app-password
+        JWT_SECRET_PARAMETER: !Sub /medislot/${Environment}/auth/jwt-secret
+        SLOTS_TABLE: !Sub medislot-${Environment}-slots
+        IDEMPOTENCY_TABLE: !Sub medislot-${Environment}-idempotency
+        WAITLIST_TABLE: !Sub medislot-${Environment}-waitlist
+        HOLD_OFFERS_TABLE: !Sub medislot-${Environment}-hold-offers
+        AUTH_TOKENS_TABLE: !Sub medislot-${Environment}-auth-tokens
+        DISPATCH_LOG_TABLE: !Sub medislot-${Environment}-dispatch-log
+
+Resources:
+  ApplicationApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/medislot-${Environment}-application-api
+      RetentionInDays: 365
+      KmsKeyId:
+        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+
+  ApplicationDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub medislot-${Environment}-application-dlq
+      MessageRetentionPeriod: 1209600
+      # Use the AWS-managed SQS KMS key.
+      KmsMasterKeyId: alias/aws/sqs
+      KmsDataKeyReusePeriodSeconds: 300
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Patient-specific dynamic routes are intentionally uncached.
+  MediSlotApplicationApi:
+    Type: AWS::Serverless::Api #checkov:skip=CKV_AWS_120:Patient-specific dynamic responses must not be shared or cached; API Gateway cache clusters add hourly cost.
+    Properties:
+      Name: !Sub medislot-${Environment}-application-api
+      StageName: !Ref Environment
+      EndpointConfiguration:
+        Type: REGIONAL
+      TracingEnabled: true
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApplicationApiAccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath","status":"$context.status","responseLength":"$context.responseLength"}'
+      Cors:
+        AllowMethods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization,Idempotency-Key,X-Correlation-Id'"
+        AllowOrigin: "'*'"
+      Auth:
+        DefaultAuthorizer: MediSlotAuthorizer
+        Authorizers:
+          MediSlotAuthorizer:
+            FunctionArn:
+              Fn::ImportValue: !Sub medislot-${Environment}-AuthorizerFunctionArn
+            FunctionPayloadType: TOKEN
+            Identity:
+              Header: Authorization
+              ReauthorizeEvery: 0
+
+  AppRouterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-app-router
+      CodeUri: ../src/api/
+      Handler: !Ref AppRouterHandler
+      Role:
+        Fn::ImportValue: !Sub medislot-${Environment}-ApplicationLambdaRoleArn
+      KmsKeyArn:
+        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+      ReservedConcurrentExecutions: !If
+        - UseReservedConcurrency
+        - 1
+        - !Ref AWS::NoValue
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt ApplicationDeadLetterQueue.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
+      Events:
+        ApplicationRoot:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApplicationApi
+            Path: /
+            Method: ANY
+        ApplicationRoutes:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApplicationApi
+            Path: /{proxy+}
+            Method: ANY
+
+Outputs:
+  ApplicationApiId:
+    Description: MediSlot application REST API ID
+    Value: !Ref MediSlotApplicationApi
+    Export:
+      Name: !Sub medislot-${Environment}-ApplicationApiId
+
+  ApplicationApiBaseUrl:
+    Description: MediSlot application API base URL
+    Value: !Sub
+      - https://${ApiId}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Stage}
+      - ApiId: !Ref MediSlotApplicationApi
+        Stage: !Ref Environment
+
+  AppRouterFunctionName:
+    Description: Application router Lambda function name
+    Value: !Ref AppRouterFunction
+
+  AppRouterFunctionArn:
+    Description: Application router Lambda function ARN
+    Value: !GetAtt AppRouterFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-AppRouterFunctionArn

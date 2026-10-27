@@ -1,6 +1,6 @@
 
-AWSTemplateFormatVersion: '2010-09-09'
-Description: MediSlot network foundation
+AWSTemplateFormatVersion: "2010-09-09"
+Description: MediSlot network foundation with private SSM access
 
 Parameters:
   Environment:
@@ -42,24 +42,11 @@ Resources:
       CidrBlock: 10.0.1.0/24
       AvailabilityZone: !Select
         - 0
-        - !GetAZs ''
+        - !GetAZs ""
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-public-a
-
-  PublicSubnetB:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref MediSlotVPC
-      CidrBlock: 10.0.2.0/24
-      AvailabilityZone: !Select
-        - 1
-        - !GetAZs ''
-      MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: !Sub medislot-${Environment}-public-b
 
   PrivateSubnetA:
     Type: AWS::EC2::Subnet
@@ -68,7 +55,7 @@ Resources:
       CidrBlock: 10.0.11.0/24
       AvailabilityZone: !Select
         - 0
-        - !GetAZs ''
+        - !GetAZs ""
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
@@ -81,7 +68,7 @@ Resources:
       CidrBlock: 10.0.12.0/24
       AvailabilityZone: !Select
         - 1
-        - !GetAZs ''
+        - !GetAZs ""
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
@@ -107,12 +94,6 @@ Resources:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref PublicSubnetA
-      RouteTableId: !Ref PublicRouteTable
-
-  PublicSubnetBRouteAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PublicSubnetB
       RouteTableId: !Ref PublicRouteTable
 
   PrivateRouteTableA:
@@ -149,7 +130,8 @@ Resources:
       GroupDescription: MediSlot Lambda security group
       VpcId: !Ref MediSlotVPC
       SecurityGroupEgress:
-        - IpProtocol: -1
+        - Description: Allow Lambda outbound traffic to required AWS services and database dependencies
+          IpProtocol: -1
           CidrIp: 0.0.0.0/0
       Tags:
         - Key: Name
@@ -161,7 +143,8 @@ Resources:
       GroupDescription: MediSlot MySQL access from Lambda only
       VpcId: !Ref MediSlotVPC
       SecurityGroupIngress:
-        - IpProtocol: tcp
+        - Description: Allow MySQL connections only from MediSlot Lambda security group
+          IpProtocol: tcp
           FromPort: 3306
           ToPort: 3306
           SourceSecurityGroupId: !Ref LambdaSecurityGroup
@@ -191,6 +174,171 @@ Resources:
         - !Ref PrivateRouteTableA
         - !Ref PrivateRouteTableB
 
+  SSMEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTPS from MediSlot Lambda to SSM endpoint
+      VpcId: !Ref MediSlotVPC
+      SecurityGroupIngress:
+        - Description: Allow HTTPS from MediSlot Lambda security group to the SSM interface endpoint
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-ssm-endpoint-sg
+
+  ApiGatewayCloudWatchLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-apigateway-cloudwatch-logs
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  ApiGatewayAccountLogging:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchLogsRole.Arn
+
+  SSMInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref MediSlotVPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref SSMEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-ssm-endpoint
+
+  # Dedicated destination for S3 server access logs. This bucket intentionally does not log to itself.
+  # Dedicated access-log sink: S3 cannot write access logs to the same bucket it is logging.
+  AccessLogsBucket:
+    Type: AWS::S3::Bucket #checkov:skip=CKV_AWS_18:Dedicated destination bucket cannot log to itself.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub medislot-${AWS::AccountId}-${AWS::Region}-${Environment}-access-logs
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireAccessLogsAfter90Days
+            Status: Enabled
+            ExpirationInDays: 90
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  AccessLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AccessLogsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowS3ServerAccessLogDelivery
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource:
+              - !Sub ${AccessLogsBucket.Arn}/deployment-artifacts/*
+              - !Sub ${AccessLogsBucket.Arn}/doctor-photos/*
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt AccessLogsBucket.Arn
+              - !Sub ${AccessLogsBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  # Private deployment artifacts bucket used by AWS SAM to store packaged Lambda code.
+  DeploymentArtifactsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub medislot-${AWS::AccountId}-${AWS::Region}-${Environment}-artifacts
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: deployment-artifacts/
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldDeploymentArtifacts
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  DeploymentArtifactsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DeploymentArtifactsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt DeploymentArtifactsBucket.Arn
+              - !Sub ${DeploymentArtifactsBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
 Outputs:
   VpcId:
     Value: !Ref MediSlotVPC
@@ -201,11 +349,6 @@ Outputs:
     Value: !Ref PublicSubnetA
     Export:
       Name: !Sub medislot-${Environment}-PublicSubnetA
-
-  PublicSubnetBId:
-    Value: !Ref PublicSubnetB
-    Export:
-      Name: !Sub medislot-${Environment}-PublicSubnetB
 
   PrivateSubnetAId:
     Value: !Ref PrivateSubnetA
@@ -226,3 +369,21 @@ Outputs:
     Value: !Ref RDSSecurityGroup
     Export:
       Name: !Sub medislot-${Environment}-RDSSecurityGroup
+
+  DeploymentArtifactsBucketName:
+    Description: S3 bucket used by AWS SAM to store deployment code artifacts
+    Value: !Ref DeploymentArtifactsBucket
+    Export:
+      Name: !Sub medislot-${Environment}-DeploymentArtifactsBucketName
+
+  AccessLogsBucketName:
+    Description: Central S3 server access log destination bucket
+    Value: !Ref AccessLogsBucket
+    Export:
+      Name: !Sub medislot-${Environment}-AccessLogsBucketName
+
+  SSMInterfaceEndpointId:
+    Description: Private SSM interface endpoint ID
+    Value: !Ref SSMInterfaceEndpoint
+    Export:
+      Name: !Sub medislot-${Environment}-SSMInterfaceEndpointId

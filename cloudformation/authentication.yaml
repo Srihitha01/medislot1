@@ -1,0 +1,279 @@
+
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: MediSlot authentication API and Lambda functions using centralized IAM roles
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+
+  DBPasswordParameterVersion:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    Description: Version of the application database password in SSM SecureString
+
+  JWTSecretParameterVersion:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    Description: Version of the JWT signing secret in SSM SecureString
+
+  EnableReservedConcurrency:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Enable one reserved concurrent execution per function only after the account has sufficient unreserved concurrency.
+
+Conditions:
+  UseReservedConcurrency: !Equals [!Ref EnableReservedConcurrency, "true"]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    MemorySize: 256
+    Timeout: 15
+    Tracing: Active
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        DB_NAME: medislot
+        DB_HOST_PARAMETER: !Sub /medislot/${Environment}/db/host
+        DB_PORT_PARAMETER: !Sub /medislot/${Environment}/db/port
+        DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/app-password
+        DB_PASSWORD_PARAMETER_VERSION: !Ref DBPasswordParameterVersion
+        JWT_SECRET_PARAMETER: !Sub /medislot/${Environment}/auth/jwt-secret
+        JWT_SECRET_PARAMETER_VERSION: !Ref JWTSecretParameterVersion
+        AUTH_TOKENS_TABLE: !Sub medislot-${Environment}-auth-tokens
+        ACCESS_TOKEN_MINUTES: "15"
+        REFRESH_TOKEN_DAYS: "7"
+        PASSWORD_MIN_LENGTH: "10"
+        BCRYPT_ROUNDS: "12"
+
+Resources:
+  AuthApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/medislot-${Environment}-auth-api
+      RetentionInDays: 365
+      KmsKeyId:
+        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+
+  AuthDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub medislot-${Environment}-auth-dlq
+      MessageRetentionPeriod: 1209600
+      # Use the AWS-managed SQS KMS key: encrypted at rest without a customer-managed key charge.
+      KmsMasterKeyId: alias/aws/sqs
+      KmsDataKeyReusePeriodSeconds: 300
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Patient-specific/authentication responses are intentionally uncached.
+  MediSlotAuthApi:
+    Type: AWS::Serverless::Api #checkov:skip=CKV_AWS_120:Authentication responses must not be shared or cached; API Gateway cache clusters add hourly cost.
+    Properties:
+      Name: !Sub medislot-${Environment}-auth-api
+      StageName: !Ref Environment
+      EndpointConfiguration:
+        Type: REGIONAL
+      TracingEnabled: true
+      AccessLogSetting:
+        DestinationArn: !GetAtt AuthApiAccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath","status":"$context.status","responseLength":"$context.responseLength"}'
+      Cors:
+        AllowMethods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization,Idempotency-Key,X-Correlation-Id'"
+        AllowOrigin: "'*'"
+
+  RegisterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-register
+      CodeUri: ../src/auth/
+      Handler: register/register.lambda_handler
+      Role:
+        Fn::ImportValue: !Sub medislot-${Environment}-RegisterLambdaRoleArn
+      KmsKeyArn:
+        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+      ReservedConcurrentExecutions: !If [UseReservedConcurrency, 1, !Ref AWS::NoValue]
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt AuthDeadLetterQueue.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
+      Events:
+        DoctorRegister:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotAuthApi
+            Path: /auth/doctors/register
+            Method: POST
+        PatientRegister:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotAuthApi
+            Path: /auth/patients/register
+            Method: POST
+
+  LoginFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-login
+      CodeUri: ../src/auth/
+      Handler: login/login.lambda_handler
+      Role:
+        Fn::ImportValue: !Sub medislot-${Environment}-LoginLambdaRoleArn
+      KmsKeyArn:
+        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+      ReservedConcurrentExecutions: !If [UseReservedConcurrency, 1, !Ref AWS::NoValue]
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt AuthDeadLetterQueue.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
+      Events:
+        DoctorLogin:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotAuthApi
+            Path: /auth/doctors/login
+            Method: POST
+        PatientLogin:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotAuthApi
+            Path: /auth/patients/login
+            Method: POST
+
+  RefreshFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-refresh
+      CodeUri: ../src/auth/
+      Handler: refresh/refresh.lambda_handler
+      Role:
+        Fn::ImportValue: !Sub medislot-${Environment}-RefreshLambdaRoleArn
+      KmsKeyArn:
+        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+      ReservedConcurrentExecutions: !If [UseReservedConcurrency, 1, !Ref AWS::NoValue]
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt AuthDeadLetterQueue.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
+      Events:
+        Refresh:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotAuthApi
+            Path: /auth/refresh
+            Method: POST
+
+  LogoutFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-logout
+      CodeUri: ../src/auth/
+      Handler: logout/logout.lambda_handler
+      Role:
+        Fn::ImportValue: !Sub medislot-${Environment}-LogoutLambdaRoleArn
+      KmsKeyArn:
+        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+      ReservedConcurrentExecutions: !If [UseReservedConcurrency, 1, !Ref AWS::NoValue]
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt AuthDeadLetterQueue.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
+      Events:
+        Logout:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotAuthApi
+            Path: /auth/logout
+            Method: POST
+
+  AuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-authorizer
+      CodeUri: ../src/auth/
+      Handler: authorizer/authorizer.lambda_handler
+      Role:
+        Fn::ImportValue: !Sub medislot-${Environment}-AuthorizerLambdaRoleArn
+      KmsKeyArn:
+        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+      ReservedConcurrentExecutions: !If [UseReservedConcurrency, 1, !Ref AWS::NoValue]
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt AuthDeadLetterQueue.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
+
+Outputs:
+  AuthApiId:
+    Description: Authentication API ID
+    Value: !Ref MediSlotAuthApi
+    Export:
+      Name: !Sub medislot-${Environment}-AuthApiId
+
+  AuthApiBaseUrl:
+    Description: Base URL for MediSlot authentication endpoints
+    Value: !Sub
+      - https://${ApiId}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Stage}
+      - ApiId: !Ref MediSlotAuthApi
+        Stage: !Ref Environment
+
+  RegisterFunctionName:
+    Description: Registration Lambda function name
+    Value: !Ref RegisterFunction
+
+  LoginFunctionName:
+    Description: Login Lambda function name
+    Value: !Ref LoginFunction
+
+  RefreshFunctionName:
+    Description: Refresh-token Lambda function name
+    Value: !Ref RefreshFunction
+
+  LogoutFunctionName:
+    Description: Logout Lambda function name
+    Value: !Ref LogoutFunction
+
+  AuthorizerFunctionArn:
+    Description: Lambda authorizer function ARN for protected APIs
+    Value: !GetAtt AuthorizerFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-AuthorizerFunctionArn
