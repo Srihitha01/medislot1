@@ -170,6 +170,8 @@ Resources:
 
                   - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-application-${Environment}/*
 
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-api-${Environment}/*
+
               - Sid: ReadCloudFormationDeploymentState
 
                 Effect: Allow
@@ -195,6 +197,8 @@ Resources:
                   - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-auth-${Environment}/*
 
                   - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-application-${Environment}/*
+
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-api-${Environment}/*
 
               - Sid: ReadArtifactBucketMetadata
 
@@ -225,6 +229,42 @@ Resources:
                 Resource:
 
                   - !Sub arn:${AWS::Partition}:s3:::${DeploymentArtifactBucketName}/medislot/*
+
+              - Sid: UseMediSlotDataKeyForLambdaEnvironmentEncryption
+
+                Effect: Allow
+
+                Action:
+
+                  - kms:DescribeKey
+
+                  - kms:Encrypt
+
+                  - kms:Decrypt
+
+                  - kms:GenerateDataKey*
+
+                Resource:
+
+                  - Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+
+              - Sid: CreateLambdaServiceGrantForMediSlotDataKey
+
+                Effect: Allow
+
+                Action:
+
+                  - kms:CreateGrant
+
+                Resource:
+
+                  - Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+
+                Condition:
+
+                  Bool:
+
+                    kms:GrantIsForAWSResource: true
 
               - Sid: ManageMediSlotParameters
 

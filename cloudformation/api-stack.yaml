@@ -16,6 +16,17 @@ Parameters:
     Default: app.lambda_handler
     Description: Python module and handler for the application API router
 
+  EnableReservedConcurrency:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Enable one reserved concurrent execution per function only after the account has sufficient unreserved concurrency.
+
+Conditions:
+  UseReservedConcurrency: !Equals [!Ref EnableReservedConcurrency, "true"]
+
 Globals:
   Function:
     Runtime: python3.12
@@ -95,8 +106,9 @@ Resources:
       Handler: !Ref AppRouterHandler
       Role:
         Fn::ImportValue: !Sub medislot-${Environment}-ApplicationLambdaRoleArn
-      KmsKeyArn: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/lambda
-      ReservedConcurrentExecutions: 5
+      KmsKeyArn:
+        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+      ReservedConcurrentExecutions: !If [UseReservedConcurrency, 1, !Ref AWS::NoValue]
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt ApplicationDeadLetterQueue.Arn
