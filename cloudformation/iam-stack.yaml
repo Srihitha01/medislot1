@@ -38,19 +38,11 @@ Parameters:
 
     Default: medislot1
 
-  # Immutable IDs are included in GitHub's OIDC subject for repositories
-  # using GitHub's immutable subject-claim format.
-  GitHubOwnerId:
+  GitHubOidcProviderArn:
 
     Type: String
 
-    Default: "168816985"
-
-  GitHubRepositoryId:
-
-    Type: String
-
-    Default: "1434045145"
+    Description: ARN of the existing GitHub Actions OIDC provider
 
   DeploymentArtifactBucketName:
 
@@ -88,7 +80,7 @@ Resources:
 
             Principal:
 
-              Federated: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+              Federated: !Ref GitHubOidcProviderArn
 
             Action:
 
@@ -102,13 +94,7 @@ Resources:
 
               StringLike:
 
-                # This matches immutable GitHub OIDC subjects for jobs
-                # that use a GitHub Environment. Keep the environment names
-                # aligned with the workflow's `environment:` values.
-                token.actions.githubusercontent.com:sub:
-                  - !Sub "repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepository}@${GitHubRepositoryId}:environment:development"
-                  - !Sub "repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepository}@${GitHubRepositoryId}:environment:test"
-                  - !Sub "repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepository}@${GitHubRepositoryId}:environment:production"
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOwner}/${GitHubRepository}:*"
 
       Policies:
 
@@ -170,8 +156,6 @@ Resources:
 
                   - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-application-${Environment}/*
 
-                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-api-${Environment}/*
-
               - Sid: ReadCloudFormationDeploymentState
 
                 Effect: Allow
@@ -197,8 +181,6 @@ Resources:
                   - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-auth-${Environment}/*
 
                   - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-application-${Environment}/*
-
-                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-api-${Environment}/*
 
               - Sid: ReadArtifactBucketMetadata
 
@@ -229,42 +211,6 @@ Resources:
                 Resource:
 
                   - !Sub arn:${AWS::Partition}:s3:::${DeploymentArtifactBucketName}/medislot/*
-
-              - Sid: UseMediSlotDataKeyForLambdaEnvironmentEncryption
-
-                Effect: Allow
-
-                Action:
-
-                  - kms:DescribeKey
-
-                  - kms:Encrypt
-
-                  - kms:Decrypt
-
-                  - kms:GenerateDataKey*
-
-                Resource:
-
-                  - Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
-
-              - Sid: CreateLambdaServiceGrantForMediSlotDataKey
-
-                Effect: Allow
-
-                Action:
-
-                  - kms:CreateGrant
-
-                Resource:
-
-                  - Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
-
-                Condition:
-
-                  Bool:
-
-                    kms:GrantIsForAWSResource: true
 
               - Sid: ManageMediSlotParameters
 
@@ -379,24 +325,17 @@ Resources:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/port
 
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/app-password
-
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/password
 
         - PolicyName: SendAuthenticationFailuresToDLQ
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Sid: SendAuthenticationFailuresToAuthDLQ
-                Effect: Allow
-                Action:
-                  - sqs:SendMessage
-                Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-auth-dlq
-              # SchemaInitializerFunction uses this same registration role.
-              - Sid: SendSchemaInitializerFailuresToDLQ
-                Effect: Allow
-                Action:
-                  - sqs:SendMessage
-                Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-schema-init-dlq
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource:
+                  - !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-auth-dlq
+                  - !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-schema-init-dlq
 
   # ---------------------------------------------------------
 
