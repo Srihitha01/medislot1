@@ -1,7 +1,7 @@
 
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: MediSlot authentication API and Lambda functions using centralized IAM roles
+Description: MediSlot authentication Lambda functions exposed through the shared application API Gateway
 
 Parameters:
   Environment:
@@ -23,17 +23,6 @@ Parameters:
     Default: 1
     MinValue: 1
     Description: Version of the JWT signing secret in SSM SecureString
-
-  EnableReservedConcurrency:
-    Type: String
-    Default: "false"
-    AllowedValues:
-      - "true"
-      - "false"
-    Description: Enable one reserved concurrent execution per function only after the account has sufficient unreserved concurrency.
-
-Conditions:
-  UseReservedConcurrency: !Equals [!Ref EnableReservedConcurrency, "true"]
 
 Globals:
   Function:
@@ -58,14 +47,6 @@ Globals:
         BCRYPT_ROUNDS: "12"
 
 Resources:
-  AuthApiAccessLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub /aws/apigateway/medislot-${Environment}-auth-api
-      RetentionInDays: 365
-      KmsKeyId:
-        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
-
   AuthDeadLetterQueue:
     Type: AWS::SQS::Queue
     Properties:
@@ -80,25 +61,8 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # Patient-specific/authentication responses are intentionally uncached.
-  MediSlotAuthApi:
-    Type: AWS::Serverless::Api #checkov:skip=CKV_AWS_120:Authentication responses must not be shared or cached; API Gateway cache clusters add hourly cost.
-    Properties:
-      Name: !Sub medislot-${Environment}-auth-api
-      StageName: !Ref Environment
-      EndpointConfiguration:
-        Type: REGIONAL
-      TracingEnabled: true
-      AccessLogSetting:
-        DestinationArn: !GetAtt AuthApiAccessLogGroup.Arn
-        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath","status":"$context.status","responseLength":"$context.responseLength"}'
-      Cors:
-        AllowMethods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
-        AllowHeaders: "'Content-Type,Authorization,Idempotency-Key,X-Correlation-Id'"
-        AllowOrigin: "'*'"
-
   RegisterFunction:
-    Type: AWS::Serverless::Function
+    Type: AWS::Serverless::Function #checkov:skip=CKV_AWS_115:Reserved concurrency is disabled for development to preserve the account unreserved concurrency quota.
     Properties:
       FunctionName: !Sub medislot-${Environment}-register
       CodeUri: ../src/auth/
@@ -107,7 +71,6 @@ Resources:
         Fn::ImportValue: !Sub medislot-${Environment}-RegisterLambdaRoleArn
       KmsKeyArn:
         Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
-      ReservedConcurrentExecutions: !If [UseReservedConcurrency, 1, !Ref AWS::NoValue]
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt AuthDeadLetterQueue.Arn
@@ -117,22 +80,8 @@ Resources:
         SubnetIds:
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
-      Events:
-        DoctorRegister:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotAuthApi
-            Path: /auth/doctors/register
-            Method: POST
-        PatientRegister:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotAuthApi
-            Path: /auth/patients/register
-            Method: POST
-
   LoginFunction:
-    Type: AWS::Serverless::Function
+    Type: AWS::Serverless::Function #checkov:skip=CKV_AWS_115:Reserved concurrency is disabled for development to preserve the account unreserved concurrency quota.
     Properties:
       FunctionName: !Sub medislot-${Environment}-login
       CodeUri: ../src/auth/
@@ -141,7 +90,6 @@ Resources:
         Fn::ImportValue: !Sub medislot-${Environment}-LoginLambdaRoleArn
       KmsKeyArn:
         Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
-      ReservedConcurrentExecutions: !If [UseReservedConcurrency, 1, !Ref AWS::NoValue]
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt AuthDeadLetterQueue.Arn
@@ -151,22 +99,8 @@ Resources:
         SubnetIds:
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
-      Events:
-        DoctorLogin:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotAuthApi
-            Path: /auth/doctors/login
-            Method: POST
-        PatientLogin:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotAuthApi
-            Path: /auth/patients/login
-            Method: POST
-
   RefreshFunction:
-    Type: AWS::Serverless::Function
+    Type: AWS::Serverless::Function #checkov:skip=CKV_AWS_115:Reserved concurrency is disabled for development to preserve the account unreserved concurrency quota.
     Properties:
       FunctionName: !Sub medislot-${Environment}-refresh
       CodeUri: ../src/auth/
@@ -175,7 +109,6 @@ Resources:
         Fn::ImportValue: !Sub medislot-${Environment}-RefreshLambdaRoleArn
       KmsKeyArn:
         Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
-      ReservedConcurrentExecutions: !If [UseReservedConcurrency, 1, !Ref AWS::NoValue]
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt AuthDeadLetterQueue.Arn
@@ -185,16 +118,8 @@ Resources:
         SubnetIds:
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
-      Events:
-        Refresh:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotAuthApi
-            Path: /auth/refresh
-            Method: POST
-
   LogoutFunction:
-    Type: AWS::Serverless::Function
+    Type: AWS::Serverless::Function #checkov:skip=CKV_AWS_115:Reserved concurrency is disabled for development to preserve the account unreserved concurrency quota.
     Properties:
       FunctionName: !Sub medislot-${Environment}-logout
       CodeUri: ../src/auth/
@@ -203,7 +128,6 @@ Resources:
         Fn::ImportValue: !Sub medislot-${Environment}-LogoutLambdaRoleArn
       KmsKeyArn:
         Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
-      ReservedConcurrentExecutions: !If [UseReservedConcurrency, 1, !Ref AWS::NoValue]
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt AuthDeadLetterQueue.Arn
@@ -213,16 +137,8 @@ Resources:
         SubnetIds:
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
-      Events:
-        Logout:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotAuthApi
-            Path: /auth/logout
-            Method: POST
-
   AuthorizerFunction:
-    Type: AWS::Serverless::Function
+    Type: AWS::Serverless::Function #checkov:skip=CKV_AWS_115:Reserved concurrency is disabled for development to preserve the account unreserved concurrency quota.
     Properties:
       FunctionName: !Sub medislot-${Environment}-authorizer
       CodeUri: ../src/auth/
@@ -231,7 +147,6 @@ Resources:
         Fn::ImportValue: !Sub medislot-${Environment}-AuthorizerLambdaRoleArn
       KmsKeyArn:
         Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
-      ReservedConcurrentExecutions: !If [UseReservedConcurrency, 1, !Ref AWS::NoValue]
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt AuthDeadLetterQueue.Arn
@@ -243,19 +158,6 @@ Resources:
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
 
 Outputs:
-  AuthApiId:
-    Description: Authentication API ID
-    Value: !Ref MediSlotAuthApi
-    Export:
-      Name: !Sub medislot-${Environment}-AuthApiId
-
-  AuthApiBaseUrl:
-    Description: Base URL for MediSlot authentication endpoints
-    Value: !Sub
-      - https://${ApiId}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Stage}
-      - ApiId: !Ref MediSlotAuthApi
-        Stage: !Ref Environment
-
   RegisterFunctionName:
     Description: Registration Lambda function name
     Value: !Ref RegisterFunction
@@ -271,6 +173,30 @@ Outputs:
   LogoutFunctionName:
     Description: Logout Lambda function name
     Value: !Ref LogoutFunction
+
+  RegisterFunctionArn:
+    Description: Registration Lambda function ARN for the shared API Gateway
+    Value: !GetAtt RegisterFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-RegisterFunctionArn
+
+  LoginFunctionArn:
+    Description: Login Lambda function ARN for the shared API Gateway
+    Value: !GetAtt LoginFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-LoginFunctionArn
+
+  RefreshFunctionArn:
+    Description: Refresh-token Lambda function ARN for the shared API Gateway
+    Value: !GetAtt RefreshFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-RefreshFunctionArn
+
+  LogoutFunctionArn:
+    Description: Logout Lambda function ARN for the shared API Gateway
+    Value: !GetAtt LogoutFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-LogoutFunctionArn
 
   AuthorizerFunctionArn:
     Description: Lambda authorizer function ARN for protected APIs

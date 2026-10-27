@@ -1,7 +1,7 @@
 
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: MediSlot application API Gateway and Lambda integration
+Description: MediSlot single API Gateway for authentication and application operations
 
 Parameters:
   Environment:
@@ -23,7 +23,7 @@ Parameters:
     AllowedValues:
       - "true"
       - "false"
-    Description: Enable one reserved concurrent execution per function only after the account has sufficient unreserved concurrency.
+    Description: Enable one reserved concurrent execution for the router only when account quota allows it.
 
 Conditions:
   UseReservedConcurrency: !Equals [!Ref EnableReservedConcurrency, "true"]
@@ -63,7 +63,6 @@ Resources:
     Properties:
       QueueName: !Sub medislot-${Environment}-application-dlq
       MessageRetentionPeriod: 1209600
-      # Use the AWS-managed SQS KMS key.
       KmsMasterKeyId: alias/aws/sqs
       KmsDataKeyReusePeriodSeconds: 300
       Tags:
@@ -72,9 +71,8 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # Patient-specific dynamic routes are intentionally uncached.
   MediSlotApplicationApi:
-    Type: AWS::Serverless::Api #checkov:skip=CKV_AWS_120:Patient-specific dynamic responses must not be shared or cached; API Gateway cache clusters add hourly cost.
+    Type: AWS::Serverless::Api #checkov:skip=CKV_AWS_120:Patient-specific dynamic responses must not be shared or cached.
     Properties:
       Name: !Sub medislot-${Environment}-application-api
       StageName: !Ref Environment
@@ -89,7 +87,6 @@ Resources:
         AllowHeaders: "'Content-Type,Authorization,Idempotency-Key,X-Correlation-Id'"
         AllowOrigin: "'*'"
       Auth:
-        DefaultAuthorizer: MediSlotAuthorizer
         Authorizers:
           MediSlotAuthorizer:
             FunctionArn:
@@ -98,9 +95,160 @@ Resources:
             Identity:
               Header: Authorization
               ReauthorizeEvery: 0
+      DefinitionBody:
+        swagger: "2.0"
+        info:
+          title: MediSlot API
+          version: "1.0"
+        schemes:
+          - https
+        paths:
+          /auth/doctors/register:
+            post:
+              security: []
+              responses:
+                "200":
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri:
+                  Fn::Sub:
+                    - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
+                    - TargetArn:
+                        Fn::ImportValue: !Sub medislot-${Environment}-RegisterFunctionArn
+
+          /auth/patients/register:
+            post:
+              security: []
+              responses:
+                "200":
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri:
+                  Fn::Sub:
+                    - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
+                    - TargetArn:
+                        Fn::ImportValue: !Sub medislot-${Environment}-RegisterFunctionArn
+
+          /auth/doctors/login:
+            post:
+              security: []
+              responses:
+                "200":
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri:
+                  Fn::Sub:
+                    - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
+                    - TargetArn:
+                        Fn::ImportValue: !Sub medislot-${Environment}-LoginFunctionArn
+
+          /auth/patients/login:
+            post:
+              security: []
+              responses:
+                "200":
+                  description: Lambda proxy response
+              x-amazon-apigateway:integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri:
+                  Fn::Sub:
+                    - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
+                    - TargetArn:
+                        Fn::ImportValue: !Sub medislot-${Environment}-LoginFunctionArn
+
+          /auth/refresh:
+            post:
+              security: []
+              responses:
+                "200":
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri:
+                  Fn::Sub:
+                    - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
+                    - TargetArn:
+                        Fn::ImportValue: !Sub medislot-${Environment}-RefreshFunctionArn
+
+          /auth/logout:
+            post:
+              security: []
+              responses:
+                "200":
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri:
+                  Fn::Sub:
+                    - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
+                    - TargetArn:
+                        Fn::ImportValue: !Sub medislot-${Environment}-LogoutFunctionArn
+
+  RegisterDoctorApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName:
+        Fn::ImportValue: !Sub medislot-${Environment}-RegisterFunctionArn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApplicationApi}/*/POST/auth/doctors/register
+
+  RegisterPatientApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName:
+        Fn::ImportValue: !Sub medislot-${Environment}-RegisterFunctionArn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApplicationApi}/*/POST/auth/patients/register
+
+  LoginDoctorApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName:
+        Fn::ImportValue: !Sub medislot-${Environment}-LoginFunctionArn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApplicationApi}/*/POST/auth/doctors/login
+
+  LoginPatientApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName:
+        Fn::ImportValue: !Sub medislot-${Environment}-LoginFunctionArn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApplicationApi}/*/POST/auth/patients/login
+
+  RefreshApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName:
+        Fn::ImportValue: !Sub medislot-${Environment}-RefreshFunctionArn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApplicationApi}/*/POST/auth/refresh
+
+  LogoutApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName:
+        Fn::ImportValue: !Sub medislot-${Environment}-LogoutFunctionArn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApplicationApi}/*/POST/auth/logout
 
   AppRouterFunction:
-    Type: AWS::Serverless::Function
+    Type: AWS::Serverless::Function #checkov:skip=CKV_AWS_115:Reserved concurrency is disabled by default for development.
     Properties:
       FunctionName: !Sub medislot-${Environment}-app-router
       CodeUri: ../src/api/
@@ -129,22 +277,34 @@ Resources:
             RestApiId: !Ref MediSlotApplicationApi
             Path: /
             Method: ANY
+            Auth:
+              Authorizer: MediSlotAuthorizer
         ApplicationRoutes:
           Type: Api
           Properties:
             RestApiId: !Ref MediSlotApplicationApi
             Path: /{proxy+}
             Method: ANY
+            Auth:
+              Authorizer: MediSlotAuthorizer
+        HealthCheck:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MediSlotApplicationApi
+            Path: /health
+            Method: GET
+            Auth:
+              Authorizer: NONE
 
 Outputs:
   ApplicationApiId:
-    Description: MediSlot application REST API ID
+    Description: MediSlot single API Gateway ID
     Value: !Ref MediSlotApplicationApi
     Export:
       Name: !Sub medislot-${Environment}-ApplicationApiId
 
   ApplicationApiBaseUrl:
-    Description: MediSlot application API base URL
+    Description: MediSlot API base URL
     Value: !Sub
       - https://${ApiId}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Stage}
       - ApiId: !Ref MediSlotApplicationApi
