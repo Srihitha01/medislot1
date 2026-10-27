@@ -96,7 +96,7 @@ Resources:
         Fn::ImportValue: !Sub medislot-${Environment}-RegisterLambdaRoleArn
       KmsKeyArn:
         Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
-      ReservedConcurrentExecutions: 5
+      ReservedConcurrentExecutions: 1
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt AuthDeadLetterQueue.Arn
@@ -130,7 +130,7 @@ Resources:
         Fn::ImportValue: !Sub medislot-${Environment}-LoginLambdaRoleArn
       KmsKeyArn:
         Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
-      ReservedConcurrentExecutions: 5
+      ReservedConcurrentExecutions: 1
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt AuthDeadLetterQueue.Arn
@@ -164,7 +164,7 @@ Resources:
         Fn::ImportValue: !Sub medislot-${Environment}-RefreshLambdaRoleArn
       KmsKeyArn:
         Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
-      ReservedConcurrentExecutions: 5
+      ReservedConcurrentExecutions: 1
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt AuthDeadLetterQueue.Arn
@@ -192,7 +192,7 @@ Resources:
         Fn::ImportValue: !Sub medislot-${Environment}-LogoutLambdaRoleArn
       KmsKeyArn:
         Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
-      ReservedConcurrentExecutions: 5
+      ReservedConcurrentExecutions: 1
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt AuthDeadLetterQueue.Arn
@@ -220,7 +220,7 @@ Resources:
         Fn::ImportValue: !Sub medislot-${Environment}-AuthorizerLambdaRoleArn
       KmsKeyArn:
         Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
-      ReservedConcurrentExecutions: 5
+      ReservedConcurrentExecutions: 1
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt AuthDeadLetterQueue.Arn
