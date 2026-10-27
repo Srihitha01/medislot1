@@ -154,7 +154,7 @@ Resources:
               responses:
                 "200":
                   description: Lambda proxy response
-              x-amazon-apigateway:integration:
+              x-amazon-apigateway-integration:
                 type: aws_proxy
                 httpMethod: POST
                 uri:
