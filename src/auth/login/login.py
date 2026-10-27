@@ -1,4 +1,3 @@
-
 import hashlib
 import json
 import logging
@@ -209,17 +208,21 @@ def lambda_handler(event, context):
             },
         })
 
-    except (BotoCoreError, ClientError):
+    except (BotoCoreError, ClientError) as exc:
         logger.exception(json.dumps({
             "event": "login_dependency_error",
             "correlation_id": correlation_id,
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:200],
         }))
         return response(500, {"message": "Login could not be completed"})
     except (json.JSONDecodeError, UnicodeDecodeError):
         return response(400, {"message": "Invalid JSON request"})
-    except Exception:
+    except Exception as exc:
         logger.exception(json.dumps({
             "event": "login_failed",
             "correlation_id": correlation_id,
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:200],
         }))
         return response(500, {"message": "Login could not be completed"})

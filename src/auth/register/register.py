@@ -1,4 +1,3 @@
-
 import json
 import logging
 import os
@@ -241,11 +240,13 @@ def lambda_handler(event, context):
             },
         )
 
-    except (BotoCoreError, ClientError):
+    except (BotoCoreError, ClientError) as exc:
         log_event(
             "error",
             "registration_configuration_error",
             correlation_id,
+            error_type=type(exc).__name__,
+            error=str(exc)[:200],
         )
         return response(
             500,
@@ -255,11 +256,13 @@ def lambda_handler(event, context):
             },
         )
 
-    except Exception:
+    except Exception as exc:
         log_event(
             "error",
             "registration_failed",
             correlation_id,
+            error_type=type(exc).__name__,
+            error=str(exc)[:200],
         )
         return response(
             500,

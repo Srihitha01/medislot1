@@ -1,4 +1,3 @@
-
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: MediSlot authentication Lambda functions exposed through the shared application API Gateway
@@ -11,6 +10,11 @@ Parameters:
       - dev
       - test
       - prod
+
+  DBUsername:
+    Type: String
+    Default: medislot_app
+    Description: MySQL application user the Lambda functions connect as
 
   DBPasswordParameterVersion:
     Type: Number
@@ -34,6 +38,7 @@ Globals:
       Variables:
         ENVIRONMENT: !Ref Environment
         DB_NAME: medislot
+        DB_USER: !Ref DBUsername
         DB_HOST_PARAMETER: !Sub /medislot/${Environment}/db/host
         DB_PORT_PARAMETER: !Sub /medislot/${Environment}/db/port
         DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/app-password
