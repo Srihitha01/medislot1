@@ -54,7 +54,19 @@ Resources:
     Properties:
       QueueName: !Sub medislot-${Environment}-auth-dlq
       MessageRetentionPeriod: 1209600
-      # Use the AWS-managed SQS KMS key: encrypted at rest without a customer-managed key charge.
+      KmsMasterKeyId: alias/aws/sqs
+      KmsDataKeyReusePeriodSeconds: 300
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  SchemaInitializerDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub medislot-${Environment}-schema-init-dlq
+      MessageRetentionPeriod: 1209600
       KmsMasterKeyId: alias/aws/sqs
       KmsDataKeyReusePeriodSeconds: 300
       Tags:
@@ -82,6 +94,7 @@ Resources:
         SubnetIds:
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
+
   LoginFunction:
     Type: AWS::Serverless::Function #checkov:skip=CKV_AWS_115:Reserved concurrency is disabled for development to preserve the account unreserved concurrency quota.
     Properties:
@@ -101,6 +114,7 @@ Resources:
         SubnetIds:
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
+
   RefreshFunction:
     Type: AWS::Serverless::Function #checkov:skip=CKV_AWS_115:Reserved concurrency is disabled for development to preserve the account unreserved concurrency quota.
     Properties:
@@ -120,6 +134,7 @@ Resources:
         SubnetIds:
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
+
   LogoutFunction:
     Type: AWS::Serverless::Function #checkov:skip=CKV_AWS_115:Reserved concurrency is disabled for development to preserve the account unreserved concurrency quota.
     Properties:
@@ -139,6 +154,7 @@ Resources:
         SubnetIds:
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
+
   AuthorizerFunction:
     Type: AWS::Serverless::Function #checkov:skip=CKV_AWS_115:Reserved concurrency is disabled for development to preserve the account unreserved concurrency quota.
     Properties:
@@ -172,6 +188,10 @@ Resources:
         Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
       Timeout: 60
       MemorySize: 256
+      ReservedConcurrentExecutions: 2
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt SchemaInitializerDeadLetterQueue.Arn
       VpcConfig:
         SecurityGroupIds:
           - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup
