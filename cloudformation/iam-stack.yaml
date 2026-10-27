@@ -52,12 +52,6 @@ Parameters:
 
     Default: "1434045145"
 
-  GitHubOidcProviderArn:
-
-    Type: String
-
-    Description: ARN of the existing GitHub Actions OIDC provider
-
   DeploymentArtifactBucketName:
 
     Type: String
@@ -94,7 +88,7 @@ Resources:
 
             Principal:
 
-              Federated: !Ref GitHubOidcProviderArn
+              Federated: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
 
             Action:
 

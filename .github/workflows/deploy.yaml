@@ -285,20 +285,15 @@ jobs:
       - name: Deploy IAM stack using Change Set
         shell: bash
         env:
-          OIDC_PROVIDER_ARN: ${{ vars.OIDC_PROVIDER_ARN }}
           ARTIFACT_BUCKET: ${{ needs.deploy_network.outputs.artifact_bucket }}
         run: |
           set -euo pipefail
-          if [[ -z "$OIDC_PROVIDER_ARN" ]]; then
-            echo "::error::Set repository variable OIDC_PROVIDER_ARN to the existing GitHub OIDC provider ARN."
-            exit 1
-          fi
           if aws cloudformation describe-stacks --stack-name "$IAM_STACK" >/dev/null 2>&1; then change_type=UPDATE; else change_type=CREATE; fi
           change_set="${IAM_STACK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           aws cloudformation create-change-set \
             --stack-name "$IAM_STACK" --change-set-name "$change_set" --change-set-type "$change_type" \
             --template-body file://cloudformation/iam-stack.yaml \
-            --parameters ParameterKey=Environment,ParameterValue="$ENVIRONMENT" ParameterKey=GitHubOwner,ParameterValue="${GITHUB_REPOSITORY_OWNER}" ParameterKey=GitHubRepository,ParameterValue="${GITHUB_REPOSITORY#*/}" ParameterKey=GitHubOidcProviderArn,ParameterValue="$OIDC_PROVIDER_ARN" ParameterKey=DeploymentArtifactBucketName,ParameterValue="$ARTIFACT_BUCKET" \
+            --parameters ParameterKey=Environment,ParameterValue="$ENVIRONMENT" ParameterKey=GitHubOwner,ParameterValue="${GITHUB_REPOSITORY_OWNER}" ParameterKey=GitHubRepository,ParameterValue="${GITHUB_REPOSITORY#*/}" ParameterKey=DeploymentArtifactBucketName,ParameterValue="$ARTIFACT_BUCKET" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --description "GitHub Actions run ${GITHUB_RUN_ID}"
           if ! aws cloudformation wait change-set-create-complete --stack-name "$IAM_STACK" --change-set-name "$change_set"; then
