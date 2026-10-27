@@ -76,6 +76,7 @@ Resources:
     Properties:
       Name: !Sub medislot-${Environment}-application-api
       StageName: !Ref Environment
+      MergeDefinitions: true
       EndpointConfiguration:
         Type: REGIONAL
       TracingEnabled: true
