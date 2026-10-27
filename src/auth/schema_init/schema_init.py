@@ -67,7 +67,7 @@ def lambda_handler(event, context):
         )
 
         # This file is included in the existing schema-init Lambda package by SAM.
-        schema_path = Path(__file__).with_name("rds-schema.sql")
+        schema_path = Path(__file__).with_name("schema.sql")
         if not schema_path.is_file():
             raise FileNotFoundError(
                 f"Required schema file is missing from Lambda package: {schema_path.name}"
@@ -80,7 +80,7 @@ def lambda_handler(event, context):
             if statement.strip()
         ]
         if not statements:
-            raise ValueError("rds-schema.sql contains no SQL statements")
+            raise ValueError("schema.sql contains no SQL statements")
 
         # Connect to RDS using the RDS master account to initialize the schema.
         connection = pymysql.connect(
