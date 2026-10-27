@@ -187,6 +187,10 @@ Resources:
       Description: Initializes the MySQL schema from the repository schema.sql file
       CodeUri: ../src/auth/
       Handler: schema_init/schema_init.lambda_handler
+      Environment:
+        Variables:
+          DB_APP_USERNAME: !Ref DBUsername
+          DB_APP_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/app-password
       # The centralized IAM stack must grant sqs:SendMessage on
       # medislot-${Environment}-schema-init-dlq to RegisterLambdaRole.
       Role:
