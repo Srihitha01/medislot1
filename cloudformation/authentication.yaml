@@ -37,6 +37,8 @@ Globals:
         DB_HOST_PARAMETER: !Sub /medislot/${Environment}/db/host
         DB_PORT_PARAMETER: !Sub /medislot/${Environment}/db/port
         DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/app-password
+        DB_MASTER_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
+        DB_MASTER_USERNAME: medislotadmin
         DB_PASSWORD_PARAMETER_VERSION: !Ref DBPasswordParameterVersion
         JWT_SECRET_PARAMETER: !Sub /medislot/${Environment}/auth/jwt-secret
         JWT_SECRET_PARAMETER_VERSION: !Ref JWTSecretParameterVersion
@@ -150,6 +152,26 @@ Resources:
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt AuthDeadLetterQueue.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
+
+  SchemaInitializerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-schema-init
+      Description: Initializes the MySQL schema from the repository schema.sql file
+      CodeUri: ../src/auth/
+      Handler: schema_init/schema_init.lambda_handler
+      Role:
+        Fn::ImportValue: !Sub medislot-${Environment}-RegisterLambdaRoleArn
+      KmsKeyArn:
+        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+      Timeout: 60
+      MemorySize: 256
       VpcConfig:
         SecurityGroupIds:
           - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup

@@ -327,9 +327,37 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Package authentication template
+      - name: Include the existing database schema in the initializer package
+        shell: bash
         run: |
-          sam package --template-file cloudformation/authentication.yaml --s3-bucket "${{ needs.deploy_network.outputs.artifact_bucket }}" --s3-prefix medislot/authentication --region "$AWS_REGION" --output-template-file /tmp/auth-packaged.yaml
+          set -euo pipefail
+          mkdir -p src/auth/schema_init
+          if [[ -s databases/schema.sql ]]; then
+            cp databases/schema.sql src/auth/schema_init/schema.sql
+          elif [[ -s database/schema.sql ]]; then
+            cp database/schema.sql src/auth/schema_init/schema.sql
+          else
+            echo "::error::Could not find databases/schema.sql or database/schema.sql"
+            exit 1
+          fi
+          test -s src/auth/requirements.txt
+          grep -Eiq '^bcrypt([<=>!~].*)?$' src/auth/requirements.txt
+
+      - name: Build authentication Lambdas and install requirements
+        run: |
+          sam build --template-file cloudformation/authentication.yaml --use-container
+
+      - name: Package authentication template
+        env:
+          ARTIFACT_BUCKET: ${{ needs.deploy_network.outputs.artifact_bucket }}
+        run: |
+          set -euo pipefail
+          sam package \\
+            --template-file .aws-sam/build/template.yaml \\
+            --s3-bucket "$ARTIFACT_BUCKET" \\
+            --s3-prefix "medislot/authentication/${GITHUB_SHA}/${GITHUB_RUN_ID}" \\
+            --region "$AWS_REGION" \\
+            --output-template-file /tmp/auth-packaged.yaml
       - name: Deploy authentication stack using Change Set
         shell: bash
         env:
@@ -359,9 +387,60 @@ jobs:
           aws cloudformation execute-change-set --stack-name "$AUTH_STACK" --change-set-name "$change_set"
           if [[ "$change_type" == CREATE ]]; then aws cloudformation wait stack-create-complete --stack-name "$AUTH_STACK"; else aws cloudformation wait stack-update-complete --stack-name "$AUTH_STACK"; fi
 
+  initialize_database_schema:
+    name: Initialize RDS schema
+    needs: [deploy_auth, deploy_data, deploy_network]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: development
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Configure AWS credentials using GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Wait for RDS to be available
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws rds wait db-instance-available --db-instance-identifier "medislot-${ENVIRONMENT}-mysql"
+
+      - name: Invoke the CloudFormation-managed schema initializer
+        shell: bash
+        run: |
+          set -euo pipefail
+          FUNCTION_NAME="medislot-${ENVIRONMENT}-schema-init"
+          aws lambda invoke \\
+            --function-name "$FUNCTION_NAME" \\
+            --invocation-type RequestResponse \\
+            --cli-binary-format raw-in-base64-out \\
+            --payload '{"action":"initialize"}' \\
+            /tmp/schema-init-response.json > /tmp/schema-init-metadata.json
+          cat /tmp/schema-init-metadata.json
+          cat /tmp/schema-init-response.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          metadata = json.loads(Path("/tmp/schema-init-metadata.json").read_text())
+          if metadata.get("FunctionError"):
+              raise SystemExit("Schema initializer Lambda returned FunctionError.")
+          result = json.loads(Path("/tmp/schema-init-response.json").read_text())
+          if result.get("statusCode") != 200:
+              raise SystemExit(f"Schema initialization failed: {result}")
+          body = result.get("body", {})
+          if isinstance(body, str):
+              body = json.loads(body)
+          if body.get("status") != "success":
+              raise SystemExit(f"Schema initialization failed: {body}")
+          print("Database schema initialization succeeded.")
+
   deploy_api:
     name: Deploy API Stack
-    needs: [deploy_auth, deploy_network]
+    needs: [deploy_auth, deploy_network, initialize_database_schema]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: development

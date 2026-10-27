@@ -380,6 +380,8 @@ Resources:
 
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/app-password
 
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/password
+
         - PolicyName: SendAuthenticationFailuresToDLQ
           PolicyDocument:
             Version: "2012-10-17"
