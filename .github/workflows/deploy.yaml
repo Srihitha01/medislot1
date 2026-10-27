@@ -236,7 +236,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - name: Package data template
         run: |
-          sam package --template-file cloudformation/data-stack.yaml --s3-bucket "${{ needs.deploy_network.outputs.artifact_bucket }}" --s3-prefix medislot/data --region "$AWS_REGION" --output-template-file /tmp/data-packaged.yaml
+          sam package --force-upload --template-file cloudformation/data-stack.yaml --s3-bucket "${{ needs.deploy_network.outputs.artifact_bucket }}" --s3-prefix medislot/data --region "$AWS_REGION" --output-template-file /tmp/data-packaged.yaml
       - name: Deploy data stack using Change Set
         shell: bash
         env:
@@ -331,7 +331,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - name: Package authentication template
         run: |
-          sam package --template-file cloudformation/authentication.yaml --s3-bucket "${{ needs.deploy_network.outputs.artifact_bucket }}" --s3-prefix medislot/authentication --region "$AWS_REGION" --output-template-file /tmp/auth-packaged.yaml
+          sam package --force-upload --template-file cloudformation/authentication.yaml --s3-bucket "${{ needs.deploy_network.outputs.artifact_bucket }}" --s3-prefix medislot/authentication --region "$AWS_REGION" --output-template-file /tmp/auth-packaged.yaml
       - name: Deploy authentication stack using Change Set
         shell: bash
         env:
@@ -382,7 +382,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - name: Package API template
         run: |
-          sam package --template-file cloudformation/api-stack.yaml --s3-bucket "${{ needs.deploy_network.outputs.artifact_bucket }}" --s3-prefix medislot/api --region "$AWS_REGION" --output-template-file /tmp/api-packaged.yaml
+          sam package --force-upload --template-file cloudformation/api-stack.yaml --s3-bucket "${{ needs.deploy_network.outputs.artifact_bucket }}" --s3-prefix medislot/api --region "$AWS_REGION" --output-template-file /tmp/api-packaged.yaml
       - name: Deploy API stack using Change Set
         shell: bash
         run: |
