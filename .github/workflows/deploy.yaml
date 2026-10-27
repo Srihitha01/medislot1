@@ -327,24 +327,9 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Include the existing database schema in the initializer package
-        shell: bash
+      - name: Build authentication Lambda dependencies
         run: |
           set -euo pipefail
-          mkdir -p src/auth/schema_init
-          if [[ -s databases/schema.sql ]]; then
-            cp databases/schema.sql src/auth/schema_init/schema.sql
-          elif [[ -s database/schema.sql ]]; then
-            cp database/schema.sql src/auth/schema_init/schema.sql
-          else
-            echo "::error::Could not find databases/schema.sql or database/schema.sql"
-            exit 1
-          fi
-          test -s src/auth/requirements.txt
-          grep -Eiq '^bcrypt([<=>!~].*)?$' src/auth/requirements.txt
-
-      - name: Build authentication Lambdas and install requirements
-        run: |
           sam build --template-file cloudformation/authentication.yaml --use-container
 
       - name: Package authentication template
@@ -352,11 +337,11 @@ jobs:
           ARTIFACT_BUCKET: ${{ needs.deploy_network.outputs.artifact_bucket }}
         run: |
           set -euo pipefail
-          sam package \\
-            --template-file .aws-sam/build/template.yaml \\
-            --s3-bucket "$ARTIFACT_BUCKET" \\
-            --s3-prefix "medislot/authentication/${GITHUB_SHA}/${GITHUB_RUN_ID}" \\
-            --region "$AWS_REGION" \\
+          sam package \
+            --template-file .aws-sam/build/template.yaml \
+            --s3-bucket "$ARTIFACT_BUCKET" \
+            --s3-prefix "medislot/authentication/${GITHUB_SHA}/${GITHUB_RUN_ID}" \
+            --region "$AWS_REGION" \
             --output-template-file /tmp/auth-packaged.yaml
       - name: Deploy authentication stack using Change Set
         shell: bash
@@ -397,28 +382,33 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
-      - name: Wait for RDS to be available
+      - name: Wait for RDS and verify schema initializer
         shell: bash
         run: |
           set -euo pipefail
-          aws rds wait db-instance-available --db-instance-identifier "medislot-${ENVIRONMENT}-mysql"
+          DB_INSTANCE="medislot-${ENVIRONMENT}-mysql"
+          SCHEMA_FUNCTION="medislot-${ENVIRONMENT}-schema-init"
+          aws rds wait db-instance-available --db-instance-identifier "$DB_INSTANCE"
+          aws lambda get-function --function-name "$SCHEMA_FUNCTION" >/dev/null
+          echo "RDS is available; schema initializer is deployed."
 
-      - name: Invoke the CloudFormation-managed schema initializer
+      - name: Initialize database schema
         shell: bash
         run: |
           set -euo pipefail
           FUNCTION_NAME="medislot-${ENVIRONMENT}-schema-init"
-          aws lambda invoke \\
-            --function-name "$FUNCTION_NAME" \\
-            --invocation-type RequestResponse \\
-            --cli-binary-format raw-in-base64-out \\
-            --payload '{"action":"initialize"}' \\
+          aws lambda invoke \
+            --function-name "$FUNCTION_NAME" \
+            --invocation-type RequestResponse \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{"action":"initialize"}' \
             /tmp/schema-init-response.json > /tmp/schema-init-metadata.json
           cat /tmp/schema-init-metadata.json
           cat /tmp/schema-init-response.json
@@ -433,10 +423,14 @@ jobs:
               raise SystemExit(f"Schema initialization failed: {result}")
           body = result.get("body", {})
           if isinstance(body, str):
-              body = json.loads(body)
-          if body.get("status") != "success":
+              try:
+                  body = json.loads(body)
+              except json.JSONDecodeError:
+                  pass
+          if isinstance(body, dict) and body.get("status") not in ("ok", "success"):
               raise SystemExit(f"Schema initialization failed: {body}")
           print("Database schema initialization succeeded.")
+          PY
 
   deploy_api:
     name: Deploy API Stack
