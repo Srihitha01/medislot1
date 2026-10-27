@@ -94,6 +94,8 @@ Resources:
       Handler: register/register.lambda_handler
       Role:
         Fn::ImportValue: !Sub medislot-${Environment}-RegisterLambdaRoleArn
+      KmsKeyArn:
+        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
       ReservedConcurrentExecutions: 5
       DeadLetterQueue:
         Type: SQS
@@ -126,6 +128,8 @@ Resources:
       Handler: login/login.lambda_handler
       Role:
         Fn::ImportValue: !Sub medislot-${Environment}-LoginLambdaRoleArn
+      KmsKeyArn:
+        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
       ReservedConcurrentExecutions: 5
       DeadLetterQueue:
         Type: SQS
@@ -158,6 +162,8 @@ Resources:
       Handler: refresh/refresh.lambda_handler
       Role:
         Fn::ImportValue: !Sub medislot-${Environment}-RefreshLambdaRoleArn
+      KmsKeyArn:
+        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
       ReservedConcurrentExecutions: 5
       DeadLetterQueue:
         Type: SQS
@@ -184,6 +190,8 @@ Resources:
       Handler: logout/logout.lambda_handler
       Role:
         Fn::ImportValue: !Sub medislot-${Environment}-LogoutLambdaRoleArn
+      KmsKeyArn:
+        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
       ReservedConcurrentExecutions: 5
       DeadLetterQueue:
         Type: SQS
@@ -210,6 +218,8 @@ Resources:
       Handler: authorizer/authorizer.lambda_handler
       Role:
         Fn::ImportValue: !Sub medislot-${Environment}-AuthorizerLambdaRoleArn
+      KmsKeyArn:
+        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
       ReservedConcurrentExecutions: 5
       DeadLetterQueue:
         Type: SQS
