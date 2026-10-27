@@ -176,7 +176,7 @@ Resources:
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
 
   SchemaInitializerFunction:
-    Type: AWS::Serverless::Function
+    Type: AWS::Serverless::Function #checkov:skip=CKV_AWS_115:Reserved concurrency is disabled because the account unreserved concurrency quota is at its minimum.
     Properties:
       FunctionName: !Sub medislot-${Environment}-schema-init
       Description: Initializes the MySQL schema from the repository schema.sql file
@@ -190,7 +190,6 @@ Resources:
         Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
       Timeout: 60
       MemorySize: 256
-      ReservedConcurrentExecutions: 2
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt SchemaInitializerDeadLetterQueue.Arn
