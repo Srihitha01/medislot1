@@ -182,6 +182,8 @@ Resources:
       Description: Initializes the MySQL schema from the repository schema.sql file
       CodeUri: ../src/auth/
       Handler: schema_init/schema_init.lambda_handler
+      # The centralized IAM stack must grant sqs:SendMessage on
+      # medislot-${Environment}-schema-init-dlq to RegisterLambdaRole.
       Role:
         Fn::ImportValue: !Sub medislot-${Environment}-RegisterLambdaRoleArn
       KmsKeyArn:
@@ -229,13 +231,13 @@ Outputs:
       Name: !Sub medislot-${Environment}-LoginFunctionArn
 
   RefreshFunctionArn:
-    Description: Refresh-token Lambda function ARN for the shared API Gateway
+    Description: Refresh-token Lambda function ARN
     Value: !GetAtt RefreshFunction.Arn
     Export:
       Name: !Sub medislot-${Environment}-RefreshFunctionArn
 
   LogoutFunctionArn:
-    Description: Logout Lambda function ARN for the shared API Gateway
+    Description: Logout Lambda function ARN
     Value: !GetAtt LogoutFunction.Arn
     Export:
       Name: !Sub medislot-${Environment}-LogoutFunctionArn

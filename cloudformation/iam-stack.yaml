@@ -386,9 +386,17 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Effect: Allow
-                Action: sqs:SendMessage
+              - Sid: SendAuthenticationFailuresToAuthDLQ
+                Effect: Allow
+                Action:
+                  - sqs:SendMessage
                 Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-auth-dlq
+              # SchemaInitializerFunction uses this same registration role.
+              - Sid: SendSchemaInitializerFailuresToDLQ
+                Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-schema-init-dlq
 
   # ---------------------------------------------------------
 
