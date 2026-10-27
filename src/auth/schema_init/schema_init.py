@@ -1,4 +1,3 @@
-
 import json
 import logging
 import os
@@ -15,10 +14,7 @@ ssm = boto3.client("ssm")
 
 
 def get_parameter(name, decrypt=False):
-    response = ssm.get_parameter(
-        Name=name,
-        WithDecryption=decrypt,
-    )
+    response = ssm.get_parameter(Name=name, WithDecryption=decrypt)
     return response["Parameter"]["Value"]
 
 
@@ -35,14 +31,12 @@ def lambda_handler(event, context):
         }
 
     connection = None
+    app_connection = None
 
     try:
         environment = os.environ["ENVIRONMENT"]
         database = os.environ.get("DB_NAME", "medislot")
-        app_user = os.environ.get(
-            "DB_APP_USERNAME",
-            os.environ.get("DB_USER", "medislot_app"),
-        )
+        app_user = os.environ.get("DB_APP_USERNAME", os.environ.get("DB_USER", "medislot_app"))
 
         if not re.fullmatch(r"[A-Za-z0-9_]{1,64}", database):
             raise ValueError("Invalid database name")
@@ -50,21 +44,13 @@ def lambda_handler(event, context):
             raise ValueError("Invalid application database username")
 
         host = get_parameter(
-            os.environ.get(
-                "DB_HOST_PARAMETER",
-                f"/medislot/{environment}/db/host",
-            )
+            os.environ.get("DB_HOST_PARAMETER", f"/medislot/{environment}/db/host")
         )
         port = int(get_parameter(
-            os.environ.get(
-                "DB_PORT_PARAMETER",
-                f"/medislot/{environment}/db/port",
-            )
+            os.environ.get("DB_PORT_PARAMETER", f"/medislot/{environment}/db/port")
         ))
 
-        master_user = os.environ.get(
-            "DB_MASTER_USERNAME", "medislotadmin"
-        )
+        master_user = os.environ.get("DB_MASTER_USERNAME", "medislotadmin")
         master_password = get_parameter(
             os.environ.get(
                 "DB_MASTER_PASSWORD_PARAMETER",
@@ -80,22 +66,23 @@ def lambda_handler(event, context):
             decrypt=True,
         )
 
-        schema_path = Path(__file__).with_name("schema.sql")
+        # This file is included in the existing schema-init Lambda package by SAM.
+        schema_path = Path(__file__).with_name("rds-schema.sql")
         if not schema_path.is_file():
             raise FileNotFoundError(
-                "schema.sql is missing from the Lambda package"
+                f"Required schema file is missing from Lambda package: {schema_path.name}"
             )
 
+        # The project schema contains ordinary SQL statements separated by semicolons.
         statements = [
             statement.strip()
-            for statement in schema_path.read_text(
-                encoding="utf-8"
-            ).split(";")
+            for statement in schema_path.read_text(encoding="utf-8").split(";")
             if statement.strip()
         ]
         if not statements:
-            raise ValueError("schema.sql contains no SQL statements")
+            raise ValueError("rds-schema.sql contains no SQL statements")
 
+        # Connect to RDS using the RDS master account to initialize the schema.
         connection = pymysql.connect(
             host=host,
             port=port,
@@ -109,26 +96,28 @@ def lambda_handler(event, context):
         )
 
         with connection.cursor() as cursor:
-            # Initialize existing tables without deleting data.
             for statement in statements:
                 cursor.execute(statement)
 
-            # Escape % as %% because PyMySQL performs %-style formatting.
+            # MySQL 8 / RDS requires the account to exist before GRANT.
+            # Keep the wildcard host as '%' consistently in all three statements.
+            # Use %% only in statements that have PyMySQL %s placeholders, because
+            # PyMySQL interpolates the query string when parameters are supplied.
             cursor.execute(
-                f"CREATE USER IF NOT EXISTS '{app_user}'@'%%' "
-                "IDENTIFIED BY %s",
+                f"CREATE USER IF NOT EXISTS '{app_user}'@'%%' IDENTIFIED BY %s",
                 (app_password,),
             )
             cursor.execute(
                 f"ALTER USER '{app_user}'@'%%' IDENTIFIED BY %s",
                 (app_password,),
             )
+            # No bound parameters here, so use a literal single '%' host.
             cursor.execute(
-                f"GRANT SELECT, INSERT, UPDATE, DELETE "
-                f"ON `{database}`.* TO '{app_user}'@'%%'"
+                f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* "
+                f"TO '{app_user}'@'%'"
             )
 
-        # Verify application credentials using a real database connection.
+        # Verify the application credentials can connect to the same RDS database.
         app_connection = pymysql.connect(
             host=host,
             port=port,
@@ -137,14 +126,19 @@ def lambda_handler(event, context):
             database=database,
             connect_timeout=10,
             read_timeout=10,
+            write_timeout=10,
         )
-        try:
-            with app_connection.cursor() as cursor:
-                cursor.execute("SELECT 1")
-                cursor.fetchone()
-        finally:
-            app_connection.close()
+        with app_connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
 
+        result = {
+            "status": "success",
+            "environment": environment,
+            "database": database,
+            "application_user_verified": True,
+            "statements_executed": len(statements),
+        }
         logger.info(json.dumps({
             "event": "database_schema_and_app_user_verified",
             "environment": environment,
@@ -154,16 +148,7 @@ def lambda_handler(event, context):
             "requestId": getattr(context, "aws_request_id", None),
         }))
 
-        return {
-            "statusCode": 200,
-            "body": json.dumps({
-                "status": "success",
-                "environment": environment,
-                "database": database,
-                "application_user_verified": True,
-                "statements_executed": len(statements),
-            }),
-        }
+        return {"statusCode": 200, "body": json.dumps(result)}
 
     except Exception:
         logger.exception(json.dumps({
@@ -173,5 +158,7 @@ def lambda_handler(event, context):
         raise
 
     finally:
+        if app_connection is not None:
+            app_connection.close()
         if connection is not None:
             connection.close()

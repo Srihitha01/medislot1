@@ -327,10 +327,20 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+      - name: Verify RDS schema file is present in the existing Lambda package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s src/auth/schema_init/schema_init.py
+          test -s src/auth/schema_init/rds-schema.sql
+          echo "Found schema initializer and src/auth/schema_init/rds-schema.sql."
+
       - name: Build authentication Lambda dependencies
         run: |
           set -euo pipefail
           sam build --template-file cloudformation/authentication.yaml --use-container
+          test -s .aws-sam/build/SchemaInitializerFunction/schema_init/schema_init.py
+          test -s .aws-sam/build/SchemaInitializerFunction/schema_init/rds-schema.sql
 
       - name: Package authentication template
         env:
