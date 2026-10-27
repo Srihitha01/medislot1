@@ -236,7 +236,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - name: Package data template
         run: |
-          sam package --force-upload --template-file cloudformation/data-stack.yaml --s3-bucket "${{ needs.deploy_network.outputs.artifact_bucket }}" --s3-prefix medislot/data --region "$AWS_REGION" --output-template-file /tmp/data-packaged.yaml
+          sam package --template-file cloudformation/data-stack.yaml --s3-bucket "${{ needs.deploy_network.outputs.artifact_bucket }}" --s3-prefix medislot/data --region "$AWS_REGION" --output-template-file /tmp/data-packaged.yaml
       - name: Deploy data stack using Change Set
         shell: bash
         env:
@@ -331,7 +331,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - name: Package authentication template
         run: |
-          sam package --force-upload --template-file cloudformation/authentication.yaml --s3-bucket "${{ needs.deploy_network.outputs.artifact_bucket }}" --s3-prefix medislot/authentication --region "$AWS_REGION" --output-template-file /tmp/auth-packaged.yaml
+          sam package --template-file cloudformation/authentication.yaml --s3-bucket "${{ needs.deploy_network.outputs.artifact_bucket }}" --s3-prefix medislot/authentication --region "$AWS_REGION" --output-template-file /tmp/auth-packaged.yaml
       - name: Deploy authentication stack using Change Set
         shell: bash
         env:
@@ -380,9 +380,55 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Package API template
+      - name: Build and validate API Lambda ZIP, upload with unique S3 key
+        shell: bash
+        env:
+          ARTIFACT_BUCKET: ${{ needs.deploy_network.outputs.artifact_bucket }}
         run: |
-          sam package --force-upload --template-file cloudformation/api-stack.yaml --s3-bucket "${{ needs.deploy_network.outputs.artifact_bucket }}" --s3-prefix medislot/api --region "$AWS_REGION" --output-template-file /tmp/api-packaged.yaml
+          set -euo pipefail
+
+          # Build a minimal, conventional ZIP with app.py at the archive root.
+          test -s src/api/app.py
+          grep -q '^def lambda_handler(' src/api/app.py
+          rm -rf src/api/__pycache__
+          find src/api -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+          rm -f /tmp/app-router.zip /tmp/app-router-verified.zip
+          (cd src/api && zip -X -q /tmp/app-router.zip app.py)
+
+          # Validate the ZIP locally and ensure Lambda's handler module is at its root.
+          unzip -tq /tmp/app-router.zip
+          unzip -Z1 /tmp/app-router.zip | grep -qx 'app.py'
+
+          # Use a unique object key per workflow run so no stale artifact can be reused.
+          ARTIFACT_KEY="medislot/api/${GITHUB_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/app-router.zip"
+          echo "Uploading API artifact to s3://${ARTIFACT_BUCKET}/${ARTIFACT_KEY}"
+          aws s3 cp /tmp/app-router.zip "s3://${ARTIFACT_BUCKET}/${ARTIFACT_KEY}" \
+            --region "$AWS_REGION" --content-type application/zip --only-show-errors
+
+          # Download the exact S3 object that CloudFormation will use, and test it again.
+          aws s3 cp "s3://${ARTIFACT_BUCKET}/${ARTIFACT_KEY}" /tmp/app-router-verified.zip \
+            --region "$AWS_REGION" --only-show-errors
+          unzip -tq /tmp/app-router-verified.zip
+          unzip -Z1 /tmp/app-router-verified.zip | grep -qx 'app.py'
+          cmp /tmp/app-router.zip /tmp/app-router-verified.zip
+
+          # Give CloudFormation/SAM the exact verified S3 ZIP URI.
+          export ARTIFACT_KEY
+          python - <<'PYCODE'
+          import os
+          from pathlib import Path
+
+          template_path = Path("cloudformation/api-stack.yaml")
+          template = template_path.read_text(encoding="utf-8")
+          expected = "      CodeUri: ../src/api/"
+          if template.count(expected) != 1:
+              raise SystemExit("Expected exactly one AppRouterFunction CodeUri: ../src/api/ in api-stack.yaml")
+          bucket = os.environ["ARTIFACT_BUCKET"]
+          key = os.environ["ARTIFACT_KEY"]
+          template = template.replace(expected, f"      CodeUri: s3://{bucket}/{key}", 1)
+          Path("/tmp/api-packaged.yaml").write_text(template, encoding="utf-8")
+          print(f"Prepared /tmp/api-packaged.yaml with verified CodeUri s3://{bucket}/{key}")
+          PYCODE
       - name: Deploy API stack using Change Set
         shell: bash
         run: |

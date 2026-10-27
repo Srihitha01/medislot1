@@ -1,3 +1,4 @@
+
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: MediSlot application API Gateway and Lambda integration
@@ -62,7 +63,7 @@ Resources:
     Properties:
       QueueName: !Sub medislot-${Environment}-application-dlq
       MessageRetentionPeriod: 1209600
-      # Use the AWS-managed SQS KMS key: encrypted at rest without a customer-managed key charge.
+      # Use the AWS-managed SQS KMS key.
       KmsMasterKeyId: alias/aws/sqs
       KmsDataKeyReusePeriodSeconds: 300
       Tags:
@@ -108,7 +109,10 @@ Resources:
         Fn::ImportValue: !Sub medislot-${Environment}-ApplicationLambdaRoleArn
       KmsKeyArn:
         Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
-      ReservedConcurrentExecutions: !If [UseReservedConcurrency, 1, !Ref AWS::NoValue]
+      ReservedConcurrentExecutions: !If
+        - UseReservedConcurrency
+        - 1
+        - !Ref AWS::NoValue
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt ApplicationDeadLetterQueue.Arn
