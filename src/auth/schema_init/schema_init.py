@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-import re
+from pathlib import Path
 
 import boto3
 import pymysql
@@ -11,117 +11,125 @@ logger.setLevel(logging.INFO)
 
 ssm = boto3.client("ssm")
 
-# Only letters, digits and underscores are allowed because MySQL account and
-# database names cannot be passed as bound parameters.
-IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_]{1,32}$")
 
-USERS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS users (
-    user_id VARCHAR(36) NOT NULL,
-    name VARCHAR(120) NOT NULL,
-    email VARCHAR(254) NOT NULL,
-    password_hash VARCHAR(60) NOT NULL,
-    role ENUM('patient', 'doctor') NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-        ON UPDATE CURRENT_TIMESTAMP,
-    PRIMARY KEY (user_id),
-    UNIQUE KEY uq_users_email (email)
-) ENGINE=InnoDB
-"""
-
-
-def get_parameter(name, with_decryption=False):
-    result = ssm.get_parameter(Name=name, WithDecryption=with_decryption)
-    return result["Parameter"]["Value"]
-
-
-def check_identifier(value, label):
-    if not IDENTIFIER_RE.fullmatch(value or ""):
-        raise ValueError(f"{label} must be 1-32 letters, digits or underscores")
-    return value
+def get_parameter(name, decrypt=False):
+    response = ssm.get_parameter(
+        Name=name,
+        WithDecryption=decrypt,
+    )
+    return response["Parameter"]["Value"]
 
 
 def lambda_handler(event, context):
-    environment = os.environ["ENVIRONMENT"]
-    db_name = check_identifier(os.environ.get("DB_NAME", "medislot"), "DB_NAME")
-    app_user = check_identifier(os.environ["DB_USER"], "DB_USER")
-    master_user = os.environ.get("DB_MASTER_USERNAME", "medislotadmin")
+    event = event or {}
 
-    host = get_parameter(
-        os.environ.get("DB_HOST_PARAMETER", f"/medislot/{environment}/db/host")
-    )
-    port = int(
-        get_parameter(
-            os.environ.get("DB_PORT_PARAMETER", f"/medislot/{environment}/db/port")
-        )
-    )
-    master_password = get_parameter(
-        os.environ.get(
-            "DB_MASTER_PASSWORD_PARAMETER", f"/medislot/{environment}/db/password"
-        ),
-        with_decryption=True,
-    )
-    app_password = get_parameter(
-        os.environ.get(
-            "DB_PASSWORD_PARAMETER", f"/medislot/{environment}/db/app-password"
-        ),
-        with_decryption=True,
-    )
+    if event.get("action") not in (None, "initialize"):
+        return {
+            "statusCode": 400,
+            "body": json.dumps({
+                "status": "error",
+                "message": "Unsupported action",
+            }),
+        }
 
-    connection = pymysql.connect(
-        host=host,
-        user=master_user,
-        password=master_password,
-        database=db_name,
-        port=port,
-        connect_timeout=10,
-        read_timeout=30,
-        write_timeout=30,
-        autocommit=True,
-    )
+    connection = None
 
     try:
-        with connection.cursor() as cursor:
-            cursor.execute(USERS_TABLE_SQL)
+        environment = os.environ["ENVIRONMENT"]
+        database = os.environ.get("DB_NAME", "medislot")
 
-            # mysql_native_password works with PyMySQL without extra packages.
-            # Newer MySQL versions may disable it, so fall back to the default.
-            try:
-                cursor.execute(
-                    f"CREATE USER IF NOT EXISTS '{app_user}'@'%%' "
-                    "IDENTIFIED WITH mysql_native_password BY %s",
-                    (app_password,),
-                )
-                cursor.execute(
-                    f"ALTER USER '{app_user}'@'%%' "
-                    "IDENTIFIED WITH mysql_native_password BY %s",
-                    (app_password,),
-                )
-            except pymysql.MySQLError:
-                cursor.execute(
-                    f"CREATE USER IF NOT EXISTS '{app_user}'@'%%' IDENTIFIED BY %s",
-                    (app_password,),
-                )
-                cursor.execute(
-                    f"ALTER USER '{app_user}'@'%%' IDENTIFIED BY %s",
-                    (app_password,),
-                )
-
-            cursor.execute(
-                f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{db_name}`.* "
-                f"TO '{app_user}'@'%%'"
+        host = get_parameter(
+            os.environ.get(
+                "DB_HOST_PARAMETER",
+                f"/medislot/{environment}/db/host",
             )
-            cursor.execute("FLUSH PRIVILEGES")
-    finally:
-        connection.close()
+        )
 
-    logger.info(
-        json.dumps({"event": "schema_initialized", "database": db_name, "app_user": app_user})
-    )
-    return {
-        "statusCode": 200,
-        "body": json.dumps(
-            {"message": "Schema initialized", "database": db_name, "appUser": app_user}
-        ),
-    }
+        port = int(get_parameter(
+            os.environ.get(
+                "DB_PORT_PARAMETER",
+                f"/medislot/{environment}/db/port",
+            )
+        ))
+
+        username = os.environ.get(
+            "DB_MASTER_USERNAME",
+            "medislotadmin",
+        )
+
+        password_parameter = os.environ.get(
+            "DB_MASTER_PASSWORD_PARAMETER",
+            f"/medislot/{environment}/db/password",
+        )
+
+        password = get_parameter(
+            password_parameter,
+            decrypt=True,
+        )
+
+        schema_path = Path(__file__).with_name("schema.sql")
+
+        if not schema_path.is_file():
+            raise FileNotFoundError(
+                "schema.sql is missing from the Lambda package"
+            )
+
+        sql_text = schema_path.read_text(encoding="utf-8")
+        statements = [
+            statement.strip()
+            for statement in sql_text.split(";")
+            if statement.strip()
+        ]
+
+        if not statements:
+            raise ValueError("schema.sql contains no SQL statements")
+
+        connection = pymysql.connect(
+            host=host,
+            port=port,
+            user=username,
+            password=password,
+            database=database,
+            connect_timeout=10,
+            read_timeout=20,
+            write_timeout=20,
+            autocommit=True,
+            cursorclass=pymysql.cursors.DictCursor,
+        )
+
+        with connection.cursor() as cursor:
+            for statement in statements:
+                cursor.execute(statement)
+
+        logger.info(json.dumps({
+            "event": "database_schema_initialized",
+            "environment": environment,
+            "database": database,
+            "statementsExecuted": len(statements),
+            "requestId": getattr(
+                context, "aws_request_id", None
+            ),
+        }))
+
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "status": "success",
+                "environment": environment,
+                "database": database,
+                "statements_executed": len(statements),
+            }),
+        }
+
+    except Exception:
+        logger.exception(json.dumps({
+            "event": "database_schema_initialization_failed",
+            "requestId": getattr(
+                context, "aws_request_id", None
+            ),
+        }))
+        raise
+
+    finally:
+        if connection is not None:
+            connection.close()
