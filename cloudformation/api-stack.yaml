@@ -88,7 +88,6 @@ Resources:
         AllowHeaders: "'Content-Type,Authorization,Idempotency-Key,X-Correlation-Id'"
         AllowOrigin: "'*'"
       Auth:
-        DefaultAuthorizer: MediSlotAuthorizer
         Authorizers:
           MediSlotAuthorizer:
             FunctionArn:
@@ -295,8 +294,6 @@ Resources:
             RestApiId: !Ref MediSlotApplicationApi
             Path: /health
             Method: GET
-            Auth:
-              Authorizer: NONE
 
 Outputs:
   ApplicationApiId:
