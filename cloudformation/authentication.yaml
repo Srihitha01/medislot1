@@ -94,7 +94,6 @@ Resources:
       Handler: register/register.lambda_handler
       Role:
         Fn::ImportValue: !Sub medislot-${Environment}-RegisterLambdaRoleArn
-      KmsKeyArn: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/lambda
       ReservedConcurrentExecutions: 5
       DeadLetterQueue:
         Type: SQS
@@ -127,7 +126,6 @@ Resources:
       Handler: login/login.lambda_handler
       Role:
         Fn::ImportValue: !Sub medislot-${Environment}-LoginLambdaRoleArn
-      KmsKeyArn: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/lambda
       ReservedConcurrentExecutions: 5
       DeadLetterQueue:
         Type: SQS
@@ -160,7 +158,6 @@ Resources:
       Handler: refresh/refresh.lambda_handler
       Role:
         Fn::ImportValue: !Sub medislot-${Environment}-RefreshLambdaRoleArn
-      KmsKeyArn: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/lambda
       ReservedConcurrentExecutions: 5
       DeadLetterQueue:
         Type: SQS
@@ -187,7 +184,6 @@ Resources:
       Handler: logout/logout.lambda_handler
       Role:
         Fn::ImportValue: !Sub medislot-${Environment}-LogoutLambdaRoleArn
-      KmsKeyArn: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/lambda
       ReservedConcurrentExecutions: 5
       DeadLetterQueue:
         Type: SQS
@@ -214,7 +210,6 @@ Resources:
       Handler: authorizer/authorizer.lambda_handler
       Role:
         Fn::ImportValue: !Sub medislot-${Environment}-AuthorizerLambdaRoleArn
-      KmsKeyArn: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/lambda
       ReservedConcurrentExecutions: 5
       DeadLetterQueue:
         Type: SQS
