@@ -16,6 +16,7 @@ logger.setLevel(logging.INFO)
 
 ssm = boto3.client("ssm")
 dynamodb = boto3.resource("dynamodb")
+
 table = dynamodb.Table(os.environ["AUTH_TOKENS_TABLE"])
 
 ACCESS_TOKEN_MINUTES = int(os.environ.get("ACCESS_TOKEN_MINUTES", "15"))
@@ -39,28 +40,34 @@ def token_hash(token):
 
 def jwt_secret():
     environment = os.environ["ENVIRONMENT"]
+
     name = os.environ.get(
         "JWT_SECRET_PARAMETER",
         f"/medislot/{environment}/auth/jwt-secret",
     )
 
     version = os.environ.get("JWT_SECRET_PARAMETER_VERSION")
+
     if version:
         name = f"{name}:{version}"
 
-    return ssm.get_parameter(
+    result = ssm.get_parameter(
         Name=name,
         WithDecryption=True,
-    )["Parameter"]["Value"]
+    )
+
+    return result["Parameter"]["Value"]
 
 
 def lambda_handler(event, context):
     correlation_id = getattr(
-        context, "aws_request_id", str(uuid.uuid4())
+        context,
+        "aws_request_id",
+        str(uuid.uuid4()),
     )
 
     try:
-        # 1. Parse and validate the request body.
+        # 1. Parse request body.
         raw_body = event.get("body") or "{}"
 
         if isinstance(raw_body, str):
@@ -69,7 +76,10 @@ def lambda_handler(event, context):
             data = raw_body
 
         if not isinstance(data, dict):
-            return response(400, {"message": "Invalid request body"})
+            return response(
+                400,
+                {"message": "Invalid request body"},
+            )
 
         old_refresh = data.get("refreshToken")
 
@@ -79,7 +89,7 @@ def lambda_handler(event, context):
                 {"message": "refreshToken is required"},
             )
 
-        # 2. Find the stored refresh token by its SHA-256 hash.
+        # 2. Look up the hashed refresh token.
         old_key = token_hash(old_refresh)
 
         result = table.get_item(
@@ -96,14 +106,15 @@ def lambda_handler(event, context):
                 {"message": "Invalid or expired refresh token"},
             )
 
-        # 3. Validate the expiry value returned by DynamoDB.
+        # 3. Validate expiration.
         try:
             expires_at = int(item["expiresAt"])
         except (KeyError, TypeError, ValueError, OverflowError):
-            logger.error(json.dumps({
+            logger.warning(json.dumps({
                 "event": "refresh_invalid_expiry",
                 "correlation_id": correlation_id,
             }))
+
             return response(
                 401,
                 {"message": "Invalid or expired refresh token"},
@@ -115,27 +126,50 @@ def lambda_handler(event, context):
                 {"message": "Invalid or expired refresh token"},
             )
 
-        # 4. Read the signing secret before consuming the old token.
-        # This avoids rotating the token if SSM cannot provide the secret.
+        if not item.get("userId") or not item.get("role"):
+            logger.error(json.dumps({
+                "event": "refresh_invalid_token_record",
+                "correlation_id": correlation_id,
+            }))
+
+            return response(
+                401,
+                {"message": "Invalid or expired refresh token"},
+            )
+
+        # 4. Retrieve the signing secret before consuming the token.
         secret = jwt_secret()
 
-        # 5. Prepare the replacement refresh token.
+        # Warn without exposing the secret.
+        if len(secret.encode("utf-8")) < 32:
+            logger.error(json.dumps({
+                "event": "jwt_signing_secret_too_short",
+                "correlation_id": correlation_id,
+                "secret_length_bytes": len(secret.encode("utf-8")),
+            }))
+
+            return response(
+                500,
+                {"message": "Authentication configuration error"},
+            )
+
+        # 5. Generate replacement refresh token.
         new_refresh = secrets.token_urlsafe(48)
         new_key = token_hash(new_refresh)
+
         new_refresh_expiry = (
             now + REFRESH_TOKEN_DAYS * 24 * 60 * 60
         )
 
-        # 6. Prepare the access token.
+        # 6. Generate access token.
         access_expiry = now + ACCESS_TOKEN_MINUTES * 60
-        jti = str(uuid.uuid4())
 
         payload = {
             "sub": str(item["userId"]),
             "role": str(item["role"]),
             "iat": now,
             "exp": access_expiry,
-            "jti": jti,
+            "jti": str(uuid.uuid4()),
         }
 
         access_token = jwt.encode(
@@ -144,15 +178,8 @@ def lambda_handler(event, context):
             algorithm="HS256",
         )
 
-        # 7. Atomically consume the old refresh token and create
-        # the replacement. Use low-level DynamoDB AttributeValues.
-        #
-        # IMPORTANT:
-        # Expiry was validated above. We intentionally do not compare
-        # expiresAt in this transaction because DynamoDB reports that
-        # the stored operand has type M (map), which cannot be compared
-        # using >. The conditional delete still prevents reuse of a
-        # token that has already been consumed.
+        # 7. Atomically consume the old refresh token and insert
+        # the new one. The expiry value was validated above.
         table.meta.client.transact_write_items(
             TransactItems=[
                 {
@@ -196,24 +223,39 @@ def lambda_handler(event, context):
             "role": str(item["role"]),
         }))
 
-        return response(200, {
-            "accessToken": access_token,
-            "tokenType": "Bearer",
-            "expiresIn": ACCESS_TOKEN_MINUTES * 60,
-            "refreshToken": new_refresh,
-            "refreshExpiresIn": REFRESH_TOKEN_DAYS * 24 * 60 * 60,
-        })
+        return response(
+            200,
+            {
+                "accessToken": access_token,
+                "tokenType": "Bearer",
+                "expiresIn": ACCESS_TOKEN_MINUTES * 60,
+                "refreshToken": new_refresh,
+                "refreshExpiresIn": (
+                    REFRESH_TOKEN_DAYS * 24 * 60 * 60
+                ),
+            },
+        )
 
     except ClientError as exc:
-        error_code = exc.response.get(
-            "Error", {}
-        ).get("Code", "Unknown")
+        error = exc.response.get("Error", {})
+        error_code = error.get("Code", "Unknown")
 
         if error_code == "TransactionCanceledException":
+            reasons = exc.response.get("CancellationReasons", [])
+
             logger.warning(json.dumps({
                 "event": "refresh_transaction_cancelled",
                 "correlation_id": correlation_id,
+                "cancellation_reasons": [
+                    {
+                        "code": reason.get("Code"),
+                        "message": reason.get("Message"),
+                    }
+                    for reason in reasons
+                ],
             }))
+
+            # Do not expose internal DynamoDB details to the client.
             return response(
                 401,
                 {"message": "Invalid or already-used refresh token"},
@@ -224,6 +266,7 @@ def lambda_handler(event, context):
             "correlation_id": correlation_id,
             "error_code": error_code,
         }))
+
         return response(
             500,
             {"message": "Token refresh could not be completed"},
@@ -234,6 +277,7 @@ def lambda_handler(event, context):
             "event": "refresh_dependency_error",
             "correlation_id": correlation_id,
         }))
+
         return response(
             500,
             {"message": "Token refresh could not be completed"},
@@ -250,6 +294,7 @@ def lambda_handler(event, context):
             "event": "refresh_failed",
             "correlation_id": correlation_id,
         }))
+
         return response(
             500,
             {"message": "Token refresh could not be completed"},
