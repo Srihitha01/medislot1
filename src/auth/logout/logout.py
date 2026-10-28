@@ -1,4 +1,3 @@
-
 import hashlib
 import json
 import logging
@@ -93,10 +92,15 @@ def lambda_handler(event, context):
         refresh_token = data.get("refreshToken") if isinstance(data, dict) else None
 
         if isinstance(refresh_token, str) and refresh_token:
-            table.delete_item(
-                Key={"tokenId": token_hash(refresh_token)},
-                ConditionExpression="attribute_exists(tokenId)",
-            )
+            try:
+                table.delete_item(
+                    Key={"tokenId": token_hash(refresh_token)},
+                    ConditionExpression="attribute_exists(tokenId)",
+                )
+            except ClientError as exc:
+                # Already deleted or rotated; the logout is still successful.
+                if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
 
         logger.info(json.dumps({
             "event": "logout_succeeded",
