@@ -1,4 +1,3 @@
-
 import hashlib
 import json
 import logging
@@ -16,6 +15,10 @@ logger.setLevel(logging.INFO)
 
 ssm = boto3.client("ssm")
 dynamodb = boto3.resource("dynamodb")
+# Low-level client for transact_write_items, which uses explicit DynamoDB types
+# such as {"S": "value"}. The resource's own client would serialize those typed
+# values a second time and DynamoDB would reject the key.
+dynamodb_client = boto3.client("dynamodb")
 
 table = dynamodb.Table(os.environ["AUTH_TOKENS_TABLE"])
 
@@ -180,7 +183,7 @@ def lambda_handler(event, context):
 
         # 7. Atomically consume the old refresh token and insert
         # the new one. The expiry value was validated above.
-        table.meta.client.transact_write_items(
+        dynamodb_client.transact_write_items(
             TransactItems=[
                 {
                     "Delete": {
