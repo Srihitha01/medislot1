@@ -112,9 +112,11 @@ def lambda_handler(event, context):
                     (app_password,),
                 )
 
+            # No bound parameters here, so PyMySQL does not format the query and
+            # the host wildcard must be a single percent sign.
             cursor.execute(
                 f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{db_name}`.* "
-                f"TO '{app_user}'@'%%'"
+                f"TO '{app_user}'@'%'"
             )
             cursor.execute("FLUSH PRIVILEGES")
     finally:
@@ -126,6 +128,11 @@ def lambda_handler(event, context):
     return {
         "statusCode": 200,
         "body": json.dumps(
-            {"message": "Schema initialized", "database": db_name, "appUser": app_user}
+            {
+                "status": "ok",
+                "message": "Schema initialized",
+                "database": db_name,
+                "appUser": app_user,
+            }
         ),
     }
