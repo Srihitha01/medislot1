@@ -32,8 +32,12 @@ jobs:
     name: Validate CloudFormation and SAM
     runs-on: ubuntu-latest
     steps:
+      # Gitleaks scans the pull-request commit range. Fetch the full history
+      # so both the base and head commits are available to Git.
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
