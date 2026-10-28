@@ -1,6 +1,5 @@
-
 CREATE TABLE IF NOT EXISTS users (
-    user_id VARCHAR(36) NOT NULL,
+    user_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
     name VARCHAR(120) NOT NULL,
     email VARCHAR(254) NOT NULL,
     password_hash VARCHAR(60) NOT NULL,
@@ -11,3 +10,4 @@ CREATE TABLE IF NOT EXISTS users (
     PRIMARY KEY (user_id),
     UNIQUE KEY uq_users_email (email)
 ) ENGINE=InnoDB;
+ 
