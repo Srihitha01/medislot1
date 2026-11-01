@@ -1,226 +1,37 @@
-import hashlib
-import json
-import logging
-import os
-import time
-import uuid
-
-import boto3
-import jwt
-from botocore.exceptions import BotoCoreError, ClientError
-
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-ssm = boto3.client("ssm")
-dynamodb = boto3.resource("dynamodb")
-
-table = dynamodb.Table(os.environ["AUTH_TOKENS_TABLE"])
-
-ACCESS_TOKEN_MINUTES = int(os.environ.get("ACCESS_TOKEN_MINUTES", "15"))
-
-
-def response(status, body):
-    return {
-        "statusCode": status,
-        "headers": {
-            "Content-Type": "application/json",
-            "Cache-Control": "no-store",
-        },
-        "body": json.dumps(body),
-    }
-
-
-def token_hash(token):
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-def jwt_secret():
-    environment = os.environ["ENVIRONMENT"]
-
-    name = os.environ.get(
-        "JWT_SECRET_PARAMETER",
-        f"/medislot/{environment}/auth/jwt-secret",
-    )
-
-    version = os.environ.get("JWT_SECRET_PARAMETER_VERSION")
-
-    if version:
-        name = f"{name}:{version}"
-
-    result = ssm.get_parameter(
-        Name=name,
-        WithDecryption=True,
-    )
-
-    return result["Parameter"]["Value"]
-
-
-def lambda_handler(event, context):
-    correlation_id = getattr(
-        context,
-        "aws_request_id",
-        str(uuid.uuid4()),
-    )
-
-    try:
-        # 1. Parse request body.
-        raw_body = event.get("body") or "{}"
-
-        if isinstance(raw_body, str):
-            data = json.loads(raw_body)
-        else:
-            data = raw_body
-
-        if not isinstance(data, dict):
-            return response(
-                400,
-                {"message": "Invalid request body"},
-            )
-
-        refresh_token = data.get("refreshToken")
-
-        if not isinstance(refresh_token, str) or not refresh_token.strip():
-            return response(
-                400,
-                {"message": "refreshToken is required"},
-            )
-
-        # 2. Look up the hashed refresh token.
-        result = table.get_item(
-            Key={"tokenId": token_hash(refresh_token)},
-            ConsistentRead=True,
-        )
-
-        item = result.get("Item")
-        now = int(time.time())
-
-        if not item or item.get("tokenType") != "REFRESH":
-            return response(
-                401,
-                {"message": "Invalid or expired refresh token"},
-            )
-
-        # 3. Validate expiration.
-        try:
-            expires_at = int(item["expiresAt"])
-        except (KeyError, TypeError, ValueError, OverflowError):
-            logger.warning(json.dumps({
-                "event": "refresh_invalid_expiry",
-                "correlation_id": correlation_id,
-            }))
-
-            return response(
-                401,
-                {"message": "Invalid or expired refresh token"},
-            )
-
-        if expires_at <= now:
-            return response(
-                401,
-                {"message": "Invalid or expired refresh token"},
-            )
-
-        if not item.get("userId") or not item.get("role"):
-            logger.error(json.dumps({
-                "event": "refresh_invalid_token_record",
-                "correlation_id": correlation_id,
-            }))
-
-            return response(
-                401,
-                {"message": "Invalid or expired refresh token"},
-            )
-
-        # 4. Retrieve the signing secret.
-        secret = jwt_secret()
-
-        # Warn without exposing the secret.
-        if len(secret.encode("utf-8")) < 32:
-            logger.error(json.dumps({
-                "event": "jwt_signing_secret_too_short",
-                "correlation_id": correlation_id,
-                "secret_length_bytes": len(secret.encode("utf-8")),
-            }))
-
-            return response(
-                500,
-                {"message": "Authentication configuration error"},
-            )
-
-        # 5. Issue a new access token. The refresh token is NOT rotated: the
-        # same refresh token stays valid until its original 7-day expiry.
-        access_expiry = now + ACCESS_TOKEN_MINUTES * 60
-
-        payload = {
-            "sub": str(item["userId"]),
-            "role": str(item["role"]),
-            "iat": now,
-            "exp": access_expiry,
-            "jti": str(uuid.uuid4()),
-        }
-
-        access_token = jwt.encode(
-            payload,
-            secret,
-            algorithm="HS256",
-        )
-
-        logger.info(json.dumps({
-            "event": "refresh_succeeded",
-            "correlation_id": correlation_id,
-            "role": str(item["role"]),
-        }))
-
-        return response(
-            200,
-            {
-                "accessToken": access_token,
-                "tokenType": "Bearer",
-                "expiresIn": ACCESS_TOKEN_MINUTES * 60,
-                "refreshToken": refresh_token,
-                "refreshExpiresIn": expires_at - now,
-            },
-        )
-
-    except ClientError as exc:
-        error_code = exc.response.get("Error", {}).get("Code", "Unknown")
-
-        logger.exception(json.dumps({
-            "event": "refresh_dependency_error",
-            "correlation_id": correlation_id,
-            "error_code": error_code,
-        }))
-
-        return response(
-            500,
-            {"message": "Token refresh could not be completed"},
-        )
-
-    except BotoCoreError:
-        logger.exception(json.dumps({
-            "event": "refresh_dependency_error",
-            "correlation_id": correlation_id,
-        }))
-
-        return response(
-            500,
-            {"message": "Token refresh could not be completed"},
-        )
-
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return response(
-            400,
-            {"message": "Invalid JSON request"},
-        )
-
-    except Exception:
-        logger.exception(json.dumps({
-            "event": "refresh_failed",
-            "correlation_id": correlation_id,
-        }))
-
-        return response(
-            500,
-            {"message": "Token refresh could not be completed"},
-        )
+import hashlib,json,logging,os,time,uuid
+import boto3,jwt
+from botocore.exceptions import BotoCoreError,ClientError
+logger=logging.getLogger(); logger.setLevel(logging.INFO)
+ssm=boto3.client("ssm"); table=boto3.resource("dynamodb").Table(os.environ["AUTH_TOKENS_TABLE"])
+ACCESS_MIN=int(os.environ.get("ACCESS_TOKEN_MINUTES","15"))
+def response(s,b): return {"statusCode":s,"headers":{"Content-Type":"application/json","Cache-Control":"no-store","Access-Control-Allow-Origin":"*","Access-Control-Allow-Headers":"Content-Type,Authorization,Idempotency-Key,X-Correlation-Id","Access-Control-Allow-Methods":"GET,POST,PUT,PATCH,DELETE,OPTIONS"},"body":json.dumps(b)}
+def secret():
+ env=os.environ["ENVIRONMENT"]; name=os.environ.get("JWT_SECRET_PARAMETER",f"/medislot/{env}/auth/jwt-secret")
+ return ssm.get_parameter(Name=name,WithDecryption=True)["Parameter"]["Value"]
+def h(t): return hashlib.sha256(t.encode()).hexdigest()
+def lambda_handler(event,context):
+ try:
+  raw=event.get("body") or "{}"; data=json.loads(raw) if isinstance(raw,str) else raw
+  token=data.get("refreshToken") if isinstance(data,dict) else None
+  if not isinstance(token,str) or not token: return response(400,{"message":"refreshToken is required"})
+  item=table.get_item(Key={"tokenId":h(token)},ConsistentRead=True).get("Item")
+  now=int(time.time())
+  if not item or item.get("tokenType")!="REFRESH" or int(item.get("expiresAt",0))<=now: return response(401,{"message":"Invalid or expired refresh token"})
+  uid=str(item["userId"]); sid=str(item["sessionId"])
+  active=table.get_item(Key={"tokenId":f"ACTIVE#{uid}"},ConsistentRead=True).get("Item")
+  if not active or active.get("sessionId")!=sid: return response(401,{"message":"This login session is no longer active"})
+  jti=str(uuid.uuid4()); exp=now+ACCESS_MIN*60
+  access=jwt.encode({"sub":uid,"role":item["role"],"iat":now,"exp":exp,"jti":jti,"sid":sid},secret(),algorithm="HS256")
+  # Conditional update prevents a stale refresh request from overwriting a newer login.
+  table.update_item(Key={"tokenId":f"ACTIVE#{uid}"},
+    UpdateExpression="SET jti=:j, expiresAt=:e",
+    ConditionExpression="sessionId=:s AND tokenType=:t",
+    ExpressionAttributeValues={":j":jti,":e":exp,":s":sid,":t":"ACTIVE_ACCESS"})
+  return response(200,{"accessToken":access,"tokenType":"Bearer","expiresIn":ACCESS_MIN*60,
+    "refreshToken":token,"refreshExpiresIn":int(item["expiresAt"])-now})
+ except ClientError as exc:
+  if exc.response.get("Error",{}).get("Code")=="ConditionalCheckFailedException": return response(401,{"message":"Login session is no longer active"})
+  logger.exception("Refresh dependency failure"); return response(500,{"message":"Token refresh could not be completed"})
+ except (BotoCoreError,): logger.exception("Refresh dependency failure"); return response(500,{"message":"Token refresh could not be completed"})
+ except (json.JSONDecodeError,UnicodeDecodeError): return response(400,{"message":"Invalid JSON request"})
+ except Exception: logger.exception("Refresh failure"); return response(500,{"message":"Token refresh could not be completed"})

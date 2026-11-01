@@ -183,6 +183,9 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
       SSESpecification:
@@ -323,7 +326,7 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # DynamoDB: hashed refresh-token records and JWT denylist entries.
+  # DynamoDB: hashed refresh-token records and one active access-token record per user.
   AuthTokensTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -395,6 +398,12 @@ Resources:
               SSEAlgorithm: AES256
       VersioningConfiguration:
         Status: Enabled
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [PUT, HEAD]
+            AllowedOrigins: ["*"]
+            AllowedHeaders: ["*"]
+            MaxAge: 300
       LoggingConfiguration:
         DestinationBucketName:
           Fn::ImportValue: !Sub medislot-${Environment}-AccessLogsBucketName
@@ -488,6 +497,18 @@ Outputs:
     Export:
       Name: !Sub medislot-${Environment}-DBPasswordParameterName
 
+  DoctorPhotosBucketName:
+    Description: Private S3 bucket for doctor profile photos
+    Value: !Ref DoctorPhotosBucket
+    Export:
+      Name: !Sub medislot-${Environment}-DoctorPhotosBucketName
+
+  DoctorPhotosBucketArn:
+    Description: ARN of the private doctor profile photo bucket
+    Value: !GetAtt DoctorPhotosBucket.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-DoctorPhotosBucketArn
+
   SlotsTableName:
     Value: !Ref SlotsTable
     Export:
@@ -518,12 +539,3 @@ Outputs:
     Export:
       Name: !Sub medislot-${Environment}-DispatchLogTableName
 
-  DoctorPhotosBucketName:
-    Value: !Ref DoctorPhotosBucket
-    Export:
-      Name: !Sub medislot-${Environment}-DoctorPhotosBucketName
-
-  DoctorPhotosBucketArn:
-    Value: !GetAtt DoctorPhotosBucket.Arn
-    Export:
-      Name: !Sub medislot-${Environment}-DoctorPhotosBucketArn

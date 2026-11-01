@@ -209,7 +209,148 @@ Resources:
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
 
+
+
+  ReferenceDataFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-reference-data
+      CodeUri: ../src/auth/
+      Handler: reference/reference.lambda_handler
+      Role:
+        Fn::ImportValue: !Sub medislot-${Environment}-RegisterLambdaRoleArn
+      KmsKeyArn:
+        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
+
+  SlotMaterializerDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub medislot-${Environment}-slot-materializer-dlq
+      MessageRetentionPeriod: 1209600
+      KmsMasterKeyId: alias/aws/sqs
+      KmsDataKeyReusePeriodSeconds: 300
+
+  SlotMaterializerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-slot-materializer-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: ReadScheduleAndWriteSlots
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/host
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/port
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/app-password
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/*
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                Resource:
+                  Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt SlotMaterializerDeadLetterQueue.Arn
+
+  SlotMaterializerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-slot-materializer
+      Description: Builds and reconciles the next 30 days of doctor appointment slots
+      CodeUri: ../src/slots/materializer/
+      Handler: materializer.lambda_handler
+      Runtime: python3.12
+      MemorySize: 512
+      Timeout: 120
+      Role: !GetAtt SlotMaterializerRole.Arn
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_NAME: medislot
+          DB_USER: !Ref DBUsername
+          DB_HOST_PARAMETER: !Sub /medislot/${Environment}/db/host
+          DB_PORT_PARAMETER: !Sub /medislot/${Environment}/db/port
+          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/app-password
+          SLOTS_TABLE: !Sub medislot-${Environment}-slots
+          SLOT_WINDOW_DAYS: "30"
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
+          - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
+  SlotMaterializerSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub medislot-${Environment}-slot-materializer-daily
+      Description: Rebuilds the rolling 30-day slot window daily
+      ScheduleExpression: rate(1 day)
+      State: ENABLED
+      Targets:
+        - Id: SlotMaterializerTarget
+          Arn: !GetAtt SlotMaterializerFunction.Arn
+
+  AllowEventBridgeToInvokeSlotMaterializer:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SlotMaterializerFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SlotMaterializerSchedule.Arn
+
+  SlotMaterializerAsyncFailureConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref SlotMaterializerFunction
+      Qualifier: "$LATEST"
+      MaximumRetryAttempts: 2
+      MaximumEventAgeInSeconds: 3600
+      DestinationConfig:
+        OnFailure:
+          Destination: !GetAtt SlotMaterializerDeadLetterQueue.Arn
+
+
 Outputs:
+  ReferenceDataFunctionArn:
+    Description: Public registration reference-data Lambda ARN
+    Value: !GetAtt ReferenceDataFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-ReferenceDataFunctionArn
+
+  SlotMaterializerFunctionName:
+    Description: Slot materialiser Lambda function name
+    Value: !Ref SlotMaterializerFunction
+    Export:
+      Name: !Sub medislot-${Environment}-SlotMaterializerFunctionName
+
   RegisterFunctionName:
     Description: Registration Lambda function name
     Value: !Ref RegisterFunction

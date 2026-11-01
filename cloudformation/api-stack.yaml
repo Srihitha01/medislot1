@@ -38,6 +38,7 @@ Globals:
       Variables:
         ENVIRONMENT: !Ref Environment
         DB_NAME: medislot
+        DB_USER: medislot_app
         DB_HOST_PARAMETER: !Sub /medislot/${Environment}/db/host
         DB_PORT_PARAMETER: !Sub /medislot/${Environment}/db/port
         DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/app-password
@@ -47,6 +48,9 @@ Globals:
         WAITLIST_TABLE: !Sub medislot-${Environment}-waitlist
         HOLD_OFFERS_TABLE: !Sub medislot-${Environment}-hold-offers
         AUTH_TOKENS_TABLE: !Sub medislot-${Environment}-auth-tokens
+        DOCTOR_PHOTOS_BUCKET:
+          Fn::ImportValue: !Sub medislot-${Environment}-DoctorPhotosBucketName
+        SLOT_MATERIALIZER_FUNCTION: !Sub medislot-${Environment}-slot-materializer
         DISPATCH_LOG_TABLE: !Sub medislot-${Environment}-dispatch-log
 
 Resources:
@@ -134,12 +138,12 @@ Resources:
                     - TargetArn:
                         Fn::ImportValue: !Sub medislot-${Environment}-RegisterFunctionArn
 
-          /auth/doctors/login:
-            post:
+          /reference/specialisations:
+            get:
               security: []
               responses:
                 "200":
-                  description: Lambda proxy response
+                  description: Reference data
               x-amazon-apigateway-integration:
                 type: aws_proxy
                 httpMethod: POST
@@ -147,9 +151,23 @@ Resources:
                   Fn::Sub:
                     - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
                     - TargetArn:
-                        Fn::ImportValue: !Sub medislot-${Environment}-LoginFunctionArn
+                        Fn::ImportValue: !Sub medislot-${Environment}-ReferenceDataFunctionArn
+          /reference/hospitals:
+            get:
+              security: []
+              responses:
+                "200":
+                  description: Reference data
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri:
+                  Fn::Sub:
+                    - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
+                    - TargetArn:
+                        Fn::ImportValue: !Sub medislot-${Environment}-ReferenceDataFunctionArn
 
-          /auth/patients/login:
+          /auth/login:
             post:
               security: []
               responses:
@@ -212,23 +230,14 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApplicationApi}/*/POST/auth/patients/register
 
-  LoginDoctorApiPermission:
+  LoginApiPermission:
     Type: AWS::Lambda::Permission
     Properties:
       Action: lambda:InvokeFunction
       FunctionName:
         Fn::ImportValue: !Sub medislot-${Environment}-LoginFunctionArn
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApplicationApi}/*/POST/auth/doctors/login
-
-  LoginPatientApiPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName:
-        Fn::ImportValue: !Sub medislot-${Environment}-LoginFunctionArn
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApplicationApi}/*/POST/auth/patients/login
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApplicationApi}/*/POST/auth/login
 
   RefreshApiPermission:
     Type: AWS::Lambda::Permission
@@ -247,6 +256,24 @@ Resources:
         Fn::ImportValue: !Sub medislot-${Environment}-LogoutFunctionArn
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApplicationApi}/*/POST/auth/logout
+
+  ReferenceSpecialisationsApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName:
+        Fn::ImportValue: !Sub medislot-${Environment}-ReferenceDataFunctionArn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApplicationApi}/*/GET/reference/specialisations
+
+  ReferenceHospitalsApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName:
+        Fn::ImportValue: !Sub medislot-${Environment}-ReferenceDataFunctionArn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApplicationApi}/*/GET/reference/hospitals
 
   AppRouterFunction:
     Type: AWS::Serverless::Function #checkov:skip=CKV_AWS_115:Reserved concurrency is disabled by default for development.

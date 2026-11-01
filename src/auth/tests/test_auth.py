@@ -1,134 +1,60 @@
-
 import os
 import unittest
 from unittest.mock import patch
 
-# Set environment variables before importing the Lambda module.
-os.environ.setdefault("ENVIRONMENT", "test")
-os.environ.setdefault("AUTH_TOKENS_TABLE", "medislot-test-auth-tokens")
-os.environ.setdefault("JWT_SECRET_PARAMETER", "/medislot/test/auth/jwt-secret")
+os.environ.setdefault("AWS_DEFAULT_REGION","ap-south-1")
+os.environ.setdefault("ENVIRONMENT","test")
+os.environ.setdefault("AUTH_TOKENS_TABLE","medislot-test-auth-tokens")
+os.environ.setdefault("JWT_SECRET_PARAMETER","/medislot/test/auth/jwt-secret")
 
-import bcrypt
 import jwt
-
 from src.auth.authorizer import authorizer
 
 
-class PasswordTests(unittest.TestCase):
-    def test_bcrypt_hash_matches_password(self):
-        password = b"ExamplePassword123"
-        password_hash = bcrypt.hashpw(password, bcrypt.gensalt(rounds=12))
-
-        self.assertTrue(bcrypt.checkpw(password, password_hash))
-
-    def test_bcrypt_rejects_wrong_password(self):
-        password_hash = bcrypt.hashpw(
-            b"CorrectPassword123",
-            bcrypt.gensalt(rounds=12),
-        )
-
-        self.assertFalse(
-            bcrypt.checkpw(b"WrongPassword123", password_hash)
-        )
-
-
 class AuthorizerTests(unittest.TestCase):
-    def test_missing_bearer_token_is_rejected(self):
-        event = {
-            "methodArn": "arn:aws:execute-api:ap-south-1:123456789012:api/dev/GET/doctors"
-        }
+    def setUp(self):
+        self.claims={"sub":"101","role":"patient","iat":100,"exp":9999999999,
+                     "jti":"jti-current","sid":"session-current"}
+        self.event={"authorizationToken":"Bearer test-token","methodArn":"arn:aws:execute-api:region:acct:api/dev/GET/test"}
 
-        with self.assertRaises(Exception) as raised:
-            authorizer.lambda_handler(event, None)
-
-        self.assertEqual(str(raised.exception), "Unauthorized")
-
-    def test_valid_token_allows_request_and_sets_context(self):
-        claims = {
-            "sub": "user-123",
-            "role": "patient",
-            "iat": 100,
-            "exp": 9999999999,
-            "jti": "token-jti-123",
-        }
-
-        event = {
-            "authorizationToken": "Bearer example-token",
-            "methodArn": "arn:aws:execute-api:ap-south-1:123456789012:api/dev/GET/doctors",
-        }
-
-        with (
-            patch.object(authorizer, "get_jwt_secret", return_value="test-secret"),
-            patch.object(authorizer.jwt, "decode", return_value=claims),
-            patch.object(
-                authorizer.table,
-                "get_item",
-                return_value={},
-            ),
-        ):
-            result = authorizer.lambda_handler(event, None)
-
-        self.assertEqual(result["principalId"], "user-123")
-        self.assertEqual(
-            result["policyDocument"]["Statement"][0]["Effect"],
-            "Allow",
+    def _patch(self, active):
+        return (
+            patch.object(authorizer,"get_secret",return_value="test-secret"),
+            patch.object(authorizer.jwt,"decode",return_value=self.claims),
+            patch.object(authorizer.table,"get_item",return_value={"Item":active} if active else {}),
         )
-        self.assertEqual(result["context"]["userId"], "user-123")
-        self.assertEqual(result["context"]["role"], "patient")
 
-    def test_revoked_token_is_rejected(self):
-        claims = {
-            "sub": "user-123",
-            "role": "patient",
-            "iat": 100,
-            "exp": 9999999999,
-            "jti": "revoked-jti",
-        }
+    def test_missing_bearer_token_is_rejected(self):
+        with self.assertRaises(Exception) as raised:
+            authorizer.lambda_handler({"methodArn":"arn:test"},None)
+        self.assertEqual(str(raised.exception),"Unauthorized")
 
-        event = {
-            "authorizationToken": "Bearer example-token",
-            "methodArn": "arn:aws:execute-api:ap-south-1:123456789012:api/dev/GET/doctors",
-        }
+    def test_matching_active_token_is_allowed(self):
+        p1,p2,p3=self._patch({"tokenType":"ACTIVE_ACCESS","jti":"jti-current","sessionId":"session-current"})
+        with p1,p2,p3:
+            result=authorizer.lambda_handler(self.event,None)
+        self.assertEqual(result["principalId"],"101")
+        self.assertEqual(result["context"]["role"],"patient")
 
-        with (
-            patch.object(authorizer, "get_jwt_secret", return_value="test-secret"),
-            patch.object(authorizer.jwt, "decode", return_value=claims),
-            patch.object(
-                authorizer.table,
-                "get_item",
-                return_value={
-                    "Item": {
-                        "tokenId": "revoked-jti",
-                        "tokenType": "ACCESS_DENYLIST",
-                        "expiresAt": 9999999999,
-                    }
-                },
-            ),
-        ):
-            with self.assertRaises(Exception) as raised:
-                authorizer.lambda_handler(event, None)
+    def test_old_token_is_rejected_after_replacement(self):
+        p1,p2,p3=self._patch({"tokenType":"ACTIVE_ACCESS","jti":"jti-new","sessionId":"session-new"})
+        with p1,p2,p3,self.assertRaises(Exception) as raised:
+            authorizer.lambda_handler(self.event,None)
+        self.assertEqual(str(raised.exception),"Unauthorized")
 
-        self.assertEqual(str(raised.exception), "Unauthorized")
+    def test_no_active_record_is_rejected(self):
+        p1,p2,p3=self._patch(None)
+        with p1,p2,p3,self.assertRaises(Exception) as raised:
+            authorizer.lambda_handler(self.event,None)
+        self.assertEqual(str(raised.exception),"Unauthorized")
 
     def test_invalid_jwt_is_rejected(self):
-        event = {
-            "authorizationToken": "Bearer tampered-token",
-            "methodArn": "arn:aws:execute-api:ap-south-1:123456789012:api/dev/GET/doctors",
-        }
-
-        with (
-            patch.object(authorizer, "get_jwt_secret", return_value="test-secret"),
-            patch.object(
-                authorizer.jwt,
-                "decode",
-                side_effect=jwt.InvalidTokenError("Invalid signature"),
-            ),
-        ):
+        with patch.object(authorizer,"get_secret",return_value="test-secret"), \
+             patch.object(authorizer.jwt,"decode",side_effect=jwt.InvalidTokenError("bad")):
             with self.assertRaises(Exception) as raised:
-                authorizer.lambda_handler(event, None)
+                authorizer.lambda_handler(self.event,None)
+        self.assertEqual(str(raised.exception),"Unauthorized")
 
-        self.assertEqual(str(raised.exception), "Unauthorized")
 
-
-if __name__ == "__main__":
+if __name__=="__main__":
     unittest.main()
