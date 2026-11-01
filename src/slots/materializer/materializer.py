@@ -37,10 +37,12 @@ def fetch_data(doctor_id=None):
  conn=connection()
  try:
   with conn.cursor() as cur:
-   where="WHERE d.user_id=%s" if doctor_id else ""
-   args=(doctor_id,) if doctor_id else ()
-   cur.execute(f"""SELECT d.user_id,d.timezone,ct.consultation_type_id,ct.duration_min,ct.capacity,ct.is_active
-       FROM doctors d JOIN consultation_types ct ON ct.doctor_user_id=d.user_id {where}""",args)
+   query = """SELECT d.user_id,d.timezone,ct.consultation_type_id,ct.duration_min,ct.capacity,ct.is_active
+       FROM doctors d JOIN consultation_types ct ON ct.doctor_user_id=d.user_id"""
+   if doctor_id:
+    cur.execute(query + " WHERE d.user_id=%s", (doctor_id,))
+   else:
+    cur.execute(query)
    types=cur.fetchall()
    result=[]
    for item in types:

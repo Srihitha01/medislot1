@@ -415,10 +415,19 @@ def _doctor_profile(user_id, method, event):
                 if key in data:
                     doctor_fields.append(f"{col}=%s"); doctor_values.append(data[key] if data[key] != "" else None)
             if not user_fields and not doctor_fields: return _response(400,{"message":"No profile fields supplied"})
+            # SQL identifiers below are selected only from the fixed allowlists above:
+            # user_fields is populated only with the literal name=%s assignment, and
+            # doctor_fields only with columns from doctor_map. All data values remain bound.
             if user_fields:
-                cur.execute("UPDATE users SET "+",".join(user_fields)+" WHERE user_id=%s AND role='doctor'",tuple(user_values+[user_id]))
+                cur.execute(  # nosec B608 - fixed allowlisted column identifier; values are parameterized
+                    "UPDATE users SET " + ",".join(user_fields) + " WHERE user_id=%s AND role='doctor'",
+                    tuple(user_values + [user_id]),
+                )
             if doctor_fields:
-                cur.execute("UPDATE doctors SET "+",".join(doctor_fields)+" WHERE user_id=%s",tuple(doctor_values+[user_id]))
+                cur.execute(  # nosec B608 - columns originate only from doctor_map; values are parameterized
+                    "UPDATE doctors SET " + ",".join(doctor_fields) + " WHERE user_id=%s",
+                    tuple(doctor_values + [user_id]),
+                )
         conn.commit()
         _dispatch_materializer(user_id)
         return _response(200,{"message":"Doctor profile updated"})
@@ -465,10 +474,16 @@ def _doctor_collection(table_name, user_id, method, event, resource_id=None):
                     return _response(201,{"consultationTypeId":new_id,"message":"Consultation type created"})
                 if method in {"PUT","PATCH"} and resource_id:
                     fields={"name":"name","durationMin":"duration_min","feeAmount":"fee_amount","capacity":"capacity","isActive":"is_active"}
-                    updates=[f"{fields[k]}=%s" for k in data if k in fields]
-                    vals=[data[k] for k in data if k in fields]
+                    if set(data) - set(fields):
+                        return _response(400,{"message":"Unsupported consultation type fields","allowedFields":sorted(fields)})
+                    updates=[f"{fields[k]}=%s" for k in data]
+                    vals=[data[k] for k in data]
                     if not updates: return _response(400,{"message":"No supported fields supplied"})
-                    cur.execute("UPDATE consultation_types SET "+",".join(updates)+" WHERE consultation_type_id=%s AND doctor_user_id=%s",tuple(vals+[resource_id,user_id]))
+                    # `updates` can contain only column names from the fixed `fields` map.
+                    cur.execute(  # nosec B608 - fixed allowlisted column identifiers; values are parameterized
+                        "UPDATE consultation_types SET "+",".join(updates)+" WHERE consultation_type_id=%s AND doctor_user_id=%s",
+                        tuple(vals+[resource_id,user_id]),
+                    )
                     if cur.rowcount==0: return _response(404,{"message":"Consultation type not found"})
                     conn.commit(); _dispatch_materializer(user_id); return _response(200,{"message":"Consultation type updated"})
                 if method=="DELETE" and resource_id:
