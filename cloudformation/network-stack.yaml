@@ -229,14 +229,17 @@ Resources:
         - Key: Name
           Value: !Sub medislot-${Environment}-ssm-endpoint
 
-  # Dedicated destination for S3 server access logs. This bucket intentionally does not log to itself.
-  # Dedicated access-log sink: S3 cannot write access logs to the same bucket it is logging.
+  # Dedicated destination for S3 server access logs.
+  # This bucket intentionally does not log to itself.
   AccessLogsBucket:
     Type: AWS::S3::Bucket #checkov:skip=CKV_AWS_18:Dedicated destination bucket cannot log to itself.
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub medislot-${AWS::AccountId}-${AWS::Region}-${Environment}-access-logs
+      BucketName:
+        Fn::Sub:
+          - "ms-${AWS::AccountId}-${Environment}-logs-${UniqueId}"
+          - UniqueId: !Select [2, !Split ["/", !Ref AWS::StackId]]
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -288,13 +291,16 @@ Resources:
               Bool:
                 aws:SecureTransport: false
 
-  # Private deployment artifacts bucket used by AWS SAM to store packaged Lambda code.
+  # Private deployment artifacts bucket used by AWS SAM.
   DeploymentArtifactsBucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub medislot-${AWS::AccountId}-${AWS::Region}-${Environment}-artifacts
+      BucketName:
+        Fn::Sub:
+          - "ms-${AWS::AccountId}-${Environment}-art-${UniqueId}"
+          - UniqueId: !Select [2, !Split ["/", !Ref AWS::StackId]]
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
