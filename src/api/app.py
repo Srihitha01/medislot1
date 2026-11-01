@@ -405,29 +405,27 @@ def _doctor_profile(user_id, method, event):
             data=_body(event)
             allowed={"name","licenseNumber","specialisationId","hospitalId","yearsExperience","qualifications","languages","timezone"}
             if not data or set(data)-allowed: return _response(400,{"message":"Only supported doctor profile fields may be updated","allowedFields":sorted(allowed)})
-            user_fields=[]; user_values=[]
+            doctor_map={"licenseNumber":"license_number","specialisationId":"specialisation_id","hospitalId":"hospital_id","yearsExperience":"years_experience","qualifications":"qualifications","languages":"languages","timezone":"timezone"}
             if "name" in data:
                 if not isinstance(data["name"],str) or not data["name"].strip() or len(data["name"])>120: return _response(400,{"message":"Invalid name"})
-                user_fields.append("name=%s"); user_values.append(data["name"].strip())
-            doctor_map={"licenseNumber":"license_number","specialisationId":"specialisation_id","hospitalId":"hospital_id","yearsExperience":"years_experience","qualifications":"qualifications","languages":"languages","timezone":"timezone"}
-            doctor_fields=[]; doctor_values=[]
-            for key,col in doctor_map.items():
+            if not any(key in data for key in ("name", *doctor_map)):
+                return _response(400,{"message":"No profile fields supplied"})
+            if "name" in data:
+                cur.execute("UPDATE users SET name=%s WHERE user_id=%s AND role='doctor'", (data["name"].strip(), user_id))
+            # Each SQL statement is static; only values supplied by the caller are bound.
+            doctor_update_sql = {
+                "licenseNumber": "UPDATE doctors SET license_number=%s WHERE user_id=%s",
+                "specialisationId": "UPDATE doctors SET specialisation_id=%s WHERE user_id=%s",
+                "hospitalId": "UPDATE doctors SET hospital_id=%s WHERE user_id=%s",
+                "yearsExperience": "UPDATE doctors SET years_experience=%s WHERE user_id=%s",
+                "qualifications": "UPDATE doctors SET qualifications=%s WHERE user_id=%s",
+                "languages": "UPDATE doctors SET languages=%s WHERE user_id=%s",
+                "timezone": "UPDATE doctors SET timezone=%s WHERE user_id=%s",
+            }
+            for key, statement in doctor_update_sql.items():
                 if key in data:
-                    doctor_fields.append(f"{col}=%s"); doctor_values.append(data[key] if data[key] != "" else None)
-            if not user_fields and not doctor_fields: return _response(400,{"message":"No profile fields supplied"})
-            # SQL identifiers below are selected only from the fixed allowlists above:
-            # user_fields is populated only with the literal name=%s assignment, and
-            # doctor_fields only with columns from doctor_map. All data values remain bound.
-            if user_fields:
-                cur.execute(  # nosec B608 - fixed allowlisted column identifier; values are parameterized
-                    "UPDATE users SET " + ",".join(user_fields) + " WHERE user_id=%s AND role='doctor'",
-                    tuple(user_values + [user_id]),
-                )
-            if doctor_fields:
-                cur.execute(  # nosec B608 - columns originate only from doctor_map; values are parameterized
-                    "UPDATE doctors SET " + ",".join(doctor_fields) + " WHERE user_id=%s",
-                    tuple(doctor_values + [user_id]),
-                )
+                    value = data[key] if data[key] != "" else None
+                    cur.execute(statement, (value, user_id))
         conn.commit()
         _dispatch_materializer(user_id)
         return _response(200,{"message":"Doctor profile updated"})
@@ -476,15 +474,23 @@ def _doctor_collection(table_name, user_id, method, event, resource_id=None):
                     fields={"name":"name","durationMin":"duration_min","feeAmount":"fee_amount","capacity":"capacity","isActive":"is_active"}
                     if set(data) - set(fields):
                         return _response(400,{"message":"Unsupported consultation type fields","allowedFields":sorted(fields)})
-                    updates=[f"{fields[k]}=%s" for k in data]
-                    vals=[data[k] for k in data]
-                    if not updates: return _response(400,{"message":"No supported fields supplied"})
-                    # `updates` can contain only column names from the fixed `fields` map.
-                    cur.execute(  # nosec B608 - fixed allowlisted column identifiers; values are parameterized
-                        "UPDATE consultation_types SET "+",".join(updates)+" WHERE consultation_type_id=%s AND doctor_user_id=%s",
-                        tuple(vals+[resource_id,user_id]),
+                    if not data: return _response(400,{"message":"No supported fields supplied"})
+                    update_statements = {
+                        "name": "UPDATE consultation_types SET name=%s WHERE consultation_type_id=%s AND doctor_user_id=%s",
+                        "durationMin": "UPDATE consultation_types SET duration_min=%s WHERE consultation_type_id=%s AND doctor_user_id=%s",
+                        "feeAmount": "UPDATE consultation_types SET fee_amount=%s WHERE consultation_type_id=%s AND doctor_user_id=%s",
+                        "capacity": "UPDATE consultation_types SET capacity=%s WHERE consultation_type_id=%s AND doctor_user_id=%s",
+                        "isActive": "UPDATE consultation_types SET is_active=%s WHERE consultation_type_id=%s AND doctor_user_id=%s",
+                    }
+                    cur.execute(
+                        "SELECT consultation_type_id FROM consultation_types WHERE consultation_type_id=%s AND doctor_user_id=%s",
+                        (resource_id, user_id),
                     )
-                    if cur.rowcount==0: return _response(404,{"message":"Consultation type not found"})
+                    if cur.fetchone() is None:
+                        return _response(404,{"message":"Consultation type not found"})
+                    for key, statement in update_statements.items():
+                        if key in data:
+                            cur.execute(statement, (data[key], resource_id, user_id))
                     conn.commit(); _dispatch_materializer(user_id); return _response(200,{"message":"Consultation type updated"})
                 if method=="DELETE" and resource_id:
                     cur.execute("UPDATE consultation_types SET is_active=0 WHERE consultation_type_id=%s AND doctor_user_id=%s",(resource_id,user_id))
