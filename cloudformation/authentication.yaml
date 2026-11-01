@@ -54,6 +54,7 @@ Globals:
         BCRYPT_ROUNDS: "12"
 
 Resources:
+
   AuthDeadLetterQueue:
     Type: AWS::SQS::Queue
     Properties:
@@ -209,10 +210,8 @@ Resources:
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
 
-
-
   ReferenceDataFunction:
-    Type: AWS::Serverless::Function
+    Type: AWS::Serverless::Function #checkov:skip=CKV_AWS_115:Reserved concurrency is disabled for development because the account unreserved concurrency quota is constrained.
     Properties:
       FunctionName: !Sub medislot-${Environment}-reference-data
       CodeUri: ../src/auth/
@@ -221,6 +220,9 @@ Resources:
         Fn::ImportValue: !Sub medislot-${Environment}-RegisterLambdaRoleArn
       KmsKeyArn:
         Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt AuthDeadLetterQueue.Arn
       VpcConfig:
         SecurityGroupIds:
           - Fn::ImportValue: !Sub medislot-${Environment}-LambdaSecurityGroup
@@ -281,7 +283,7 @@ Resources:
                 Resource: !GetAtt SlotMaterializerDeadLetterQueue.Arn
 
   SlotMaterializerFunction:
-    Type: AWS::Serverless::Function
+    Type: AWS::Serverless::Function #checkov:skip=CKV_AWS_115:Reserved concurrency is disabled for development because the account unreserved concurrency quota is constrained.
     Properties:
       FunctionName: !Sub medislot-${Environment}-slot-materializer
       Description: Builds and reconciles the next 30 days of doctor appointment slots
@@ -291,6 +293,11 @@ Resources:
       MemorySize: 512
       Timeout: 120
       Role: !GetAtt SlotMaterializerRole.Arn
+      KmsKeyArn:
+        Fn::ImportValue: !Sub medislot-${Environment}-MediSlotDataKmsKeyArn
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt SlotMaterializerDeadLetterQueue.Arn
       Environment:
         Variables:
           ENVIRONMENT: !Ref Environment
@@ -307,6 +314,7 @@ Resources:
         SubnetIds:
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
+
   SlotMaterializerSchedule:
     Type: AWS::Events::Rule
     Properties:
@@ -333,10 +341,6 @@ Resources:
       Qualifier: "$LATEST"
       MaximumRetryAttempts: 2
       MaximumEventAgeInSeconds: 3600
-      DestinationConfig:
-        OnFailure:
-          Destination: !GetAtt SlotMaterializerDeadLetterQueue.Arn
-
 
 Outputs:
   ReferenceDataFunctionArn:
