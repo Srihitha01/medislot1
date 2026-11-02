@@ -348,61 +348,24 @@ def _require_doctor(role):
 
 
 def _dispatch_materializer(doctor_id=None, date_from=None, date_to=None):
-    """Best-effort asynchronous slot materializer dispatch.
+    """Avoid synchronous cross-service calls from the VPC API Lambda.
 
-    Database changes are committed before this function is called. A temporary
-    Lambda-service connectivity problem must therefore never turn a successful
-    database operation into an HTTP 502/timeout.
+    The AppRouter runs inside private subnets and does not currently have
+    confirmed connectivity to the Lambda service API. Calling
+    lambda:InvokeFunction from this request path can block until the API
+    Lambda times out, even after the MySQL transaction has committed.
+
+    Slot materialization remains handled by the scheduled materializer rule.
+    A future immediate-refresh implementation should use a CloudFormation-
+    managed SQS queue/EventBridge bus or a Lambda interface VPC endpoint,
+    rather than a synchronous dependency in this HTTP request.
     """
-    function_name = os.environ.get("SLOT_MATERIALIZER_FUNCTION")
-    if not function_name:
-        logger.warning(
-            "SLOT_MATERIALIZER_FUNCTION is not configured; "
-            "scheduled materialization remains responsible for slot generation"
-        )
-        return False
-
-    try:
-        lambda_client = boto3.client(
-            "lambda",
-            config=Config(
-                connect_timeout=2,
-                read_timeout=3,
-                retries={"max_attempts": 1, "mode": "standard"},
-            ),
-        )
-        result = lambda_client.invoke(
-            FunctionName=function_name,
-            InvocationType="Event",
-            Payload=json.dumps({
-                "doctorId": str(doctor_id) if doctor_id else None,
-                "dateFrom": date_from,
-                "dateTo": date_to,
-            }).encode("utf-8"),
-        )
-        status_code = result.get("StatusCode")
-        if status_code != 202:
-            logger.error(json.dumps({
-                "event": "materializer_invocation_rejected",
-                "doctorId": str(doctor_id) if doctor_id else None,
-                "statusCode": status_code,
-            }))
-            return False
-
-        logger.info(json.dumps({
-            "event": "materializer_invocation_submitted",
-            "doctorId": str(doctor_id) if doctor_id else None,
-            "statusCode": status_code,
-        }))
-        return True
-    except Exception:
-        # Deliberately do not re-raise: the MySQL transaction has already
-        # committed, and the API must return the result of that operation.
-        logger.exception(json.dumps({
-            "event": "materializer_invocation_failed",
-            "doctorId": str(doctor_id) if doctor_id else None,
-        }))
-        return False
+    logger.info(json.dumps({
+        "event": "materializer_dispatch_skipped",
+        "doctorId": str(doctor_id) if doctor_id else None,
+        "reason": "scheduled_materialization_enabled"
+    }))
+    return False
 
 
 
