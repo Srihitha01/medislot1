@@ -1,0 +1,9 @@
+{
+  "TableName": "medislot-dev-auth-tokens",
+  "Key": {
+    "tokenId": {
+      "S": "ACTIVE#cc70dc34-033d-4b25-93b4-12542fe09496"
+    }
+  },
+  "ConsistentRead": true
+}
