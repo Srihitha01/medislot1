@@ -54,6 +54,7 @@ Globals:
         DISPATCH_LOG_TABLE: !Sub medislot-${Environment}-dispatch-log
 
 Resources:
+
   ApplicationApiAccessLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -100,6 +101,7 @@ Resources:
             Identity:
               Header: Authorization
               ReauthorizeEvery: 0
+
       DefinitionBody:
         swagger: "2.0"
         info:
@@ -107,13 +109,22 @@ Resources:
           version: "1.0"
         schemes:
           - https
+
         paths:
-          /auth/doctors/register:
+
+          # Shared registration endpoint for doctors and patients
+          /auth/register:
             post:
               security: []
               responses:
-                "200":
-                  description: Lambda proxy response
+                "201":
+                  description: Registration successful
+                "400":
+                  description: Invalid registration details
+                "409":
+                  description: Account already exists
+                "500":
+                  description: Registration failed
               x-amazon-apigateway-integration:
                 type: aws_proxy
                 httpMethod: POST
@@ -123,21 +134,7 @@ Resources:
                     - TargetArn:
                         Fn::ImportValue: !Sub medislot-${Environment}-RegisterFunctionArn
 
-          /auth/patients/register:
-            post:
-              security: []
-              responses:
-                "200":
-                  description: Lambda proxy response
-              x-amazon-apigateway-integration:
-                type: aws_proxy
-                httpMethod: POST
-                uri:
-                  Fn::Sub:
-                    - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
-                    - TargetArn:
-                        Fn::ImportValue: !Sub medislot-${Environment}-RegisterFunctionArn
-
+          # Reference data
           /reference/specialisations:
             get:
               security: []
@@ -152,6 +149,7 @@ Resources:
                     - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
                     - TargetArn:
                         Fn::ImportValue: !Sub medislot-${Environment}-ReferenceDataFunctionArn
+
           /reference/hospitals:
             get:
               security: []
@@ -167,12 +165,13 @@ Resources:
                     - TargetArn:
                         Fn::ImportValue: !Sub medislot-${Environment}-ReferenceDataFunctionArn
 
+          # Shared login endpoint
           /auth/login:
             post:
               security: []
               responses:
                 "200":
-                  description: Lambda proxy response
+                  description: Login successful
               x-amazon-apigateway-integration:
                 type: aws_proxy
                 httpMethod: POST
@@ -182,12 +181,13 @@ Resources:
                     - TargetArn:
                         Fn::ImportValue: !Sub medislot-${Environment}-LoginFunctionArn
 
+          # Shared refresh endpoint
           /auth/refresh:
             post:
               security: []
               responses:
                 "200":
-                  description: Lambda proxy response
+                  description: Token refreshed
               x-amazon-apigateway-integration:
                 type: aws_proxy
                 httpMethod: POST
@@ -197,12 +197,13 @@ Resources:
                     - TargetArn:
                         Fn::ImportValue: !Sub medislot-${Environment}-RefreshFunctionArn
 
+          # Shared logout endpoint
           /auth/logout:
             post:
               security: []
               responses:
                 "200":
-                  description: Lambda proxy response
+                  description: Logout successful
               x-amazon-apigateway-integration:
                 type: aws_proxy
                 httpMethod: POST
@@ -212,23 +213,15 @@ Resources:
                     - TargetArn:
                         Fn::ImportValue: !Sub medislot-${Environment}-LogoutFunctionArn
 
-  RegisterDoctorApiPermission:
+  # Shared registration Lambda permission
+  RegisterApiPermission:
     Type: AWS::Lambda::Permission
     Properties:
       Action: lambda:InvokeFunction
       FunctionName:
         Fn::ImportValue: !Sub medislot-${Environment}-RegisterFunctionArn
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApplicationApi}/*/POST/auth/doctors/register
-
-  RegisterPatientApiPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName:
-        Fn::ImportValue: !Sub medislot-${Environment}-RegisterFunctionArn
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApplicationApi}/*/POST/auth/patients/register
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApplicationApi}/*/POST/auth/register
 
   LoginApiPermission:
     Type: AWS::Lambda::Permission
@@ -307,6 +300,7 @@ Resources:
             Method: ANY
             Auth:
               Authorizer: MediSlotAuthorizer
+
         ApplicationRoutes:
           Type: Api
           Properties:
@@ -315,6 +309,7 @@ Resources:
             Method: ANY
             Auth:
               Authorizer: MediSlotAuthorizer
+
         HealthCheck:
           Type: Api
           Properties:
