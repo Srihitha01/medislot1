@@ -87,7 +87,7 @@ def get_db_connection():
     )
 
 
-def get_doctor_identity(event):
+def get_user_identity(event):
     """
     API Gateway TOKEN authorizer context.
 
@@ -95,36 +95,37 @@ def get_doctor_identity(event):
       principalId = authenticated users.user_id
       context.role = doctor or patient
 
-    The database uses doctors.doctor_id = users.user_id.
+    The database uses doctors.user_id = users.user_id.
     """
     request_context = event.get("requestContext") or {}
     authorizer = request_context.get("authorizer") or {}
 
     role = authorizer.get("role")
-    doctor_id = (
-        authorizer.get("doctor_id")
+    user_id = (
+        authorizer.get("user_id")
         or authorizer.get("userId")
+        or authorizer.get("doctor_id")
         or authorizer.get("principalId")
     )
 
     # API Gateway may expose principalId separately from context.
-    if not doctor_id:
-        doctor_id = request_context.get("authorizer", {}).get(
+    if not user_id:
+        user_id = request_context.get("authorizer", {}).get(
             "principalId"
         )
 
-    if role != "doctor" or not doctor_id:
+    if role != "doctor" or not user_id:
         return None
 
-    return str(doctor_id)
+    return str(user_id)
 
 
-def get_doctor_profile(cursor, doctor_id):
+def get_doctor_profile(cursor, user_id):
     sql = """
         SELECT
-            d.doctor_id,
+            d.user_id,
             d.full_name,
-            d.licence_number,
+            d.license_number,
             d.specialisation_id,
             s.name AS specialisation,
             d.hospital_id,
@@ -141,14 +142,14 @@ def get_doctor_profile(cursor, doctor_id):
             ON s.specialisation_id = d.specialisation_id
         LEFT JOIN hospitals h
             ON h.hospital_id = d.hospital_id
-        WHERE d.doctor_id = %s
+        WHERE d.user_id = %s
         LIMIT 1
     """
-    cursor.execute(sql, (doctor_id,))
+    cursor.execute(sql, (user_id,))
     return cursor.fetchone()
 
 
-def get_dashboard(cursor, doctor_id, timezone_name):
+def get_dashboard(cursor, user_id, timezone_name):
     try:
         doctor_timezone = ZoneInfo(timezone_name)
     except Exception:
@@ -180,24 +181,24 @@ def get_dashboard(cursor, doctor_id, timezone_name):
         """
         SELECT
             COUNT(*) AS today_appointments,
-            SUM(CASE WHEN status = 'CONFIRMED' THEN 1 ELSE 0 END)
+            SUM(CASE WHEN status IN ('CONFIRMED', 'booked') THEN 1 ELSE 0 END)
                 AS confirmed_today
         FROM appointments
-        WHERE doctor_id = %s
+        WHERE doctor_user_id = %s
           AND slot_start_utc >= %s
           AND slot_start_utc < %s
         """,
-        (doctor_id, start_utc, end_utc)
+        (user_id, start_utc, end_utc)
     )
     today = cursor.fetchone() or {}
 
     cursor.execute(
         """
-        SELECT COUNT(DISTINCT patient_id) AS total_patients
+        SELECT COUNT(DISTINCT patient_user_id) AS total_patients
         FROM appointments
-        WHERE doctor_id = %s
+        WHERE doctor_user_id = %s
         """,
-        (doctor_id,)
+        (user_id,)
     )
     patients = cursor.fetchone() or {}
 
@@ -205,11 +206,11 @@ def get_dashboard(cursor, doctor_id, timezone_name):
         """
         SELECT COUNT(*) AS upcoming_appointments
         FROM appointments
-        WHERE doctor_id = %s
-          AND status = 'CONFIRMED'
+        WHERE doctor_user_id = %s
+          AND status IN ('CONFIRMED', 'booked')
           AND slot_start_utc >= UTC_TIMESTAMP(3)
         """,
-        (doctor_id,)
+        (user_id,)
     )
     upcoming = cursor.fetchone() or {}
 
@@ -217,10 +218,10 @@ def get_dashboard(cursor, doctor_id, timezone_name):
         """
         SELECT COUNT(*) AS consultation_types
         FROM consultation_types
-        WHERE doctor_id = %s
+        WHERE doctor_user_id = %s
           AND is_active = 1
         """,
-        (doctor_id,)
+        (user_id,)
     )
     consultations = cursor.fetchone() or {}
 
@@ -239,13 +240,13 @@ def get_dashboard(cursor, doctor_id, timezone_name):
     }
 
 
-def get_appointments(cursor, doctor_id, query):
+def get_appointments(cursor, user_id, query):
     limit = min(max(int(query.get("limit", 50)), 1), 100)
 
     sql = """
         SELECT
             a.appointment_id,
-            a.patient_id,
+            a.patient_user_id AS patient_id,
             p.full_name AS patient_name,
             p.phone AS patient_phone,
             a.consultation_type_id,
@@ -257,12 +258,12 @@ def get_appointments(cursor, doctor_id, query):
             a.fee_amount
         FROM appointments a
         JOIN patients p
-            ON p.patient_id = a.patient_id
+            ON p.user_id = a.patient_user_id
         JOIN consultation_types ct
             ON ct.consultation_type_id = a.consultation_type_id
-        WHERE a.doctor_id = %s
+        WHERE a.doctor_user_id = %s
     """
-    parameters = [doctor_id]
+    parameters = [user_id]
 
     status = query.get("status")
     if status:
@@ -285,12 +286,12 @@ def get_appointments(cursor, doctor_id, query):
     return cursor.fetchall()
 
 
-def get_patients(cursor, doctor_id, query):
+def get_patients(cursor, user_id, query):
     limit = min(max(int(query.get("limit", 50)), 1), 100)
 
     sql = """
         SELECT
-            p.patient_id,
+            p.user_id AS patient_id,
             p.full_name,
             p.phone,
             p.city,
@@ -298,21 +299,21 @@ def get_patients(cursor, doctor_id, query):
             MAX(a.slot_start_utc) AS last_appointment
         FROM appointments a
         JOIN patients p
-            ON p.patient_id = a.patient_id
-        WHERE a.doctor_id = %s
+            ON p.user_id = a.patient_user_id
+        WHERE a.doctor_user_id = %s
         GROUP BY
-            p.patient_id,
+            p.user_id,
             p.full_name,
             p.phone,
             p.city
         ORDER BY last_appointment DESC
         LIMIT %s
     """
-    cursor.execute(sql, (doctor_id, limit))
+    cursor.execute(sql, (user_id, limit))
     return cursor.fetchall()
 
 
-def get_consultation_types(cursor, doctor_id):
+def get_consultation_types(cursor, user_id):
     cursor.execute(
         """
         SELECT
@@ -323,16 +324,16 @@ def get_consultation_types(cursor, doctor_id):
             capacity,
             is_active
         FROM consultation_types
-        WHERE doctor_id = %s
+        WHERE doctor_user_id = %s
           AND is_active = 1
         ORDER BY duration_min
         """,
-        (doctor_id,)
+        (user_id,)
     )
     return cursor.fetchall()
 
 
-def get_availability(cursor, doctor_id):
+def get_availability(cursor, user_id):
     cursor.execute(
         """
         SELECT
@@ -342,10 +343,10 @@ def get_availability(cursor, doctor_id):
             start_time,
             end_time
         FROM availability_patterns
-        WHERE doctor_id = %s
+        WHERE doctor_user_id = %s
         ORDER BY day_of_week, start_time
         """,
-        (doctor_id,)
+        (user_id,)
     )
     return cursor.fetchall()
 
@@ -354,9 +355,9 @@ def lambda_handler(event, context):
     request_id = getattr(context, "aws_request_id", "unknown")
 
     try:
-        doctor_id = get_doctor_identity(event)
+        user_id = get_user_identity(event)
 
-        if not doctor_id:
+        if not user_id:
             return response(403, {
                 "message": "Doctor access is required."
             })
@@ -377,7 +378,7 @@ def lambda_handler(event, context):
 
         try:
             with connection.cursor() as cursor:
-                profile = get_doctor_profile(cursor, doctor_id)
+                profile = get_doctor_profile(cursor, user_id)
 
                 if not profile:
                     return response(404, {
@@ -390,14 +391,14 @@ def lambda_handler(event, context):
                 if path == "/doctors/me/dashboard":
                     dashboard = get_dashboard(
                         cursor,
-                        doctor_id,
+                        user_id,
                         profile.get("timezone") or "UTC"
                     )
                     return response(200, {"dashboard": dashboard})
 
                 if path == "/doctors/me/appointments":
                     appointments = get_appointments(
-                        cursor, doctor_id, query
+                        cursor, user_id, query
                     )
                     return response(200, {
                         "appointments": appointments,
@@ -405,21 +406,21 @@ def lambda_handler(event, context):
                     })
 
                 if path == "/doctors/me/patients":
-                    patients = get_patients(cursor, doctor_id, query)
+                    patients = get_patients(cursor, user_id, query)
                     return response(200, {
                         "patients": patients,
                         "count": len(patients)
                     })
 
                 if path == "/doctors/me/consultation-types":
-                    types = get_consultation_types(cursor, doctor_id)
+                    types = get_consultation_types(cursor, user_id)
                     return response(200, {
                         "consultation_types": types
                     })
 
                 if path == "/doctors/me/availability":
                     availability = get_availability(
-                        cursor, doctor_id
+                        cursor, user_id
                     )
                     return response(200, {
                         "availability": availability

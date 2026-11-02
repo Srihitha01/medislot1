@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import uuid
 import boto3
 import bcrypt
 import pymysql
@@ -251,6 +252,9 @@ def lambda_handler(event, context):
                     )
                 })
 
+        # Use one UUID as the identity across users and the role-specific profile.
+        user_id = str(uuid.uuid4())
+
         # Create the account and role-specific profile in one transaction.
         conn = db()
 
@@ -258,10 +262,11 @@ def lambda_handler(event, context):
             cur.execute(
                 """
                 INSERT INTO users
-                    (name, email, password_hash, role, status)
-                VALUES (%s, %s, %s, %s, 'active')
+                    (user_id, name, email, password_hash, role, status)
+                VALUES (%s, %s, %s, %s, %s, 'active')
                 """,
                 (
+                    user_id,
                     name,
                     email,
                     bcrypt.hashpw(
@@ -272,14 +277,13 @@ def lambda_handler(event, context):
                 )
             )
 
-            user_id = cur.lastrowid
-
             if role == "patient":
                 cur.execute(
                     """
                     INSERT INTO patients
                     (
                         user_id,
+                        full_name,
                         date_of_birth,
                         gender,
                         phone,
@@ -288,10 +292,11 @@ def lambda_handler(event, context):
                         emergency_contact_phone,
                         notes
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         user_id,
+                        name,
                         data["dateOfBirth"],
                         data["gender"],
                         data["phone"],
@@ -308,6 +313,7 @@ def lambda_handler(event, context):
                     INSERT INTO doctors
                     (
                         user_id,
+                        full_name,
                         license_number,
                         specialisation_id,
                         hospital_id,
@@ -317,10 +323,11 @@ def lambda_handler(event, context):
                         timezone,
                         photo_key
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
                     """,
                     (
                         user_id,
+                        name,
                         data["licenseNumber"].strip(),
                         data["specialisationId"],
                         data.get("hospitalId"),
