@@ -192,7 +192,8 @@ def _create_slot(event, user_id, role):
             raise ValueError("capacity must be an integer between 1 and 50")
         if not data.get("consultationTypeId"):
             raise ValueError("consultationTypeId is required")
-        consultation_id = str(int(data["consultationTypeId"]))
+        raw_consultation_id = str(data["consultationTypeId"]).strip()
+        consultation_id = "CUSTOM" if raw_consultation_id.upper() == "CUSTOM" else str(int(raw_consultation_id))
     except ValueError as exc:
         return _response(400, {"message": str(exc)})
     if consultation_id != "CUSTOM":
@@ -639,8 +640,11 @@ def _book_appointment(event,user_id,role):
     try:
         conn=_db_connection()
         with conn.cursor() as cur:
-            cur.execute("SELECT fee_amount FROM consultation_types WHERE consultation_type_id=%s AND doctor_user_id=%s AND is_active=1",
-                        (int(updated["consultationTypeId"]),int(updated["doctorId"])))
+            cur.execute(
+                "SELECT fee_amount FROM consultation_types "
+                "WHERE consultation_type_id=%s AND doctor_user_id=%s AND is_active=1",
+                (int(updated["consultationTypeId"]), str(updated["doctorId"])),
+            )
             consultation=cur.fetchone()
             if not consultation: raise ValueError("Consultation type is no longer active")
             start=datetime.fromisoformat(updated["startUtc"].replace("Z","+00:00")).replace(tzinfo=None)
@@ -648,7 +652,8 @@ def _book_appointment(event,user_id,role):
             cur.execute("""INSERT INTO appointments
                 (patient_user_id,doctor_user_id,consultation_type_id,slot_id,slot_start_utc,slot_end_utc,status,active_flag,fee_amount)
                 VALUES(%s,%s,%s,%s,%s,%s,'booked',1,%s)""",
-                (int(user_id),int(updated["doctorId"]),int(updated["consultationTypeId"]),slot_id,start,end,consultation["fee_amount"]))
+                (str(user_id), str(updated["doctorId"]), int(updated["consultationTypeId"]),
+                 slot_id, start, end, consultation["fee_amount"]))
             appointment_id=cur.lastrowid
         conn.commit()
         return _response(201,{"message":"Appointment booked successfully","appointmentId":appointment_id,"slotId":slot_id})
