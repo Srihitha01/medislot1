@@ -1,0 +1,1075 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MediSlot | Doctor Dashboard</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #2563eb;
+            --primary-light: #eff6ff;
+            --background: #f5f7fb;
+            --sidebar: #ffffff;
+            --text: #172033;
+            --muted: #718096;
+            --border: #e8edf4;
+            --success: #16a34a;
+            --danger: #dc2626;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--background);
+            color: var(--text);
+        }
+
+        .layout {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        /* Sidebar */
+
+        .sidebar {
+            width: 250px;
+            background: var(--sidebar);
+            border-right: 1px solid var(--border);
+            padding: 28px 18px;
+            position: fixed;
+            height: 100vh;
+            left: 0;
+            top: 0;
+            display: flex;
+            flex-direction: column;
+            z-index: 10;
+        }
+
+        .logo {
+            font-size: 25px;
+            font-weight: 800;
+            color: var(--primary);
+            padding: 0 12px;
+            margin-bottom: 42px;
+        }
+
+        .logo span {
+            color: var(--text);
+        }
+
+        .nav-label {
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            padding: 0 12px;
+            margin-bottom: 15px;
+        }
+
+        .nav-menu {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .nav-menu a {
+            text-decoration: none;
+            color: #64748b;
+            padding: 13px 14px;
+            border-radius: 9px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        .nav-menu a:hover,
+        .nav-menu a.active {
+            background: var(--primary-light);
+            color: var(--primary);
+        }
+
+        .nav-icon {
+            font-size: 19px;
+            width: 22px;
+            text-align: center;
+        }
+
+        .sidebar-bottom {
+            margin-top: auto;
+            border-top: 1px solid var(--border);
+            padding-top: 20px;
+        }
+
+        /* Main content */
+
+        .main {
+            margin-left: 250px;
+            width: calc(100% - 250px);
+            padding: 28px 35px;
+        }
+
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 35px;
+            gap: 15px;
+        }
+
+        .page-title h1 {
+            font-size: 25px;
+            font-weight: 700;
+        }
+
+        .page-title p {
+            color: var(--muted);
+            font-size: 13px;
+            margin-top: 7px;
+        }
+
+        .doctor-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            background: white;
+            padding: 10px 15px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+
+        .avatar {
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            background: #dbeafe;
+            color: var(--primary);
+            display: grid;
+            place-items: center;
+            font-weight: 700;
+            font-size: 16px;
+        }
+
+        .doctor-info h4 {
+            font-size: 13px;
+        }
+
+        .doctor-info p {
+            color: var(--muted);
+            font-size: 11px;
+            margin-top: 4px;
+        }
+
+        /* Welcome */
+
+        .welcome {
+            background: linear-gradient(115deg, #1d4ed8, #3b82f6);
+            color: white;
+            padding: 27px 30px;
+            border-radius: 16px;
+            margin-bottom: 28px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .welcome h2 {
+            font-size: 22px;
+            margin-bottom: 9px;
+        }
+
+        .welcome p {
+            font-size: 13px;
+            opacity: 0.9;
+        }
+
+        .welcome-date {
+            font-size: 13px;
+            background: rgba(255,255,255,0.15);
+            padding: 12px 16px;
+            border-radius: 9px;
+            white-space: nowrap;
+        }
+
+        /* Statistics */
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 18px;
+            margin-bottom: 28px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 22px;
+            border: 1px solid var(--border);
+            border-radius: 13px;
+        }
+
+        .stat-heading {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 18px;
+        }
+
+        .stat-heading p {
+            color: var(--muted);
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .stat-icon {
+            width: 39px;
+            height: 39px;
+            border-radius: 10px;
+            display: grid;
+            place-items: center;
+            font-size: 19px;
+        }
+
+        .blue { background: #eff6ff; }
+        .green { background: #f0fdf4; }
+        .purple { background: #f5f3ff; }
+
+        .stat-card h2 {
+            font-size: 29px;
+            font-weight: 700;
+        }
+
+        .stat-card small {
+            color: var(--muted);
+            font-size: 11px;
+        }
+
+        /* Content panels */
+
+        .content-grid {
+            display: grid;
+            grid-template-columns: 1.5fr 1fr;
+            gap: 20px;
+            margin-bottom: 25px;
+        }
+
+        .panel {
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: 13px;
+            padding: 23px;
+            min-width: 0;
+        }
+
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            gap: 10px;
+        }
+
+        .panel-header h3 {
+            font-size: 15px;
+        }
+
+        .panel-header p {
+            font-size: 11px;
+            color: var(--muted);
+            margin-top: 5px;
+        }
+
+        input, select {
+            font-family: inherit;
+            padding: 9px 11px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            outline: none;
+            background: white;
+            color: var(--text);
+        }
+
+        input:focus, select:focus {
+            border-color: var(--primary);
+        }
+
+        .date-input {
+            font-size: 11px;
+            max-width: 155px;
+        }
+
+        /* Tables */
+
+        .table-wrap {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 400px;
+        }
+
+        th {
+            text-align: left;
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 600;
+            padding: 12px 9px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        td {
+            padding: 15px 9px;
+            font-size: 12px;
+            border-bottom: 1px solid #f0f2f6;
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        .status {
+            padding: 5px 9px;
+            border-radius: 20px;
+            font-size: 10px;
+            font-weight: 600;
+            display: inline-block;
+        }
+
+        .status-open {
+            background: #dcfce7;
+            color: #15803d;
+        }
+
+        .status-full {
+            background: #fee2e2;
+            color: #b91c1c;
+        }
+
+        /* Buttons */
+
+        .btn {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .btn:hover {
+            background: #1d4ed8;
+        }
+
+        .btn-light {
+            background: var(--primary-light);
+            color: var(--primary);
+        }
+
+        .btn-light:hover {
+            background: #dbeafe;
+        }
+
+        /* Consultation cards */
+
+        .consultation-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .consultation-item {
+            border: 1px solid var(--border);
+            border-radius: 9px;
+            padding: 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .consultation-item h4 {
+            font-size: 12px;
+            margin-bottom: 6px;
+        }
+
+        .consultation-item p {
+            color: var(--muted);
+            font-size: 11px;
+        }
+
+        .consultation-fee {
+            font-weight: 700;
+            color: var(--primary);
+            font-size: 13px;
+        }
+
+        /* Availability */
+
+        .availability-panel {
+            margin-bottom: 25px;
+        }
+
+        .availability-table td:first-child {
+            font-weight: 600;
+        }
+
+        .empty {
+            text-align: center;
+            color: var(--muted);
+            padding: 25px 10px;
+            font-size: 12px;
+        }
+
+        .message {
+            padding: 11px 13px;
+            margin-bottom: 18px;
+            border-radius: 8px;
+            font-size: 12px;
+            display: none;
+        }
+
+        .error {
+            background: #fef2f2;
+            color: #b91c1c;
+        }
+
+        .success {
+            background: #f0fdf4;
+            color: #15803d;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 22px;
+            color: var(--muted);
+            font-size: 11px;
+        }
+
+        @media (max-width: 1050px) {
+            .stats {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .content-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 700px) {
+            .sidebar {
+                width: 68px;
+                padding: 20px 8px;
+            }
+
+            .logo {
+                font-size: 18px;
+                padding: 0 9px;
+            }
+
+            .logo span,
+            .nav-label,
+            .nav-text {
+                display: none;
+            }
+
+            .nav-menu a {
+                justify-content: center;
+                padding: 13px 5px;
+            }
+
+            .main {
+                margin-left: 68px;
+                width: calc(100% - 68px);
+                padding: 20px 14px;
+            }
+
+            .stats {
+                grid-template-columns: 1fr;
+            }
+
+            .topbar {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+            .welcome {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+            .doctor-info {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="layout">
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+
+        <div class="logo">Medi<span>Slot</span></div>
+
+        <p class="nav-label">DOCTOR WORKSPACE</p>
+
+        <nav class="nav-menu">
+            <a href="#dashboard" class="active">
+                <span class="nav-icon">⌂</span>
+                <span class="nav-text">Dashboard</span>
+            </a>
+
+            <a href="#appointments">
+                <span class="nav-icon">▦</span>
+                <span class="nav-text">My Schedule</span>
+            </a>
+
+            <a href="#consultations">
+                <span class="nav-icon">⚕</span>
+                <span class="nav-text">Consultation Types</span>
+            </a>
+
+            <a href="#availability">
+                <span class="nav-icon">◷</span>
+                <span class="nav-text">Availability</span>
+            </a>
+
+            <a href="#profile">
+                <span class="nav-icon">♙</span>
+                <span class="nav-text">My Profile</span>
+            </a>
+        </nav>
+
+        <div class="sidebar-bottom">
+            <nav class="nav-menu">
+                <a href="#" id="logoutButton">
+                    <span class="nav-icon">⇥</span>
+                    <span class="nav-text">Logout</span>
+                </a>
+            </nav>
+        </div>
+
+    </aside>
+
+    <!-- MAIN -->
+    <main class="main" id="dashboard">
+
+        <header class="topbar">
+
+            <div class="page-title">
+                <h1>Doctor Dashboard</h1>
+                <p>Manage your schedule and professional workspace.</p>
+            </div>
+
+            <div class="doctor-info">
+                <div class="avatar" id="doctorInitials">DR</div>
+                <div>
+                    <h4 id="doctorName">Doctor</h4>
+                    <p id="doctorSpeciality">Loading profile...</p>
+                </div>
+            </div>
+
+        </header>
+
+        <div id="message" class="message"></div>
+
+        <!-- WELCOME -->
+        <section class="welcome">
+
+            <div>
+                <h2 id="welcomeText">Welcome back, Doctor!</h2>
+                <p>Here is an overview of your professional schedule.</p>
+            </div>
+
+            <div class="welcome-date" id="currentDate"></div>
+
+        </section>
+
+        <!-- STATISTICS -->
+        <section class="stats">
+
+            <div class="stat-card">
+                <div class="stat-heading">
+                    <p>Today's Slots</p>
+                    <div class="stat-icon blue">▦</div>
+                </div>
+                <h2 id="todaySlots">—</h2>
+                <small>Slots available in today's schedule</small>
+            </div>
+
+            <div class="stat-card">
+                <div class="stat-heading">
+                    <p>Available Slots</p>
+                    <div class="stat-icon green">✓</div>
+                </div>
+                <h2 id="availableSlots">—</h2>
+                <small>Slots currently open for booking</small>
+            </div>
+
+            <div class="stat-card">
+                <div class="stat-heading">
+                    <p>Consultation Types</p>
+                    <div class="stat-icon purple">⚕</div>
+                </div>
+                <h2 id="consultationCount">—</h2>
+                <small>Consultation types configured</small>
+            </div>
+
+        </section>
+
+        <!-- SCHEDULE AND CONSULTATIONS -->
+        <section class="content-grid">
+
+            <div class="panel" id="appointments">
+
+                <div class="panel-header">
+                    <div>
+                        <h3>My Daily Schedule</h3>
+                        <p>Slots assigned to your doctor account</p>
+                    </div>
+
+                    <input
+                        type="date"
+                        id="scheduleDate"
+                        class="date-input"
+                    >
+                </div>
+
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Duration</th>
+                                <th>Capacity</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+
+                        <tbody id="scheduleTable">
+                            <tr>
+                                <td colspan="4" class="empty">
+                                    Loading schedule...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+            </div>
+
+            <div class="panel" id="consultations">
+
+                <div class="panel-header">
+                    <div>
+                        <h3>Consultation Types</h3>
+                        <p>Your configured services</p>
+                    </div>
+                </div>
+
+                <div class="consultation-list" id="consultationList">
+                    <div class="empty">Loading consultation types...</div>
+                </div>
+
+            </div>
+
+        </section>
+
+        <!-- AVAILABILITY -->
+        <section class="panel availability-panel" id="availability">
+
+            <div class="panel-header">
+                <div>
+                    <h3>Weekly Availability</h3>
+                    <p>Your recurring working hours</p>
+                </div>
+            </div>
+
+            <div class="table-wrap">
+                <table class="availability-table">
+                    <thead>
+                        <tr>
+                            <th>Day</th>
+                            <th>Start Time</th>
+                            <th>End Time</th>
+                            <th>Consultation ID</th>
+                        </tr>
+                    </thead>
+
+                    <tbody id="availabilityTable">
+                        <tr>
+                            <td colspan="4" class="empty">
+                                Loading availability...
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+        </section>
+
+        <!-- PROFILE -->
+        <section class="panel" id="profile">
+
+            <div class="panel-header">
+                <div>
+                    <h3>Professional Profile</h3>
+                    <p>Your registered professional information</p>
+                </div>
+            </div>
+
+            <div class="table-wrap">
+                <table>
+                    <tbody>
+                        <tr>
+                            <th>Doctor Name</th>
+                            <td id="profileName">—</td>
+                        </tr>
+                        <tr>
+                            <th>Email</th>
+                            <td id="profileEmail">—</td>
+                        </tr>
+                        <tr>
+                            <th>License Number</th>
+                            <td id="profileLicense">—</td>
+                        </tr>
+                        <tr>
+                            <th>Specialisation</th>
+                            <td id="profileSpeciality">—</td>
+                        </tr>
+                        <tr>
+                            <th>Hospital</th>
+                            <td id="profileHospital">—</td>
+                        </tr>
+                        <tr>
+                            <th>Experience</th>
+                            <td id="profileExperience">—</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+        </section>
+
+        <footer class="footer">
+            © 2026 MediSlot | Doctor Portal
+        </footer>
+
+    </main>
+</div>
+
+<script>
+    /*
+      Configure these two values before running the dashboard.
+
+      API_BASE_URL should include your API Gateway stage.
+      Example: https://your-api-id.execute-api.ap-south-1.amazonaws.com/Stage
+
+      Access token should be supplied after doctor login.
+      This page keeps the token in memory rather than localStorage.
+    */
+
+    const API_BASE_URL =
+        "https://YOUR_API_ID.execute-api.ap-south-1.amazonaws.com/Stage";
+
+    let accessToken = "";
+
+    const $ = (id) => document.getElementById(id);
+
+    function showMessage(message, type = "error") {
+        const box = $("message");
+        box.textContent = message;
+        box.className = `message ${type}`;
+        box.style.display = "block";
+    }
+
+    function escapeHTML(value) {
+        return String(value ?? "").replace(/[&<>"']/g, char => ({
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#39;"
+        })[char]);
+    }
+
+    async function apiRequest(path) {
+        const response = await fetch(`${API_BASE_URL}${path}`, {
+            method: "GET",
+            headers: {
+                "Authorization": `Bearer ${accessToken}`,
+                "Content-Type": "application/json"
+            }
+        });
+
+        const result = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            throw new Error(
+                result.message || `Request failed (${response.status})`
+            );
+        }
+
+        return result;
+    }
+
+    function setCurrentDate() {
+        const now = new Date();
+
+        $("currentDate").textContent =
+            now.toLocaleDateString("en-IN", {
+                weekday: "long",
+                day: "numeric",
+                month: "long",
+                year: "numeric"
+            });
+
+        $("scheduleDate").value =
+            now.getFullYear() + "-" +
+            String(now.getMonth() + 1).padStart(2, "0") + "-" +
+            String(now.getDate()).padStart(2, "0");
+    }
+
+    async function loadProfile() {
+        const result = await apiRequest("/doctors/me");
+        const profile = result.profile || result.user?.profile || result.user;
+
+        if (!profile) {
+            throw new Error("Doctor profile was not returned by the API.");
+        }
+
+        const name = profile.name || profile.full_name || "Doctor";
+        const speciality =
+            profile.specialisation ||
+            profile.specialisation_name ||
+            "Doctor";
+
+        $("doctorName").textContent = name;
+        $("doctorSpeciality").textContent = speciality;
+        $("welcomeText").textContent = `Welcome back, Dr. ${name}`;
+
+        $("doctorInitials").textContent =
+            name.split(" ").map(part => part[0]).join("").slice(0, 2).toUpperCase();
+
+        $("profileName").textContent = name;
+        $("profileEmail").textContent = profile.email || "—";
+        $("profileLicense").textContent =
+            profile.license_number || "—";
+        $("profileSpeciality").textContent = speciality;
+        $("profileHospital").textContent = profile.hospital || "—";
+        $("profileExperience").textContent =
+            profile.years_experience != null
+                ? `${profile.years_experience} years`
+                : "—";
+    }
+
+    async function loadSchedule() {
+        const selectedDate = $("scheduleDate").value;
+
+        if (!selectedDate) return;
+
+        const result = await apiRequest(
+            `/doctors/me/schedule?date=${encodeURIComponent(selectedDate)}`
+        );
+
+        const items = result.items || [];
+        const table = $("scheduleTable");
+
+        $("todaySlots").textContent = items.length;
+
+        const available = items.filter(
+            slot => slot.status === "OPEN"
+        ).length;
+
+        $("availableSlots").textContent = available;
+
+        if (items.length === 0) {
+            table.innerHTML = `
+                <tr>
+                    <td colspan="4" class="empty">
+                        No slots found for this date.
+                    </td>
+                </tr>`;
+            return;
+        }
+
+        table.innerHTML = items.map(slot => {
+            const start = slot.startUtc
+                ? new Date(slot.startUtc).toLocaleTimeString("en-IN", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    timeZone: "Asia/Kolkata"
+                })
+                : "—";
+
+            const duration = slot.durationMinutes ?? "—";
+            const capacity = `${slot.bookedCount ?? 0} / ${slot.capacity ?? 0}`;
+
+            const isOpen = slot.status === "OPEN";
+
+            return `
+                <tr>
+                    <td>${escapeHTML(start)}</td>
+                    <td>${escapeHTML(duration)} min</td>
+                    <td>${escapeHTML(capacity)}</td>
+                    <td>
+                        <span class="status ${isOpen ? "status-open" : "status-full"}">
+                            ${escapeHTML(slot.status || "UNKNOWN")}
+                        </span>
+                    </td>
+                </tr>`;
+        }).join("");
+    }
+
+    async function loadConsultations() {
+        const result = await apiRequest(
+            "/doctors/me/consultation-types"
+        );
+
+        const items = result.items || [];
+
+        $("consultationCount").textContent = items.length;
+
+        const list = $("consultationList");
+
+        if (!items.length) {
+            list.innerHTML = `
+                <div class="empty">
+                    No consultation types configured.
+                </div>`;
+            return;
+        }
+
+        list.innerHTML = items.map(item => `
+            <div class="consultation-item">
+                <div>
+                    <h4>${escapeHTML(item.name)}</h4>
+                    <p>
+                        ${escapeHTML(item.duration_min)} minutes
+                        · Capacity: ${escapeHTML(item.capacity)}
+                    </p>
+                </div>
+
+                <div class="consultation-fee">
+                    ₹${escapeHTML(item.fee_amount)}
+                </div>
+            </div>
+        `).join("");
+    }
+
+    async function loadAvailability() {
+        const result = await apiRequest(
+            "/doctors/me/availability-patterns"
+        );
+
+        const items = result.items || [];
+        const table = $("availabilityTable");
+
+        if (!items.length) {
+            table.innerHTML = `
+                <tr>
+                    <td colspan="4" class="empty">
+                        No availability patterns configured.
+                    </td>
+                </tr>`;
+            return;
+        }
+
+        const days = {
+            1: "Monday",
+            2: "Tuesday",
+            3: "Wednesday",
+            4: "Thursday",
+            5: "Friday",
+            6: "Saturday",
+            7: "Sunday"
+        };
+
+        table.innerHTML = items.map(item => `
+            <tr>
+                <td>${escapeHTML(days[item.day_of_week] || item.day_of_week)}</td>
+                <td>${escapeHTML(item.start_time)}</td>
+                <td>${escapeHTML(item.end_time)}</td>
+                <td>${escapeHTML(item.consultation_type_id)}</td>
+            </tr>
+        `).join("");
+    }
+
+    async function loadDashboard() {
+        if (!accessToken) {
+            showMessage(
+                "Please connect your doctor access token before loading the dashboard."
+            );
+            return;
+        }
+
+        $("scheduleTable").innerHTML =
+            '<tr><td colspan="4" class="empty">Loading schedule...</td></tr>';
+
+        try {
+            await Promise.all([
+                loadProfile(),
+                loadSchedule(),
+                loadConsultations(),
+                loadAvailability()
+            ]);
+
+            $("message").style.display = "none";
+        } catch (error) {
+            showMessage(error.message);
+            console.error("Doctor dashboard error:", error);
+        }
+    }
+
+    $("scheduleDate").addEventListener("change", async () => {
+        try {
+            await loadSchedule();
+        } catch (error) {
+            showMessage(error.message);
+        }
+    });
+
+    $("logoutButton").addEventListener("click", (event) => {
+        event.preventDefault();
+        accessToken = "";
+        window.location.href = "/login";
+    });
+
+    // Call this function after successful doctor login.
+    window.initializeDoctorDashboard = function(token) {
+        if (!token || typeof token !== "string") {
+            showMessage("A valid doctor access token is required.");
+            return;
+        }
+
+        accessToken = token;
+        loadDashboard();
+    };
+
+    setCurrentDate();
+
+</script>
+
+</body>
+</html>
