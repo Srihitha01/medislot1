@@ -187,3 +187,39 @@ CREATE TABLE IF NOT EXISTS refund_ledger (
     CONSTRAINT chk_refund_percent CHECK (refund_percent BETWEEN 0 AND 100),
     CONSTRAINT chk_refund_amounts CHECK (fee_amount >= 0 AND refund_amount >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =====================================================
+-- REFERENCE DATA: SPECIALISATIONS
+-- =====================================================
+
+INSERT INTO specialisations (name)
+VALUES
+    ('General Medicine'),
+    ('Cardiology'),
+    ('Dermatology'),
+    ('Neurology'),
+    ('Orthopaedics'),
+    ('Paediatrics'),
+    ('Gynaecology'),
+    ('Ophthalmology'),
+    ('ENT'),
+    ('Psychiatry')
+ON DUPLICATE KEY UPDATE
+    name = VALUES(name);
+
+
+-- =====================================================
+-- REFERENCE DATA: HOSPITALS
+-- =====================================================
+
+INSERT INTO hospitals (name, address, city, status)
+VALUES
+    (
+        'MediSlot Demo Hospital',
+        'Hyderabad, Telangana',
+        'Hyderabad',
+        'active'
+    )
+ON DUPLICATE KEY UPDATE
+    address = VALUES(address),
+    status = VALUES(status);
