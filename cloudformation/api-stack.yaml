@@ -112,6 +112,53 @@ Resources:
 
         paths:
 
+          # Root application router
+          /:
+            x-amazon-apigateway-any-method:
+              security:
+                - MediSlotAuthorizer: []
+              responses:
+                "200":
+                  description: Application router response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri:
+                  Fn::Sub:
+                    - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
+                    - TargetArn: !GetAtt AppRouterFunction.Arn
+
+          # Catch-all application router
+          /{proxy+}:
+            x-amazon-apigateway-any-method:
+              security:
+                - MediSlotAuthorizer: []
+              responses:
+                "200":
+                  description: Application router response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri:
+                  Fn::Sub:
+                    - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
+                    - TargetArn: !GetAtt AppRouterFunction.Arn
+
+          # Health check
+          /health:
+            get:
+              security: []
+              responses:
+                "200":
+                  description: Health check response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri:
+                  Fn::Sub:
+                    - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
+                    - TargetArn: !GetAtt AppRouterFunction.Arn
+
           # Shared registration endpoint for doctors and patients
           /auth/register:
             post:
@@ -268,6 +315,15 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApplicationApi}/*/GET/reference/hospitals
 
+  # Allow API Gateway to invoke the application router
+  AppRouterApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt AppRouterFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApplicationApi}/*/*/*
+
   AppRouterFunction:
     Type: AWS::Serverless::Function #checkov:skip=CKV_AWS_115:Reserved concurrency is disabled by default for development.
     Properties:
@@ -291,31 +347,6 @@ Resources:
         SubnetIds:
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
-      Events:
-        ApplicationRoot:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotApplicationApi
-            Path: /
-            Method: ANY
-            Auth:
-              Authorizer: MediSlotAuthorizer
-
-        ApplicationRoutes:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotApplicationApi
-            Path: /{proxy+}
-            Method: ANY
-            Auth:
-              Authorizer: MediSlotAuthorizer
-
-        HealthCheck:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MediSlotApplicationApi
-            Path: /health
-            Method: GET
 
 Outputs:
   ApplicationApiId:
