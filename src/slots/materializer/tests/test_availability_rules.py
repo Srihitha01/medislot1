@@ -1,8 +1,10 @@
 import unittest
 from datetime import time
 
-from src.api.availability_rules import (
-    effective_windows, validate_doctor_day, validate_exception_payload,
+from src.slots.materializer.availability_rules import (
+    effective_windows,
+    validate_doctor_day,
+    validate_exception_payload,
 )
 
 
