@@ -72,6 +72,8 @@ jobs:
         env:
           AWS_REGION: ap-south-1
           AWS_DEFAULT_REGION: ap-south-1
+          AUTH_TOKENS_TABLE: medislot-test-auth-tokens
+          JWT_SECRET_PARAMETER: /medislot/test/auth/jwt-secret
         run: python -m unittest discover -s src/auth/tests -p "test_*.py" -v
       - name: Scan Python source
         run: bandit -r src -ll
