@@ -352,7 +352,7 @@ Resources:
       ScheduleExpression: cron(15 0 * * ? *)
       ScheduleExpressionTimezone: Asia/Kolkata
       FlexibleTimeWindow:
-        Mode: OFF
+        Mode: "OFF"
       State: ENABLED
       Target:
         Arn: !GetAtt SlotMaterializerFunction.Arn
