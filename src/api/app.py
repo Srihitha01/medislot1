@@ -477,29 +477,61 @@ def _doctor_profile(user_id, method, event):
                 cur.execute("UPDATE users SET name=%s WHERE user_id=%s AND role='doctor'", (name.strip(), user_id))
                 cur.execute("UPDATE doctors SET full_name=%s WHERE user_id=%s", (name.strip(), user_id))
 
-            fields = {
-                "licenseNumber": "license_number",
-                "specialisationId": "specialisation_id",
-                "hospitalId": "hospital_id",
-                "yearsExperience": "years_experience",
-                "qualifications": "qualifications",
-                "languages": "languages",
+            doctor_update_sql = {
+                "licenseNumber": "UPDATE doctors SET license_number=%s WHERE user_id=%s",
+                "specialisationId": "UPDATE doctors SET specialisation_id=%s WHERE user_id=%s",
+                "hospitalId": "UPDATE doctors SET hospital_id=%s WHERE user_id=%s",
+                "yearsExperience": "UPDATE doctors SET years_experience=%s WHERE user_id=%s",
+                "qualifications": "UPDATE doctors SET qualifications=%s WHERE user_id=%s",
+                "languages": "UPDATE doctors SET languages=%s WHERE user_id=%s",
             }
-            for api_name, column in fields.items():
+
+            for api_name, statement in doctor_update_sql.items():
                 if api_name in data:
                     value = data[api_name]
+
                     if api_name == "licenseNumber":
                         value = str(value).strip()
                         if not value or len(value) > 50:
-                            return _response(400, {"message": "licenseNumber must contain 1-50 characters"})
-                    elif api_name in {"specialisationId", "hospitalId", "yearsExperience"}:
+                            return _response(
+                                400,
+                                {"message": "licenseNumber must contain 1-50 characters"}
+                            )
+
+                    elif api_name in {
+                        "specialisationId", "hospitalId", "yearsExperience"
+                    }:
                         value = int(value) if value not in (None, "") else None
-                        if api_name == "yearsExperience" and value is not None and not 0 <= value <= 80:
-                            return _response(400, {"message": "yearsExperience must be between 0 and 80"})
-                        if api_name in {"specialisationId", "hospitalId"} and value is not None and value <= 0:
-                            return _response(400, {"message": f"{api_name} must be a positive integer"})
-                    cur.execute(f"UPDATE doctors SET {column}=%s WHERE user_id=%s", (value if value != "" else None, user_id))
-            cur.execute("UPDATE doctors SET timezone='Asia/Kolkata' WHERE user_id=%s", (user_id,))
+
+                        if (
+                            api_name == "yearsExperience"
+                            and value is not None
+                            and not 0 <= value <= 80
+                        ):
+                            return _response(
+                                400,
+                                {"message": "yearsExperience must be between 0 and 80"}
+                            )
+
+                        if (
+                            api_name in {"specialisationId", "hospitalId"}
+                            and value is not None
+                            and value <= 0
+                        ):
+                            return _response(
+                                400,
+                                {"message": f"{api_name} must be a positive integer"}
+                            )
+
+                    if value == "":
+                        value = None
+
+                    cur.execute(statement, (value, user_id))
+
+            cur.execute(
+                "UPDATE doctors SET timezone='Asia/Kolkata' WHERE user_id=%s",
+                (user_id,)
+            )
         conn.commit()
         return _response(200, {"message": "Doctor profile updated", "timezone": "Asia/Kolkata"})
     except pymysql.err.IntegrityError:
@@ -599,30 +631,54 @@ def _doctor_collection(table_name, user_id, method, event, resource_id=None):
                     cur.execute("SELECT consultation_type_id FROM consultation_types WHERE consultation_type_id=%s AND doctor_user_id=%s", (resource_id, user_id))
                     if not cur.fetchone():
                         return _response(404, {"message": "Consultation type not found"})
-                    updates = []
-                    values = []
+                    update_statements = {
+                        "name": "UPDATE consultation_types SET name=%s WHERE consultation_type_id=%s AND doctor_user_id=%s",
+                        "durationMin": "UPDATE consultation_types SET duration_min=%s WHERE consultation_type_id=%s AND doctor_user_id=%s",
+                        "feeAmount": "UPDATE consultation_types SET fee_amount=%s WHERE consultation_type_id=%s AND doctor_user_id=%s",
+                        "capacity": "UPDATE consultation_types SET capacity=%s WHERE consultation_type_id=%s AND doctor_user_id=%s",
+                        "isActive": "UPDATE consultation_types SET is_active=%s WHERE consultation_type_id=%s AND doctor_user_id=%s",
+                    }
+
+                    validated_values = {}
+
                     if "name" in data:
                         value = str(data["name"]).strip().lower()
-                        if not value or len(value) > 40: raise ValueError("name must contain 1-40 characters")
-                        updates.append("name=%s"); values.append(value)
+                        if not value or len(value) > 40:
+                            raise ValueError("name must contain 1-40 characters")
+                        validated_values["name"] = value
+
                     if "durationMin" in data:
                         value = int(data["durationMin"])
-                        if not 5 <= value <= 180: raise ValueError("durationMin must be between 5 and 180")
-                        updates.append("duration_min=%s"); values.append(value)
+                        if not 5 <= value <= 180:
+                            raise ValueError("durationMin must be between 5 and 180")
+                        validated_values["durationMin"] = value
+
                     if "feeAmount" in data:
                         value = Decimal(str(data["feeAmount"]))
-                        if value < 0: raise ValueError("feeAmount must be non-negative")
-                        updates.append("fee_amount=%s"); values.append(value)
+                        if value < 0:
+                            raise ValueError("feeAmount must be non-negative")
+                        validated_values["feeAmount"] = value
+
                     if "capacity" in data:
                         value = int(data["capacity"])
-                        if not 1 <= value <= 50: raise ValueError("capacity must be between 1 and 50")
-                        updates.append("capacity=%s"); values.append(value)
+                        if not 1 <= value <= 50:
+                            raise ValueError("capacity must be between 1 and 50")
+                        validated_values["capacity"] = value
+
                     if "isActive" in data:
-                        if not isinstance(data["isActive"], bool): raise ValueError("isActive must be boolean")
-                        updates.append("is_active=%s"); values.append(int(data["isActive"]))
-                    cur.execute("UPDATE consultation_types SET " + ",".join(updates) + " WHERE consultation_type_id=%s AND doctor_user_id=%s", tuple(values + [resource_id, user_id]))
+                        if not isinstance(data["isActive"], bool):
+                            raise ValueError("isActive must be boolean")
+                        validated_values["isActive"] = int(data["isActive"])
+
+                    for key, value in validated_values.items():
+                        cur.execute(
+                            update_statements[key],
+                            (value, resource_id, user_id)
+                        )
+
                     _validate_doctor_schedule(cur, user_id)
                     conn.commit()
+
                     return _response(200, {"message": "Consultation type updated"})
                 if method == "DELETE" and resource_id:
                     cur.execute("UPDATE consultation_types SET is_active=0 WHERE consultation_type_id=%s AND doctor_user_id=%s", (resource_id, user_id))
