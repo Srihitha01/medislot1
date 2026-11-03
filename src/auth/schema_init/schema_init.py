@@ -74,6 +74,11 @@ def get_parameter(name, decrypt=False):
 # SCHEMA FILE HELPERS
 # ---------------------------------------------------------
 
+_STATEMENT_START = re.compile(
+    r"(?im)^(?=\s*(?:CREATE\s+TABLE|INSERT\s+INTO)\b)"
+)
+
+
 def _schema_path():
     return SCHEMA_PATH
 
@@ -91,13 +96,25 @@ def _schema_statements():
 
     content = schema_file.read_text(encoding="utf-8")
 
+    # Drop whole-line "--" comments so a comment never becomes (part of)
+    # a statement and a stray ';' inside a comment cannot split one.
+    content = "\n".join(
+        line
+        for line in content.splitlines()
+        if not line.lstrip().startswith("--")
+    )
+
     statements = []
 
-    for statement in content.split(";"):
-        statement = statement.strip()
+    for chunk in content.split(";"):
+        # Defensive: if a ';' is ever missing between two statements,
+        # still treat each line-leading CREATE TABLE / INSERT INTO as
+        # the start of its own statement.
+        for statement in _STATEMENT_START.split(chunk):
+            statement = statement.strip()
 
-        if statement:
-            statements.append(statement)
+            if statement:
+                statements.append(statement)
 
     return statements
 
@@ -262,22 +279,36 @@ def _ensure_app_user(cursor, database):
     )
 
     # '%%' is a literal '%' after PyMySQL parameter interpolation.
-    cursor.execute(
-        "CREATE USER IF NOT EXISTS %s@'%%' IDENTIFIED BY %s",
-        (app_user, app_password)
+    steps = (
+        (
+            "create app user",
+            "CREATE USER IF NOT EXISTS %s@'%%' IDENTIFIED BY %s",
+            (app_user, app_password)
+        ),
+        (
+            # Keep the MySQL password in sync with the SSM parameter.
+            "set app user password",
+            "ALTER USER %s@'%%' IDENTIFIED BY %s",
+            (app_user, app_password)
+        ),
+        (
+            "grant app user privileges",
+            f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* "
+            "TO %s@'%%'",
+            (app_user,)
+        ),
     )
 
-    # Keep the MySQL password in sync with the SSM parameter.
-    cursor.execute(
-        "ALTER USER %s@'%%' IDENTIFIED BY %s",
-        (app_user, app_password)
-    )
-
-    cursor.execute(
-        f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* "
-        "TO %s@'%%'",
-        (app_user,)
-    )
+    for label, sql, params in steps:
+        try:
+            cursor.execute(sql, params)
+        except Exception as exc:
+            logger.error("App user step failed: %s", label)
+            try:
+                exc.failed_step = label
+            except Exception:
+                pass
+            raise
 
 
 # ---------------------------------------------------------
@@ -301,8 +332,19 @@ def _create_schema(cursor):
     """
     Execute the SQL schema without deleting existing data.
     """
-    for statement in _schema_statements():
-        cursor.execute(statement)
+    for index, statement in enumerate(_schema_statements(), start=1):
+        try:
+            cursor.execute(statement)
+        except Exception as exc:
+            preview = " ".join(statement.split())[:80]
+            logger.error(
+                "Schema statement %d failed: %s", index, preview
+            )
+            try:
+                exc.failed_step = f"schema statement {index}: {preview}"
+            except Exception:
+                pass
+            raise
 
 
 # ---------------------------------------------------------
@@ -469,7 +511,8 @@ def lambda_handler(event, context):
                     "Schema initialization failed"
                 ),
                 "error_type": type(exc).__name__,
-                "error_code": error_code
+                "error_code": error_code,
+                "failed_step": getattr(exc, "failed_step", None)
             }
         )
 

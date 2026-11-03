@@ -1,0 +1,10 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.aws-sam/
+deployed-app-router/
+deployed-app-router.zip
+deployed-template.yaml
+get-active-session.json
+desktop.ini

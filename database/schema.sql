@@ -200,7 +200,7 @@ VALUES
     ('ENT'),
     ('Psychiatry')
 ON DUPLICATE KEY UPDATE
-    name = VALUES(name)
+    name = VALUES(name);
 
 -- =====================================================
 -- REFERENCE DATA: HOSPITALS
