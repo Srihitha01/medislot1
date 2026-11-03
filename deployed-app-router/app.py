@@ -455,6 +455,13 @@ def _doctor_profile(user_id, method, event):
             doctor_map={"licenseNumber":"license_number","specialisationId":"specialisation_id","hospitalId":"hospital_id","yearsExperience":"years_experience","qualifications":"qualifications","languages":"languages","timezone":"timezone"}
             if "name" in data:
                 if not isinstance(data["name"],str) or not data["name"].strip() or len(data["name"])>120: return _response(400,{"message":"Invalid name"})
+            if "timezone" in data:
+                # Reject unknown IANA zones now; an invalid value would later
+                # break the doctor's day-schedule endpoint (ZoneInfo lookup).
+                try:
+                    ZoneInfo(str(data["timezone"]))
+                except Exception:
+                    return _response(400,{"message":"Invalid timezone"})
             if not any(key in data for key in ("name", *doctor_map)):
                 return _response(400,{"message":"No profile fields supplied"})
             if "name" in data:
