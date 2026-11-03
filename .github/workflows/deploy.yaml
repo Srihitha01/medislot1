@@ -128,7 +128,7 @@ jobs:
             --description "GitHub Actions run ${GITHUB_RUN_ID}"
           if ! aws cloudformation wait change-set-create-complete --stack-name "$NETWORK_STACK" --change-set-name "$change_set"; then
             reason=$(aws cloudformation describe-change-set --stack-name "$NETWORK_STACK" --change-set-name "$change_set" --query StatusReason --output text 2>/dev/null || true)
-            if [[ "$reason" == *"didn't contain changes"* ]] || [[ "$reason" == *"No updates are to be performed" ]]; then
+            if [[ "$reason" == *"didn't contain changes"* ]] || [[ "$reason" == *"No updates are to be performed"* ]]; then
               echo "Network stack is already up to date. No deployment is required."
               aws cloudformation delete-change-set --stack-name "$NETWORK_STACK" --change-set-name "$change_set"
             else
@@ -247,7 +247,7 @@ jobs:
             --description "GitHub Actions run ${GITHUB_RUN_ID}"
           if ! aws cloudformation wait change-set-create-complete --stack-name "$DATA_STACK" --change-set-name "$change_set"; then
             reason=$(aws cloudformation describe-change-set --stack-name "$DATA_STACK" --change-set-name "$change_set" --query StatusReason --output text 2>/dev/null || true)
-            if [[ "$reason" == *"didn't contain changes"* ]] || [[ "$reason" == *"No updates are to be performed" ]]; then
+            if [[ "$reason" == *"didn't contain changes"* ]] || [[ "$reason" == *"No updates are to be performed"* ]]; then
               echo "Data stack is already up to date. No deployment is required."
               aws cloudformation delete-change-set --stack-name "$DATA_STACK" --change-set-name "$change_set"
               exit 0
@@ -292,7 +292,7 @@ jobs:
             --description "GitHub Actions run ${GITHUB_RUN_ID}"
           if ! aws cloudformation wait change-set-create-complete --stack-name "$IAM_STACK" --change-set-name "$change_set"; then
             reason=$(aws cloudformation describe-change-set --stack-name "$IAM_STACK" --change-set-name "$change_set" --query StatusReason --output text 2>/dev/null || true)
-            if [[ "$reason" == *"didn't contain changes"* ]] || [[ "$reason" == *"No updates are to be performed" ]]; then
+            if [[ "$reason" == *"didn't contain changes"* ]] || [[ "$reason" == *"No updates are to be performed"* ]]; then
               echo "IAM stack is already up to date. No deployment is required."
               aws cloudformation delete-change-set --stack-name "$IAM_STACK" --change-set-name "$change_set"
               exit 0
@@ -366,7 +366,7 @@ jobs:
             --description "GitHub Actions run ${GITHUB_RUN_ID}"
           if ! aws cloudformation wait change-set-create-complete --stack-name "$AUTH_STACK" --change-set-name "$change_set"; then
             reason=$(aws cloudformation describe-change-set --stack-name "$AUTH_STACK" --change-set-name "$change_set" --query StatusReason --output text 2>/dev/null || true)
-            if [[ "$reason" == *"didn't contain changes"* ]] || [[ "$reason" == *"No updates are to be performed" ]]; then
+            if [[ "$reason" == *"didn't contain changes"* ]] || [[ "$reason" == *"No updates are to be performed"* ]]; then
               echo "Authentication stack is already up to date. No deployment is required."
               aws cloudformation delete-change-set --stack-name "$AUTH_STACK" --change-set-name "$change_set"
               exit 0
@@ -524,7 +524,7 @@ jobs:
             --description "GitHub Actions run ${GITHUB_RUN_ID}"
           if ! aws cloudformation wait change-set-create-complete --stack-name "$APP_STACK" --change-set-name "$change_set"; then
             reason=$(aws cloudformation describe-change-set --stack-name "$APP_STACK" --change-set-name "$change_set" --query StatusReason --output text 2>/dev/null || true)
-            if [[ "$reason" == *"didn't contain changes"* ]] || [[ "$reason" == *"No updates are to be performed" ]]; then
+            if [[ "$reason" == *"didn't contain changes"* ]] || [[ "$reason" == *"No updates are to be performed"* ]]; then
               echo "API stack is already up to date. No deployment is required."
               aws cloudformation delete-change-set --stack-name "$APP_STACK" --change-set-name "$change_set"
               exit 0
