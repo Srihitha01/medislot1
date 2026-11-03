@@ -1,11 +1,5 @@
--- MediSlot RDS schema
--- Internal UUIDs remain the immutable relational/authentication keys.
--- public_user_id is the sequential numeric ID shown to users.
--- Existing databases are upgraded idempotently by schema_init.py.
-
 CREATE TABLE IF NOT EXISTS users (
-    user_id CHAR(36) NOT NULL,
-    public_user_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    user_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     name VARCHAR(120) NOT NULL,
     email VARCHAR(254) NOT NULL,
     password_hash VARCHAR(60) NOT NULL,
@@ -14,7 +8,6 @@ CREATE TABLE IF NOT EXISTS users (
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (user_id),
-    UNIQUE KEY uq_users_public_id (public_user_id),
     UNIQUE KEY uq_users_email (email),
     KEY idx_users_role_status (role, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -41,7 +34,7 @@ CREATE TABLE IF NOT EXISTS hospitals (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS doctors (
-    user_id CHAR(36) NOT NULL,
+    user_id BIGINT UNSIGNED NOT NULL,
     full_name VARCHAR(150) NOT NULL,
     license_number VARCHAR(50) NOT NULL,
     specialisation_id INT UNSIGNED NOT NULL,
@@ -63,7 +56,7 @@ CREATE TABLE IF NOT EXISTS doctors (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS patients (
-    user_id CHAR(36) NOT NULL,
+    user_id BIGINT UNSIGNED NOT NULL,
     full_name VARCHAR(150) NOT NULL,
     date_of_birth DATE NULL,
     gender VARCHAR(20) NULL,
@@ -81,7 +74,7 @@ CREATE TABLE IF NOT EXISTS patients (
 
 CREATE TABLE IF NOT EXISTS consultation_types (
     consultation_type_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    doctor_user_id CHAR(36) NOT NULL,
+    doctor_user_id BIGINT UNSIGNED NOT NULL,
     name VARCHAR(40) NOT NULL,
     duration_min SMALLINT UNSIGNED NOT NULL,
     fee_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
@@ -100,7 +93,7 @@ CREATE TABLE IF NOT EXISTS consultation_types (
 
 CREATE TABLE IF NOT EXISTS availability_patterns (
     pattern_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    doctor_user_id CHAR(36) NOT NULL,
+    doctor_user_id BIGINT UNSIGNED NOT NULL,
     consultation_type_id BIGINT UNSIGNED NOT NULL,
     day_of_week TINYINT UNSIGNED NOT NULL,
     start_time TIME NOT NULL,
@@ -118,7 +111,7 @@ CREATE TABLE IF NOT EXISTS availability_patterns (
 
 CREATE TABLE IF NOT EXISTS blackout_dates (
     blackout_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    doctor_user_id CHAR(36) NOT NULL,
+    doctor_user_id BIGINT UNSIGNED NOT NULL,
     blackout_date DATE NOT NULL,
     reason VARCHAR(200) NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -129,7 +122,7 @@ CREATE TABLE IF NOT EXISTS blackout_dates (
 
 CREATE TABLE IF NOT EXISTS availability_exceptions (
     exception_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    doctor_user_id CHAR(36) NOT NULL,
+    doctor_user_id BIGINT UNSIGNED NOT NULL,
     consultation_type_id BIGINT UNSIGNED NOT NULL,
     exception_date DATE NOT NULL,
     exception_type VARCHAR(30) NOT NULL,
@@ -146,8 +139,8 @@ CREATE TABLE IF NOT EXISTS availability_exceptions (
 
 CREATE TABLE IF NOT EXISTS appointments (
     appointment_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    patient_user_id CHAR(36) NOT NULL,
-    doctor_user_id CHAR(36) NOT NULL,
+    patient_user_id BIGINT UNSIGNED NOT NULL,
+    doctor_user_id BIGINT UNSIGNED NOT NULL,
     consultation_type_id BIGINT UNSIGNED NOT NULL,
     slot_id VARCHAR(100) NOT NULL,
     slot_start_utc DATETIME(3) NOT NULL,
@@ -172,9 +165,9 @@ CREATE TABLE IF NOT EXISTS appointments (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS refund_ledger (
-    refund_id CHAR(36) NOT NULL,
+    refund_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     appointment_id BIGINT UNSIGNED NOT NULL,
-    patient_user_id CHAR(36) NOT NULL,
+    patient_user_id BIGINT UNSIGNED NOT NULL,
     reason ENUM('PATIENT_CANCEL', 'DOCTOR_CANCEL', 'NO_SHOW') NOT NULL,
     tier VARCHAR(30) NULL,
     refund_percent TINYINT UNSIGNED NOT NULL DEFAULT 0,
@@ -189,3 +182,38 @@ CREATE TABLE IF NOT EXISTS refund_ledger (
     CONSTRAINT chk_refund_percent CHECK (refund_percent BETWEEN 0 AND 100),
     CONSTRAINT chk_refund_amounts CHECK (fee_amount >= 0 AND refund_amount >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =====================================================
+-- REFERENCE DATA: SPECIALISATIONS
+-- =====================================================
+
+INSERT INTO specialisations (name)
+VALUES
+    ('General Medicine'),
+    ('Cardiology'),
+    ('Dermatology'),
+    ('Neurology'),
+    ('Orthopaedics'),
+    ('Paediatrics'),
+    ('Gynaecology'),
+    ('Ophthalmology'),
+    ('ENT'),
+    ('Psychiatry')
+ON DUPLICATE KEY UPDATE
+    name = VALUES(name)
+
+-- =====================================================
+-- REFERENCE DATA: HOSPITALS
+-- =====================================================
+
+INSERT INTO hospitals (name, address, city, status)
+VALUES
+    (
+        'MediSlot Demo Hospital',
+        'Hyderabad, Telangana',
+        'Hyderabad',
+        'active'
+    )
+ON DUPLICATE KEY UPDATE
+    address = VALUES(address),
+    status = VALUES(status);

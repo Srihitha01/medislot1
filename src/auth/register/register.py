@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import re
-import uuid
+
 import boto3
 import bcrypt
 import pymysql
@@ -13,406 +13,436 @@ from botocore.exceptions import BotoCoreError, ClientError
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-ssm = boto3.client("ssm")
+# ---------------------------------------------------------
+# CONFIGURATION
+# ---------------------------------------------------------
 
-PASSWORD_MIN_LENGTH = int(os.environ.get("PASSWORD_MIN_LENGTH", "10"))
-BCRYPT_ROUNDS = int(os.environ.get("BCRYPT_ROUNDS", "12"))
+AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "dev")
 
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+DB_NAME = os.getenv("DB_NAME", "medislot")
+DB_USER = os.getenv("DB_USER")
+
+DB_HOST_PARAMETER = os.getenv(
+    "DB_HOST_PARAMETER",
+    f"/medislot/{ENVIRONMENT}/db/host"
+)
+
+DB_PORT_PARAMETER = os.getenv(
+    "DB_PORT_PARAMETER",
+    f"/medislot/{ENVIRONMENT}/db/port"
+)
+
+DB_PASSWORD_PARAMETER = os.getenv(
+    "DB_PASSWORD_PARAMETER",
+    f"/medislot/{ENVIRONMENT}/db/app-password"
+)
+
+DB_USER_PARAMETER = os.getenv("DB_USER_PARAMETER")
+
+BCRYPT_ROUNDS = int(os.getenv("BCRYPT_ROUNDS", "12"))
+
+EMAIL_RE = re.compile(
+    r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+)
+
+MAX_UNSIGNED_BIGINT = 18446744073709551615
 
 
-def response(status, body):
-    return {
-        "statusCode": status,
-        "headers": {
-            "Content-Type": "application/json",
-            "Cache-Control": "no-store",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": (
-                "Content-Type,Authorization,Idempotency-Key,X-Correlation-Id"
-            ),
-            "Access-Control-Allow-Methods": (
-                "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+# ---------------------------------------------------------
+# LAZY AWS CLIENT INITIALIZATION
+# ---------------------------------------------------------
+
+_ssm = None
+
+
+def get_ssm_client():
+    """
+    Initialize SSM only when required.
+    This prevents AWS credential errors during module import.
+    """
+
+    global _ssm
+
+    if _ssm is None:
+        _ssm = boto3.client(
+            "ssm",
+            region_name=AWS_REGION
+        )
+
+    return _ssm
+
+
+def get_parameter(parameter_name):
+    """
+    Retrieve a parameter from SSM Parameter Store.
+    """
+
+    response = get_ssm_client().get_parameter(
+        Name=parameter_name,
+        WithDecryption=True
+    )
+
+    return response["Parameter"]["Value"]
+
+
+# ---------------------------------------------------------
+# DATABASE CONNECTION
+# ---------------------------------------------------------
+
+def get_db_connection():
+    """
+    Retrieve database configuration from SSM and connect
+    to the MediSlot MySQL database.
+    """
+
+    db_host = get_parameter(DB_HOST_PARAMETER)
+    db_port = int(get_parameter(DB_PORT_PARAMETER))
+    db_password = get_parameter(DB_PASSWORD_PARAMETER)
+
+    db_user = DB_USER
+
+    if not db_user:
+        if not DB_USER_PARAMETER:
+            raise ValueError(
+                "DB_USER or DB_USER_PARAMETER must be configured"
             )
-        },
-        "body": json.dumps(body)
-    }
 
-
-def _parameter(name, decrypt=False):
-    return ssm.get_parameter(
-        Name=name,
-        WithDecryption=decrypt
-    )["Parameter"]["Value"]
-
-
-def db():
-    env = os.environ["ENVIRONMENT"]
+        db_user = get_parameter(DB_USER_PARAMETER)
 
     return pymysql.connect(
-        host=_parameter(
-            os.environ.get(
-                "DB_HOST_PARAMETER",
-                f"/medislot/{env}/db/host"
-            )
-        ),
-        port=int(_parameter(
-            os.environ.get(
-                "DB_PORT_PARAMETER",
-                f"/medislot/{env}/db/port"
-            )
-        )),
-        user=os.environ["DB_USER"],
-        password=_parameter(
-            os.environ.get(
-                "DB_PASSWORD_PARAMETER",
-                f"/medislot/{env}/db/app-password"
-            ),
-            True
-        ),
-        database=os.environ.get("DB_NAME", "medislot"),
-        connect_timeout=5,
-        read_timeout=10,
-        write_timeout=10,
+        host=db_host,
+        port=db_port,
+        user=db_user,
+        password=db_password,
+        database=DB_NAME,
+        cursorclass=pymysql.cursors.Cursor,
         autocommit=False,
-        cursorclass=pymysql.cursors.DictCursor
+        connect_timeout=10
     )
 
 
-def body(event):
-    raw = event.get("body") or "{}"
-    value = json.loads(raw) if isinstance(raw, str) else raw
-
-    if not isinstance(value, dict):
-        raise ValueError("Request body must be a JSON object")
-
-    return value
+# Stable connection seam used by the handler and unit tests.
+# Kept separate from module import so no AWS calls occur during import.
+def db():
+    return get_db_connection()
 
 
-def lambda_handler(event, context):
-    conn = None
+# ---------------------------------------------------------
+# INPUT VALIDATION
+# ---------------------------------------------------------
+
+def validate_registration(data):
+    """
+    Validate registration request fields.
+    """
+
+    if not isinstance(data, dict):
+        raise ValueError("Invalid request body")
+
+    name = data.get("name")
+    email = data.get("email")
+    password = data.get("password")
+    role = data.get("role")
+
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Name is required")
+
+    name = name.strip()
+
+    if len(name) > 150:
+        raise ValueError("Name must not exceed 150 characters")
+
+    if not isinstance(email, str):
+        raise ValueError("Email is required")
+
+    email = email.strip().lower()
+
+    if not EMAIL_RE.fullmatch(email):
+        raise ValueError("Invalid email address")
+
+    if len(email) > 255:
+        raise ValueError("Email must not exceed 255 characters")
+
+    if not isinstance(password, str):
+        raise ValueError("Password is required")
+
+    if len(password) < 8:
+        raise ValueError("Password must contain at least 8 characters")
+
+    if len(password.encode("utf-8")) > 72:
+        raise ValueError("Password exceeds bcrypt's 72-byte limit")
+
+    if not isinstance(role, str):
+        raise ValueError("Role is required")
+
+    role = role.strip().lower()
+
+    if role not in ("patient", "doctor"):
+        raise ValueError("Role must be patient or doctor")
+
+    return {
+        "name": name,
+        "email": email,
+        "password": password,
+        "role": role
+    }
+
+
+# ---------------------------------------------------------
+# PASSWORD HASHING
+# ---------------------------------------------------------
+
+def hash_password(password):
+    """
+    Hash the password using bcrypt.
+    """
+
+    salt = bcrypt.gensalt(rounds=BCRYPT_ROUNDS)
+
+    password_hash = bcrypt.hashpw(
+        password.encode("utf-8"),
+        salt
+    )
+
+    return password_hash.decode("utf-8")
+
+
+# ---------------------------------------------------------
+# REGISTRATION
+# ---------------------------------------------------------
+
+def register_user(data):
+    """
+    Create a user and the corresponding patient or doctor
+    profile using the same sequential numeric user ID.
+
+    user_id is generated by MySQL AUTO_INCREMENT.
+    """
+
+    validated = validate_registration(data)
+
+    name = validated["name"]
+    email = validated["email"]
+    password = validated["password"]
+    role = validated["role"]
+
+    password_hash = hash_password(password)
+
+    connection = db()
 
     try:
-        data = body(event)
+        with connection.cursor() as cursor:
 
-        # Both doctors and patients use this same endpoint.
-        role = data.get("role")
-
-        if not isinstance(role, str):
-            return response(400, {
-                "message": "role is required and must be doctor or patient"
-            })
-
-        role = role.strip().lower()
-
-        if role not in ("doctor", "patient"):
-            return response(400, {
-                "message": "Invalid role. Allowed values: doctor, patient"
-            })
-
-        name = data.get("name")
-        email = data.get("email")
-        password = data.get("password")
-
-        if not all(
-            isinstance(value, str)
-            for value in (name, email, password)
-        ):
-            return response(400, {
-                "message": "name, email and password are required"
-            })
-
-        name = name.strip()
-        email = email.strip().lower()
-
-        if not name or len(name) > 120:
-            return response(400, {
-                "message": "name must contain 1 to 120 characters"
-            })
-
-        if not EMAIL_RE.fullmatch(email) or len(email) > 254:
-            return response(400, {
-                "message": "Invalid email address"
-            })
-
-        password_bytes = password.encode("utf-8")
-
-        if (
-            len(password) < PASSWORD_MIN_LENGTH
-            or len(password_bytes) > 72
-            or not re.search(r"[A-Za-z]", password)
-            or not re.search(r"\d", password)
-        ):
-            return response(400, {
-                "message": (
-                    f"Password must be at least {PASSWORD_MIN_LENGTH} "
-                    "characters and contain a letter and a number "
-                    "(maximum 72 UTF-8 bytes)"
-                )
-            })
-
-        # Role-specific required fields.
-        if role == "patient":
-            required = [
-                "dateOfBirth",
-                "gender",
-                "phone",
-                "city"
-            ]
-        else:
-            required = [
-                "licenseNumber",
-                "specialisationId",
-                "yearsExperience",
-                "qualifications",
-                "languages",
-                "timezone"
-            ]
-
-        missing = [
-            key for key in required
-            if data.get(key) is None or data.get(key) == ""
-        ]
-
-        if missing:
-            return response(400, {
-                "message": "Missing required registration fields",
-                "fields": missing
-            })
-
-        if role == "patient":
-
-            if data["gender"] not in {
-                "female",
-                "male",
-                "non_binary",
-                "prefer_not_to_say"
-            }:
-                return response(400, {
-                    "message": "Invalid gender"
-                })
-
-        else:
-            try:
-                data["specialisationId"] = int(
-                    data["specialisationId"]
-                )
-
-                data["yearsExperience"] = int(
-                    data["yearsExperience"]
-                )
-
-                if not 0 <= data["yearsExperience"] <= 80:
-                    raise ValueError()
-
-                if data.get("hospitalId") not in (None, ""):
-                    data["hospitalId"] = int(data["hospitalId"])
-                else:
-                    data["hospitalId"] = None
-
-            except (TypeError, ValueError):
-                return response(400, {
-                    "message": (
-                        "specialisationId, hospitalId and "
-                        "yearsExperience must be valid integers"
-                    )
-                })
-
-            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
-            try:
-                ZoneInfo(data["timezone"])
-            except (ZoneInfoNotFoundError, TypeError):
-                return response(400, {
-                    "message": (
-                        "timezone must be a valid IANA timezone, "
-                        "for example Asia/Kolkata"
-                    )
-                })
-
-            if (
-                not isinstance(data["licenseNumber"], str)
-                or not data["licenseNumber"].strip()
-                or len(data["licenseNumber"]) > 50
-            ):
-                return response(400, {
-                    "message": (
-                        "licenseNumber must contain 1 to 50 characters"
-                    )
-                })
-
-            if not all(
-                isinstance(data[key], str) and data[key].strip()
-                for key in ("qualifications", "languages", "timezone")
-            ):
-                return response(400, {
-                    "message": (
-                        "qualifications, languages and timezone "
-                        "must be non-empty strings"
-                    )
-                })
-
-        # Use one UUID as the identity across users and the role-specific profile.
-        user_id = str(uuid.uuid4())
-
-        # Create the account and role-specific profile in one transaction.
-        conn = db()
-
-        with conn.cursor() as cur:
-            cur.execute(
+            # Check whether the email already exists.
+            cursor.execute(
                 """
-                INSERT INTO users
-                    (user_id, name, email, password_hash, role, status)
-                VALUES (%s, %s, %s, %s, %s, 'active')
+                SELECT user_id
+                FROM users
+                WHERE email = %s
+                LIMIT 1
                 """,
-                (
-                    user_id,
+                (email,)
+            )
+
+            existing_user = cursor.fetchone()
+
+            if existing_user:
+                connection.rollback()
+
+                return {
+                    "statusCode": 409,
+                    "body": json.dumps({
+                        "message": "Email is already registered"
+                    })
+                }
+
+            # Insert user without manually supplying user_id.
+            cursor.execute(
+                """
+                INSERT INTO users (
                     name,
                     email,
-                    bcrypt.hashpw(
-                        password_bytes,
-                        bcrypt.gensalt(rounds=BCRYPT_ROUNDS)
-                    ).decode(),
+                    password_hash,
+                    role
+                )
+                VALUES (%s, %s, %s, %s)
+                """,
+                (
+                    name,
+                    email,
+                    password_hash,
                     role
                 )
             )
 
-            cur.execute(
-                "SELECT public_user_id FROM users WHERE user_id = %s",
-                (user_id,)
-            )
-            public_user_id = int(cur.fetchone()["public_user_id"])
+            # Obtain the sequential numeric ID from MySQL.
+            user_id = int(cursor.lastrowid)
 
+            if user_id <= 0 or user_id > MAX_UNSIGNED_BIGINT:
+                raise ValueError("Invalid generated user ID")
+
+            # Create the corresponding profile using the
+            # exact same numeric user_id.
             if role == "patient":
-                cur.execute(
+                cursor.execute(
                     """
-                    INSERT INTO patients
+                    INSERT INTO patients (user_id, full_name, date_of_birth,
+                                          gender, phone, city,
+                                          emergency_contact_name,
+                                          emergency_contact_phone, notes)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
                     (
                         user_id,
-                        full_name,
-                        date_of_birth,
-                        gender,
-                        phone,
-                        city,
-                        emergency_contact_name,
-                        emergency_contact_phone,
-                        notes
+                        data.get("name", "").strip(),
+                        data.get("dateOfBirth") or None,
+                        data.get("gender") or None,
+                        data.get("phone") or None,
+                        data.get("city") or None,
+                        data.get("emergencyContactName") or None,
+                        data.get("emergencyContactPhone") or None,
+                        data.get("notes") or None
+                    )
+                )
+
+            elif role == "doctor":
+                required_doctor_fields = {
+                    "licenseNumber": data.get("licenseNumber"),
+                    "specialisationId": data.get("specialisationId")
+                }
+                if not required_doctor_fields["licenseNumber"]:
+                    raise ValueError("Doctor license number is required")
+                if not required_doctor_fields["specialisationId"]:
+                    raise ValueError("Doctor specialisation is required")
+
+                cursor.execute(
+                    """
+                    INSERT INTO doctors (
+                        user_id, full_name, license_number,
+                        specialisation_id, hospital_id, years_experience,
+                        qualifications, languages, timezone
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         user_id,
-                        name,
-                        data["dateOfBirth"],
-                        data["gender"],
-                        data["phone"],
-                        data["city"],
-                        data.get("emergencyContactName"),
-                        data.get("emergencyContactPhone"),
-                        data.get("notes")
+                        data.get("name", "").strip(),
+                        str(data["licenseNumber"]).strip(),
+                        int(data["specialisationId"]),
+                        data.get("hospitalId") or None,
+                        data.get("yearsExperience") or None,
+                        data.get("qualifications") or None,
+                        data.get("languages") or None,
+                        data.get("timezone") or "UTC"
                     )
                 )
 
-            else:
-                cur.execute(
-                    """
-                    INSERT INTO doctors
-                    (
-                        user_id,
-                        full_name,
-                        license_number,
-                        specialisation_id,
-                        hospital_id,
-                        years_experience,
-                        qualifications,
-                        languages,
-                        timezone,
-                        photo_key
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
-                    """,
-                    (
-                        user_id,
-                        name,
-                        data["licenseNumber"].strip(),
-                        data["specialisationId"],
-                        data.get("hospitalId"),
-                        data["yearsExperience"],
-                        data["qualifications"],
-                        data["languages"],
-                        data["timezone"]
-                    )
-                )
+            connection.commit()
 
-        conn.commit()
+            logger.info(
+                "Registration successful: user_id=%s, role=%s",
+                user_id,
+                role
+            )
 
-        logger.info(json.dumps({
-            "event": "registration_succeeded",
-            "userId": public_user_id,
-            "internalUserId": user_id,
-            "role": role
-        }))
-
-        return response(201, {
-            "message": f"{role.capitalize()} registration successful",
-            "userId": public_user_id,
-            "role": role
-        })
+            return {
+                "statusCode": 201,
+                "body": json.dumps({
+                    "message": "Registration successful",
+                    "userId": user_id,
+                    "role": role
+                })
+            }
 
     except pymysql.err.IntegrityError as exc:
-        if conn:
-            conn.rollback()
+        connection.rollback()
 
-        code = exc.args[0] if exc.args else None
+        # Duplicate email or another database constraint.
+        if exc.args and exc.args[0] == 1062:
+            return {
+                "statusCode": 409,
+                "body": json.dumps({
+                    "message": "Email is already registered"
+                })
+            }
 
-        if code == 1062:
-            return response(409, {
-                "message": (
-                    "Email or professional license number already exists"
-                )
+        logger.exception("Database integrity error during registration")
+        return {
+            "statusCode": 500,
+            "body": json.dumps({
+                "message": "Registration failed"
             })
-
-        if code == 1452:
-            return response(400, {
-                "message": (
-                    "Selected specialisation or hospital does not exist"
-                )
-            })
-
-        logger.exception("Registration integrity error")
-
-        return response(400, {
-            "message": "Registration details violate a database constraint"
-        })
-
-    except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-        return response(400, {
-            "message": str(exc) or "Invalid JSON request"
-        })
-
-    except (BotoCoreError, ClientError, pymysql.MySQLError):
-        if conn:
-            conn.rollback()
-
-        logger.exception("Registration dependency failure")
-
-        return response(500, {
-            "message": "Registration could not be completed"
-        })
+        }
 
     except Exception:
-        if conn:
-            conn.rollback()
+        connection.rollback()
 
-        logger.exception("Unexpected registration failure")
+        logger.exception("Registration failed")
 
-        return response(500, {
-            "message": "Registration could not be completed"
-        })
+        return {
+            "statusCode": 500,
+            "body": json.dumps({
+                "message": "Registration failed"
+            })
+        }
 
     finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        connection.close()
+
+
+# ---------------------------------------------------------
+# LAMBDA HANDLER
+# ---------------------------------------------------------
+
+def lambda_handler(event, context):
+    """
+    API Gateway Lambda entry point.
+    """
+
+    try:
+        body = event.get("body")
+
+        if isinstance(body, str):
+            data = json.loads(body)
+        elif isinstance(body, dict):
+            data = body
+        else:
+            return {
+                "statusCode": 400,
+                "body": json.dumps({
+                    "message": "Invalid request body"
+                })
+            }
+
+        result = register_user(data)
+
+        return result
+
+    except (json.JSONDecodeError, ValueError) as exc:
+        return {
+            "statusCode": 400,
+            "body": json.dumps({
+                "message": str(exc)
+            })
+        }
+
+    except (BotoCoreError, ClientError):
+        logger.exception("AWS error during registration")
+
+        return {
+            "statusCode": 500,
+            "body": json.dumps({
+                "message": "Registration service unavailable"
+            })
+        }
+
+    except Exception:
+        logger.exception("Unexpected registration error")
+
+        return {
+            "statusCode": 500,
+            "body": json.dumps({
+                "message": "Internal server error"
+            })
+        }

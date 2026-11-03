@@ -1,27 +1,19 @@
+
 import hashlib
 import json
 import logging
 import os
+import re
+import secrets
 import time
-import uuid
 
 import boto3
 import jwt
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-
-# --------------------------------------------------
-# LOGGING
-# --------------------------------------------------
-
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
-
-
-# --------------------------------------------------
-# AWS CLIENTS AND SETTINGS
-# --------------------------------------------------
 
 ssm = boto3.client("ssm")
 ddb = boto3.resource("dynamodb")
@@ -30,10 +22,9 @@ table = ddb.Table(os.environ["AUTH_TOKENS_TABLE"])
 
 ACCESS_MIN = int(os.environ.get("ACCESS_TOKEN_MINUTES", "15"))
 
+USER_ID_PATTERN = re.compile(r"^[1-9][0-9]*$")
+MAX_UNSIGNED_BIGINT = 18446744073709551615
 
-# --------------------------------------------------
-# RESPONSE
-# --------------------------------------------------
 
 def response(status, body):
     return {
@@ -54,10 +45,6 @@ def response(status, body):
     }
 
 
-# --------------------------------------------------
-# JWT SECRET
-# --------------------------------------------------
-
 def secret():
     environment = os.environ["ENVIRONMENT"]
 
@@ -72,55 +59,38 @@ def secret():
     )["Parameter"]["Value"]
 
 
-# --------------------------------------------------
-# TOKEN HASH
-# --------------------------------------------------
-
 def hash_token(value):
-    return hashlib.sha256(
-        value.encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-# --------------------------------------------------
-# REFRESH HANDLER
-# --------------------------------------------------
+def validate_user_id(value):
+    user_id = str(value)
+
+    if not USER_ID_PATTERN.fullmatch(user_id):
+        raise ValueError("Invalid numeric user ID")
+
+    numeric_id = int(user_id)
+
+    if numeric_id > MAX_UNSIGNED_BIGINT:
+        raise ValueError("User ID exceeds BIGINT UNSIGNED limit")
+
+    return numeric_id
+
 
 def lambda_handler(event, context):
-
     try:
-
-        # ------------------------------------------
-        # 1. READ REQUEST BODY
-        # ------------------------------------------
-
         raw = event.get("body") or "{}"
+        data = json.loads(raw) if isinstance(raw, str) else raw
 
-        data = (
-            json.loads(raw)
-            if isinstance(raw, str)
-            else raw
-        )
+        token = data.get("refreshToken") if isinstance(data, dict) else None
 
-        token = (
-            data.get("refreshToken")
-            if isinstance(data, dict)
-            else None
-        )
-
-        # Remove stray spaces or line breaks from copy-paste.
         if isinstance(token, str):
             token = token.strip()
 
         if not isinstance(token, str) or not token:
-            return response(
-                400,
-                {"message": "refreshToken is required"}
-            )
-
-        # ------------------------------------------
-        # 2. LOOK UP THE REFRESH TOKEN
-        # ------------------------------------------
+            return response(400, {
+                "message": "refreshToken is required"
+            })
 
         item = table.get_item(
             Key={"tokenId": hash_token(token)},
@@ -134,39 +104,35 @@ def lambda_handler(event, context):
             or item.get("tokenType") != "REFRESH"
             or int(item.get("expiresAt", 0)) <= now
         ):
-            return response(
-                401,
-                {"message": "Invalid or expired refresh token"}
-            )
+            return response(401, {
+                "message": "Invalid or expired refresh token"
+            })
 
-        user_id = str(item["userId"])
+        user_id = validate_user_id(item.get("userId"))
+        user_id_text = str(user_id)
         session_id = str(item["sessionId"])
 
-        # ------------------------------------------
-        # 3. CHECK THE LOGIN SESSION IS STILL ACTIVE
-        # ------------------------------------------
-
         active = table.get_item(
-            Key={"tokenId": f"ACTIVE#{user_id}"},
+            Key={"tokenId": f"ACTIVE#{user_id_text}"},
             ConsistentRead=True
         ).get("Item")
 
-        if not active or active.get("sessionId") != session_id:
-            return response(
-                401,
-                {"message": "This login session is no longer active"}
-            )
+        if (
+            not active
+            or active.get("userId") != user_id_text
+            or active.get("sessionId") != session_id
+            or active.get("tokenType") != "ACTIVE_ACCESS"
+        ):
+            return response(401, {
+                "message": "This login session is no longer active"
+            })
 
-        # ------------------------------------------
-        # 4. ISSUE A NEW ACCESS TOKEN
-        # ------------------------------------------
-
-        jti = str(uuid.uuid4())
+        jti = secrets.token_urlsafe(24)
         access_exp = now + ACCESS_MIN * 60
 
         access = jwt.encode(
             {
-                "sub": user_id,
+                "sub": user_id_text,
                 "role": item["role"],
                 "iat": now,
                 "exp": access_exp,
@@ -177,90 +143,60 @@ def lambda_handler(event, context):
             algorithm="HS256"
         )
 
-        # ------------------------------------------
-        # 5. SAVE THE NEW ACCESS TOKEN ID
-        # ------------------------------------------
-        # The condition stops a stale refresh request
-        # from overwriting a newer login.
-
+        # Conditional update prevents a stale session from
+        # overwriting a newer login or logout.
         table.update_item(
-            Key={"tokenId": f"ACTIVE#{user_id}"},
+            Key={"tokenId": f"ACTIVE#{user_id_text}"},
             UpdateExpression="SET jti = :j, expiresAt = :e",
             ConditionExpression=(
-                "sessionId = :s AND tokenType = :t"
+                "sessionId = :s AND tokenType = :t AND userId = :u"
             ),
             ExpressionAttributeValues={
                 ":j": jti,
                 ":e": access_exp,
                 ":s": session_id,
-                ":t": "ACTIVE_ACCESS"
+                ":t": "ACTIVE_ACCESS",
+                ":u": user_id_text
             }
         )
 
-        # ------------------------------------------
-        # 6. RETURN THE NEW ACCESS TOKEN
-        # ------------------------------------------
-
-        return response(
-            200,
-            {
-                "accessToken": access,
-                "tokenType": "Bearer",
-                "expiresIn": ACCESS_MIN * 60,
-                "refreshToken": token,
-                "refreshExpiresIn": int(item["expiresAt"]) - now
-            }
-        )
-
-    # ----------------------------------------------
-    # REQUEST ERRORS
-    # ----------------------------------------------
+        return response(200, {
+            "accessToken": access,
+            "tokenType": "Bearer",
+            "expiresIn": ACCESS_MIN * 60,
+            "refreshToken": token,
+            "refreshExpiresIn": int(item["expiresAt"]) - now
+        })
 
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return response(
-            400,
-            {"message": "Invalid JSON request"}
-        )
+        return response(400, {"message": "Invalid JSON request"})
 
-    # ----------------------------------------------
-    # AWS ERRORS
-    # ----------------------------------------------
+    except ValueError:
+        return response(401, {
+            "message": "Invalid refresh-token user identity"
+        })
 
     except ClientError as exc:
-
         error_code = exc.response.get("Error", {}).get("Code")
 
         if error_code == "ConditionalCheckFailedException":
-            return response(
-                401,
-                {"message": "Login session is no longer active"}
-            )
+            return response(401, {
+                "message": "Login session is no longer active"
+            })
 
         logger.exception("Refresh dependency failure")
-
-        return response(
-            500,
-            {"message": "Token refresh could not be completed"}
-        )
+        return response(500, {
+            "message": "Token refresh could not be completed"
+        })
 
     except BotoCoreError:
-
-        logger.exception("Refresh dependency failure")
-
-        return response(
-            500,
-            {"message": "Token refresh could not be completed"}
-        )
-
-    # ----------------------------------------------
-    # UNEXPECTED ERRORS
-    # ----------------------------------------------
+        logger.exception("Refresh AWS dependency failure")
+        return response(500, {
+            "message": "Token refresh could not be completed"
+        })
 
     except Exception:
-
         logger.exception("Refresh failure")
-
-        return response(
-            500,
-            {"message": "Token refresh could not be completed"}
-        )
+        return response(500, {
+            "message": "Token refresh could not be completed"
+        })

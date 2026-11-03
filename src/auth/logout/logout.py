@@ -3,36 +3,24 @@ import hashlib
 import json
 import logging
 import os
+import re
 
 import boto3
 import jwt
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-
-# --------------------------------------------------
-# LOGGING
-# --------------------------------------------------
-
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
-
-
-# --------------------------------------------------
-# AWS CLIENTS
-# --------------------------------------------------
 
 ssm = boto3.client("ssm")
 ddb = boto3.resource("dynamodb")
 
-TABLE_NAME = os.environ["AUTH_TOKENS_TABLE"]
+table = ddb.Table(os.environ["AUTH_TOKENS_TABLE"])
 
-table = ddb.Table(TABLE_NAME)
+USER_ID_PATTERN = re.compile(r"^[1-9][0-9]*$")
+MAX_UNSIGNED_BIGINT = 18446744073709551615
 
-
-# --------------------------------------------------
-# RESPONSE
-# --------------------------------------------------
 
 def response(status, body):
     return {
@@ -53,10 +41,6 @@ def response(status, body):
     }
 
 
-# --------------------------------------------------
-# JWT SECRET
-# --------------------------------------------------
-
 def secret():
     environment = os.environ["ENVIRONMENT"]
 
@@ -71,91 +55,63 @@ def secret():
     )["Parameter"]["Value"]
 
 
-# --------------------------------------------------
-# TOKEN HASH
-# --------------------------------------------------
-
 def hash_token(value):
-    return hashlib.sha256(
-        value.encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-# --------------------------------------------------
-# LOGOUT HANDLER
-# --------------------------------------------------
+def validate_user_id(value):
+    user_id = str(value)
+
+    if not USER_ID_PATTERN.fullmatch(user_id):
+        raise ValueError("Invalid numeric user ID")
+
+    numeric_id = int(user_id)
+
+    if numeric_id > MAX_UNSIGNED_BIGINT:
+        raise ValueError("User ID exceeds BIGINT UNSIGNED limit")
+
+    return numeric_id
+
 
 def lambda_handler(event, context):
-
     try:
-
-        # ------------------------------------------
-        # 1. READ AUTHORIZATION HEADER
-        # ------------------------------------------
-
         headers = {
             str(key).lower(): value
-            for key, value in (
-                event.get("headers") or {}
-            ).items()
+            for key, value in (event.get("headers") or {}).items()
         }
 
-        authorization = headers.get(
-            "authorization",
-            ""
-        )
+        authorization = headers.get("authorization", "")
 
-        if (
-            not isinstance(authorization, str)
-            or not authorization.startswith("Bearer ")
-        ):
-            return response(
-                401,
-                {
-                    "message": "Bearer access token is required"
-                }
-            )
+        if not isinstance(authorization, str):
+            return response(401, {
+                "message": "Bearer access token is required"
+            })
 
-        access_token = authorization[7:].strip()
+        parts = authorization.strip().split()
 
-        if not access_token:
-            return response(
-                401,
-                {
-                    "message": "Access token is missing"
-                }
-            )
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            return response(401, {
+                "message": "Bearer access token is required"
+            })
 
-        # ------------------------------------------
-        # 2. VERIFY ACCESS TOKEN
-        # ------------------------------------------
+        access_token = parts[1]
 
         claims = jwt.decode(
             access_token,
             secret(),
             algorithms=["HS256"],
             options={
-                "require": [
-                    "sub",
-                    "role",
-                    "exp",
-                    "jti",
-                    "sid"
-                ]
+                "require": ["sub", "role", "exp", "jti", "sid"]
             }
         )
 
-        user_id = str(claims["sub"])
+        user_id = validate_user_id(claims["sub"])
+        user_id_text = str(user_id)
         session_id = str(claims["sid"])
         jti = str(claims["jti"])
         role = str(claims["role"])
 
-        # ------------------------------------------
-        # 3. READ REQUEST BODY
-        # ------------------------------------------
-
         raw_body = event.get("body") or "{}"
-
         data = (
             json.loads(raw_body)
             if isinstance(raw_body, str)
@@ -163,292 +119,163 @@ def lambda_handler(event, context):
         )
 
         if not isinstance(data, dict):
-            return response(
-                400,
-                {
-                    "message": "Invalid request body"
-                }
-            )
+            return response(400, {"message": "Invalid request body"})
 
         refresh_token = data.get("refreshToken")
 
-        if (
-            not isinstance(refresh_token, str)
-            or not refresh_token.strip()
-        ):
-            return response(
-                400,
-                {
-                    "message": "Refresh token is required"
-                }
-            )
+        if not isinstance(refresh_token, str) or not refresh_token.strip():
+            return response(400, {
+                "message": "Refresh token is required"
+            })
 
         refresh_token = refresh_token.strip()
 
-        # ------------------------------------------
-        # 4. GET ACTIVE SESSION
-        # ------------------------------------------
+        active_key = f"ACTIVE#{user_id_text}"
 
-        active_key = f"ACTIVE#{user_id}"
-
-        active_response = table.get_item(
-            Key={
-                "tokenId": active_key
-            },
+        active = table.get_item(
+            Key={"tokenId": active_key},
             ConsistentRead=True
-        )
-
-        active = active_response.get("Item")
+        ).get("Item")
 
         if not active:
-            return response(
-                401,
-                {
-                    "message": "Login session is no longer active"
-                }
-            )
+            return response(401, {
+                "message": "Login session is no longer active"
+            })
 
         if (
-            active.get("userId") != user_id
+            str(active.get("userId")) != user_id_text
             or active.get("sessionId") != session_id
             or active.get("jti") != jti
             or active.get("tokenType") != "ACTIVE_ACCESS"
         ):
-            return response(
-                401,
-                {
-                    "message": "Login session does not match"
-                }
-            )
-
-        # ------------------------------------------
-        # 5. VERIFY REFRESH TOKEN
-        # ------------------------------------------
+            return response(401, {
+                "message": "Login session does not match"
+            })
 
         refresh_key = hash_token(refresh_token)
 
-        refresh_response = table.get_item(
-            Key={
-                "tokenId": refresh_key
-            },
+        refresh_item = table.get_item(
+            Key={"tokenId": refresh_key},
             ConsistentRead=True
-        )
-
-        refresh_item = refresh_response.get("Item")
+        ).get("Item")
 
         if not refresh_item:
-            return response(
-                401,
-                {
-                    "message": "Refresh token is invalid or expired"
-                }
-            )
+            return response(401, {
+                "message": "Refresh token is invalid or expired"
+            })
 
         if (
-            refresh_item.get("userId") != user_id
+            str(refresh_item.get("userId")) != user_id_text
             or refresh_item.get("sessionId") != session_id
             or refresh_item.get("tokenType") != "REFRESH"
         ):
-            return response(
-                401,
-                {
-                    "message": "Refresh token does not belong to this session"
-                }
-            )
+            return response(401, {
+                "message": "Refresh token does not belong to this session"
+            })
 
-        # ------------------------------------------
-        # 6. DELETE REFRESH TOKEN FIRST
-        # ------------------------------------------
-
+        # Delete the refresh token first.
         table.delete_item(
-            Key={
-                "tokenId": refresh_key
-            },
+            Key={"tokenId": refresh_key},
             ConditionExpression=(
                 "sessionId = :sid AND userId = :uid "
                 "AND tokenType = :type"
             ),
             ExpressionAttributeValues={
                 ":sid": session_id,
-                ":uid": user_id,
+                ":uid": user_id_text,
                 ":type": "REFRESH"
             }
         )
 
-        # ------------------------------------------
-        # 7. DELETE ACTIVE SESSION
-        # ------------------------------------------
-
         try:
-
             table.delete_item(
-                Key={
-                    "tokenId": active_key
-                },
+                Key={"tokenId": active_key},
                 ConditionExpression=(
                     "sessionId = :sid AND jti = :jti "
-                    "AND userId = :uid"
+                    "AND userId = :uid AND tokenType = :type"
                 ),
                 ExpressionAttributeValues={
                     ":sid": session_id,
                     ":jti": jti,
-                    ":uid": user_id
+                    ":uid": user_id_text,
+                    ":type": "ACTIVE_ACCESS"
                 }
             )
 
         except Exception:
-
-            # --------------------------------------
-            # ROLLBACK REFRESH TOKEN
-            # --------------------------------------
-
             logger.exception(
-                "Active session deletion failed; "
-                "attempting refresh-token rollback"
+                "Active session deletion failed; attempting refresh rollback"
             )
 
             try:
-
                 table.put_item(
                     Item=refresh_item,
-                    ConditionExpression=(
-                        "attribute_not_exists(tokenId)"
-                    )
+                    ConditionExpression="attribute_not_exists(tokenId)"
                 )
-
                 logger.info(
                     "Refresh token restored for user %s",
-                    user_id
+                    user_id_text
                 )
-
             except Exception:
-
                 logger.exception(
-                    "CRITICAL: Refresh token rollback failed "
-                    "for user %s",
-                    user_id
+                    "CRITICAL: Refresh token rollback failed for user %s",
+                    user_id_text
                 )
 
             raise
 
-        # ------------------------------------------
-        # 8. LOG SUCCESS
-        # ------------------------------------------
+        logger.info(json.dumps({
+            "event": "logout_succeeded",
+            "userId": user_id,
+            "role": role
+        }))
 
-        logger.info(
-            json.dumps({
-                "event": "logout_succeeded",
-                "userId": user_id,
-                "role": role
-            })
-        )
-
-        return response(
-            200,
-            {
-                "message": "Logout successful"
-            }
-        )
-
-    # ----------------------------------------------
-    # JWT ERRORS
-    # ----------------------------------------------
+        return response(200, {"message": "Logout successful"})
 
     except jwt.ExpiredSignatureError:
-
-        return response(
-            401,
-            {
-                "message": "Access token has expired"
-            }
-        )
+        return response(401, {
+            "message": "Access token has expired"
+        })
 
     except jwt.InvalidTokenError:
+        return response(401, {
+            "message": "Invalid access token"
+        })
 
-        return response(
-            401,
-            {
-                "message": "Invalid access token"
-            }
-        )
+    except ValueError:
+        return response(401, {
+            "message": "Invalid numeric user identity"
+        })
 
-    # ----------------------------------------------
-    # REQUEST ERRORS
-    # ----------------------------------------------
-
-    except (
-        json.JSONDecodeError,
-        UnicodeDecodeError
-    ):
-
-        return response(
-            400,
-            {
-                "message": "Invalid JSON request"
-            }
-        )
-
-    # ----------------------------------------------
-    # AWS ERRORS
-    # ----------------------------------------------
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return response(400, {"message": "Invalid JSON request"})
 
     except ClientError as exc:
-
         error = exc.response.get("Error", {})
 
-        logger.error(
-            json.dumps({
-                "event": "logout_dynamodb_failure",
-                "errorCode": error.get("Code"),
-                "errorMessage": error.get("Message"),
-                "userId": locals().get("user_id"),
-                "requestId": exc.response.get(
-                    "ResponseMetadata", {}
-                ).get("RequestId")
-            })
-        )
+        logger.error(json.dumps({
+            "event": "logout_dynamodb_failure",
+            "errorCode": error.get("Code"),
+            "errorMessage": error.get("Message")
+        }))
 
         if error.get("Code") == "ConditionalCheckFailedException":
-            return response(
-                401,
-                {
-                    "message": "Login session changed or is no longer active"
-                }
-            )
+            return response(401, {
+                "message": "Login session changed or is no longer active"
+            })
 
-        return response(
-            500,
-            {
-                "message": "Logout could not be completed"
-            }
-        )
+        return response(500, {
+            "message": "Logout could not be completed"
+        })
 
     except BotoCoreError:
-
-        logger.exception(
-            "Logout AWS dependency failure"
-        )
-
-        return response(
-            500,
-            {
-                "message": "Logout could not be completed"
-            }
-        )
-
-    # ----------------------------------------------
-    # UNEXPECTED ERRORS
-    # ----------------------------------------------
+        logger.exception("Logout AWS dependency failure")
+        return response(500, {
+            "message": "Logout could not be completed"
+        })
 
     except Exception:
-
-        logger.exception(
-            "Unexpected logout failure"
-        )
-
-        return response(
-            500,
-            {
-                "message": "Logout could not be completed"
-            }
-        )
+        logger.exception("Unexpected logout failure")
+        return response(500, {
+            "message": "Logout could not be completed"
+        })
