@@ -520,6 +520,23 @@
                 width: 100%;
             }
         }
+        .editor-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 14px;
+            align-items: end;
+            margin-top: 14px;
+        }
+        .editor-grid label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600; }
+        .editor-grid input, .editor-grid select {
+            width: 100%; min-height: 40px; padding: 9px 10px;
+            border: 1px solid #d7deea; border-radius: 8px; background: #fff;
+        }
+        .editor-grid button, .delete-blackout {
+            min-height: 40px; border: 0; border-radius: 8px; padding: 9px 14px;
+            background: #2457c5; color: #fff; font-weight: 600; cursor: pointer;
+        }
+        .delete-blackout { background: #a83232; }
     </style>
 </head>
 
@@ -691,6 +708,13 @@
                 <div class="consultation-list" id="consultationList">
                     <div class="empty">Loading consultation types...</div>
                 </div>
+                <form id="consultationForm" class="editor-grid" style="margin-top:18px">
+                    <label>Type name<input id="consultationName" maxlength="40" placeholder="video / in_clinic / phone" required></label>
+                    <label>Duration (minutes)<input id="consultationDuration" type="number" min="5" max="180" value="30" required></label>
+                    <label>Fee (INR)<input id="consultationFee" type="number" min="0" step="0.01" value="0" required></label>
+                    <label>Capacity<input id="consultationCapacity" type="number" min="1" max="50" value="1" required></label>
+                    <button type="submit">Add consultation type</button>
+                </form>
 
             </div>
 
@@ -727,6 +751,45 @@
                 </table>
             </div>
 
+        </section>
+
+        <!-- WEEKLY AVAILABILITY EDITOR -->
+        <section class="panel" id="availabilityEditor">
+            <div class="panel-header">
+                <div>
+                    <h3>Add Weekly Session</h3>
+                    <p>All schedule times are entered in India Standard Time (IST).</p>
+                </div>
+            </div>
+            <form id="availabilityForm" class="editor-grid">
+                <label>Consultation type
+                    <select id="availabilityConsultationType" required></select>
+                </label>
+                <label>Weekday
+                    <select id="availabilityDay" required>
+                        <option value="1">Monday</option><option value="2">Tuesday</option>
+                        <option value="3">Wednesday</option><option value="4">Thursday</option>
+                        <option value="5">Friday</option><option value="6">Saturday</option>
+                        <option value="7">Sunday</option>
+                    </select>
+                </label>
+                <label>Start time (IST)<input id="availabilityStart" type="time" required></label>
+                <label>End time (IST)<input id="availabilityEnd" type="time" required></label>
+                <button type="submit">Add availability</button>
+            </form>
+        </section>
+
+        <!-- BLACKOUT DATES -->
+        <section class="panel" id="blackouts">
+            <div class="panel-header">
+                <div><h3>Blackout Dates</h3><p>Close the entire day to new appointments.</p></div>
+            </div>
+            <form id="blackoutForm" class="editor-grid">
+                <label>Date<input id="blackoutDate" type="date" required></label>
+                <label>Reason<input id="blackoutReason" type="text" maxlength="200" placeholder="Optional reason"></label>
+                <button type="submit">Add blackout</button>
+            </form>
+            <div id="blackoutList" class="consultation-list"><div class="empty">Loading blackout dates...</div></div>
         </section>
 
         <!-- PROFILE -->
@@ -768,6 +831,22 @@
                         </tr>
                     </tbody>
                 </table>
+            </div>
+
+            <div class="panel-header" style="margin-top:24px"><div><h3>Edit Professional Profile</h3><p>Doctor profile details are saved to MediSlot.</p></div></div>
+            <form id="profileForm" class="editor-grid">
+                <label>Full name<input id="editDoctorName" maxlength="120" required></label>
+                <label>License number<input id="editDoctorLicense" maxlength="50" required></label>
+                <label>Specialisation ID<input id="editDoctorSpecialisation" type="number" min="1" required></label>
+                <label>Hospital ID<input id="editDoctorHospital" type="number" min="1"></label>
+                <label>Years of experience<input id="editDoctorExperience" type="number" min="0" max="80"></label>
+                <label>Qualifications<input id="editDoctorQualifications" maxlength="500"></label>
+                <label>Languages<input id="editDoctorLanguages" maxlength="200"></label>
+                <button type="submit">Save profile</button>
+            </form>
+            <div class="editor-grid" style="margin-top:16px">
+                <label>Profile photo<input id="doctorPhoto" type="file" accept="image/jpeg,image/png,image/webp"></label>
+                <button type="button" id="uploadPhotoButton">Upload photo</button>
             </div>
 
         </section>
@@ -814,13 +893,14 @@
         })[char]);
     }
 
-    async function apiRequest(path) {
+    async function apiRequest(path, method = "GET", body = null) {
         const response = await fetch(`${API_BASE_URL}${path}`, {
-            method: "GET",
+            method,
             headers: {
                 "Authorization": `Bearer ${accessToken}`,
                 "Content-Type": "application/json"
-            }
+            },
+            body: body === null ? undefined : JSON.stringify(body)
         });
 
         const result = await response.json().catch(() => ({}));
@@ -836,19 +916,12 @@
 
     function setCurrentDate() {
         const now = new Date();
+        const istDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
 
-        $("currentDate").textContent =
-            now.toLocaleDateString("en-IN", {
-                weekday: "long",
-                day: "numeric",
-                month: "long",
-                year: "numeric"
-            });
-
-        $("scheduleDate").value =
-            now.getFullYear() + "-" +
-            String(now.getMonth() + 1).padStart(2, "0") + "-" +
-            String(now.getDate()).padStart(2, "0");
+        $("currentDate").textContent = new Intl.DateTimeFormat("en-IN", {
+            timeZone: "Asia/Kolkata", weekday: "long", day: "numeric", month: "long", year: "numeric"
+        }).format(now);
+        $("scheduleDate").value = istDate;
     }
 
     async function loadProfile() {
@@ -882,6 +955,13 @@
             profile.years_experience != null
                 ? `${profile.years_experience} years`
                 : "—";
+        $("editDoctorName").value = profile.name || profile.full_name || "";
+        $("editDoctorLicense").value = profile.license_number || "";
+        $("editDoctorSpecialisation").value = profile.specialisation_id || "";
+        $("editDoctorHospital").value = profile.hospital_id || "";
+        $("editDoctorExperience").value = profile.years_experience ?? "";
+        $("editDoctorQualifications").value = profile.qualifications || "";
+        $("editDoctorLanguages").value = profile.languages || "";
     }
 
     async function loadSchedule() {
@@ -950,6 +1030,10 @@
         const items = result.items || [];
 
         $("consultationCount").textContent = items.length;
+        const selector = $("availabilityConsultationType");
+        selector.innerHTML = items.filter(item => Number(item.is_active) === 1).map(item =>
+            `<option value="${escapeHTML(item.consultation_type_id)}">${escapeHTML(item.name)}</option>`
+        ).join("");
 
         const list = $("consultationList");
 
@@ -977,6 +1061,20 @@
             </div>
         `).join("");
     }
+
+    $("consultationForm").addEventListener("submit", async event => {
+        event.preventDefault();
+        try {
+            await apiRequest("/doctors/me/consultation-types", "POST", {
+                name: $("consultationName").value.trim().toLowerCase(),
+                durationMin: Number($("consultationDuration").value),
+                feeAmount: Number($("consultationFee").value),
+                capacity: Number($("consultationCapacity").value)
+            });
+            await loadConsultations();
+            showMessage("Consultation type created.", "success");
+        } catch (error) { showMessage(error.message); }
+    });
 
     async function loadAvailability() {
         const result = await apiRequest(
@@ -1016,6 +1114,86 @@
         `).join("");
     }
 
+    async function loadBlackouts() {
+        const result = await apiRequest("/doctors/me/blackout-dates");
+        const items = result.items || [];
+        const list = $("blackoutList");
+        if (!items.length) {
+            list.innerHTML = '<div class="empty">No blackout dates configured.</div>';
+            return;
+        }
+        list.innerHTML = items.map(item => `
+            <div class="consultation-item">
+                <div><h4>${escapeHTML(item.blackout_date)}</h4><p>${escapeHTML(item.reason || "Closed for the day")}</p></div>
+                <button type="button" data-blackout-id="${escapeHTML(item.blackout_id)}" class="delete-blackout">Remove</button>
+            </div>`).join("");
+        list.querySelectorAll(".delete-blackout").forEach(button => {
+            button.addEventListener("click", async () => {
+                try {
+                    await apiRequest(`/doctors/me/blackout-dates/${button.dataset.blackoutId}`, "DELETE");
+                    await loadBlackouts();
+                    showMessage("Blackout date removed.", "success");
+                } catch (error) { showMessage(error.message); }
+            });
+        });
+    }
+
+    $("profileForm").addEventListener("submit", async event => {
+        event.preventDefault();
+        try {
+            await apiRequest("/doctors/me", "PUT", {
+                name: $("editDoctorName").value.trim(),
+                licenseNumber: $("editDoctorLicense").value.trim(),
+                specialisationId: Number($("editDoctorSpecialisation").value),
+                hospitalId: $("editDoctorHospital").value ? Number($("editDoctorHospital").value) : null,
+                yearsExperience: $("editDoctorExperience").value ? Number($("editDoctorExperience").value) : null,
+                qualifications: $("editDoctorQualifications").value,
+                languages: $("editDoctorLanguages").value,
+                timezone: "Asia/Kolkata"
+            });
+            await loadProfile();
+            showMessage("Doctor profile updated.", "success");
+        } catch (error) { showMessage(error.message); }
+    });
+
+    $("availabilityForm").addEventListener("submit", async event => {
+        event.preventDefault();
+        try {
+            await apiRequest("/doctors/me/availability-patterns", "POST", {
+                consultationTypeId: Number($("availabilityConsultationType").value),
+                dayOfWeek: Number($("availabilityDay").value),
+                startTime: $("availabilityStart").value,
+                endTime: $("availabilityEnd").value
+            });
+            await loadAvailability();
+            showMessage("Weekly availability added. Slots will be refreshed by the scheduled materialiser.", "success");
+        } catch (error) { showMessage(error.message); }
+    });
+
+    $("blackoutForm").addEventListener("submit", async event => {
+        event.preventDefault();
+        try {
+            await apiRequest("/doctors/me/blackout-dates", "POST", {
+                date: $("blackoutDate").value,
+                reason: $("blackoutReason").value.trim()
+            });
+            $("blackoutReason").value = "";
+            await loadBlackouts();
+            showMessage("Blackout date added. Existing booked appointments are preserved.", "success");
+        } catch (error) { showMessage(error.message); }
+    });
+
+    $("uploadPhotoButton").addEventListener("click", async () => {
+        const file = $("doctorPhoto").files[0];
+        if (!file) { showMessage("Choose a JPG, PNG or WebP photo first."); return; }
+        try {
+            const signed = await apiRequest("/doctors/me/photo-upload", "POST", { contentType: file.type });
+            const upload = await fetch(signed.uploadUrl, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
+            if (!upload.ok) throw new Error(`Photo upload failed (${upload.status}).`);
+            showMessage("Profile photo uploaded.", "success");
+        } catch (error) { showMessage(error.message); }
+    });
+
     async function loadDashboard() {
         if (!accessToken) {
             showMessage(
@@ -1032,7 +1210,8 @@
                 loadProfile(),
                 loadSchedule(),
                 loadConsultations(),
-                loadAvailability()
+                loadAvailability(),
+                loadBlackouts()
             ]);
 
             $("message").style.display = "none";

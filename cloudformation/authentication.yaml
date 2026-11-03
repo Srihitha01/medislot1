@@ -42,8 +42,6 @@ Globals:
         DB_HOST_PARAMETER: !Sub /medislot/${Environment}/db/host
         DB_PORT_PARAMETER: !Sub /medislot/${Environment}/db/port
         DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/app-password
-        DB_MASTER_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
-        DB_MASTER_USERNAME: medislotadmin
         DB_PASSWORD_PARAMETER_VERSION: !Ref DBPasswordParameterVersion
         JWT_SECRET_PARAMETER: !Sub /medislot/${Environment}/auth/jwt-secret
         JWT_SECRET_PARAMETER_VERSION: !Ref JWTSecretParameterVersion
@@ -190,6 +188,10 @@ Resources:
       Handler: schema_init/schema_init.lambda_handler
       Environment:
         Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_NAME: medislot
+          DB_MASTER_USERNAME: medislotadmin
+          DB_MASTER_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
           DB_APP_USERNAME: !Ref DBUsername
           DB_APP_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/app-password
       # The centralized IAM stack must grant sqs:SendMessage on
@@ -264,6 +266,13 @@ Resources:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/app-password
               - Effect: Allow
                 Action:
+                  - kms:Decrypt
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub ssm.${AWS::Region}.${AWS::URLSuffix}
+              - Effect: Allow
+                Action:
                   - dynamodb:Query
                   - dynamodb:PutItem
                   - dynamodb:UpdateItem
@@ -315,24 +324,40 @@ Resources:
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
 
+  SlotMaterializerSchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-slot-scheduler-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeSlotMaterializer
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt SlotMaterializerFunction.Arn
+
   SlotMaterializerSchedule:
-    Type: AWS::Events::Rule
+    Type: AWS::Scheduler::Schedule
     Properties:
       Name: !Sub medislot-${Environment}-slot-materializer-daily
-      Description: Rebuilds the rolling 30-day slot window daily
-      ScheduleExpression: rate(1 day)
+      Description: Materializes the rolling 30-day doctor availability window daily at 00:15 IST
+      ScheduleExpression: cron(15 0 * * ? *)
+      ScheduleExpressionTimezone: Asia/Kolkata
+      FlexibleTimeWindow:
+        Mode: OFF
       State: ENABLED
-      Targets:
-        - Id: SlotMaterializerTarget
-          Arn: !GetAtt SlotMaterializerFunction.Arn
-
-  AllowEventBridgeToInvokeSlotMaterializer:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref SlotMaterializerFunction
-      Action: lambda:InvokeFunction
-      Principal: events.amazonaws.com
-      SourceArn: !GetAtt SlotMaterializerSchedule.Arn
+      Target:
+        Arn: !GetAtt SlotMaterializerFunction.Arn
+        RoleArn: !GetAtt SlotMaterializerSchedulerRole.Arn
+        Input: '{"source":"eventbridge-scheduler","windowDays":30}'
 
   SlotMaterializerAsyncFailureConfig:
     Type: AWS::Lambda::EventInvokeConfig

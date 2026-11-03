@@ -25,6 +25,13 @@ from boto3.dynamodb.conditions import Attr, Key
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
+try:
+    from .availability_rules import validate_doctor_day, validate_exception_payload
+except ImportError:
+    from availability_rules import validate_doctor_day, validate_exception_payload
+
+IST = ZoneInfo("Asia/Kolkata")
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -402,48 +409,105 @@ def _my_account(user_id):
 
 
 def _doctor_profile(user_id, method, event):
+    """Read, create (when registration did not), or update the doctor profile."""
+    data = _body(event) if method in {"POST", "PUT", "PATCH"} else {}
+    allowed = {
+        "name", "licenseNumber", "specialisationId", "hospitalId",
+        "yearsExperience", "qualifications", "languages", "timezone",
+    }
+    if set(data) - allowed:
+        return _response(400, {"message": "Unsupported doctor profile fields", "allowedFields": sorted(allowed)})
+
+    if "timezone" in data and data["timezone"] != "Asia/Kolkata":
+        return _response(400, {"message": "MediSlot doctor schedules use Asia/Kolkata (IST)."})
+
     conn = _db_connection()
     try:
         with conn.cursor() as cur:
+            cur.execute("SELECT user_id,name,email,status FROM users WHERE user_id=%s AND role='doctor'", (user_id,))
+            user = cur.fetchone()
+            if not user:
+                return _response(404, {"message": "Doctor account not found"})
+
+            cur.execute("SELECT user_id FROM doctors WHERE user_id=%s", (user_id,))
+            exists = cur.fetchone() is not None
+
             if method == "GET":
-                cur.execute("""SELECT u.user_id,u.name,u.email,u.status,d.license_number,d.specialisation_id,
-                    s.name AS specialisation,d.hospital_id,h.name AS hospital,d.years_experience,
-                    d.qualifications,d.languages,d.timezone,d.photo_key
+                if not exists:
+                    return _response(404, {"message": "Doctor profile not found"})
+                cur.execute("""SELECT u.user_id,u.name,u.email,u.status,d.license_number,
+                    d.specialisation_id,s.name AS specialisation,d.hospital_id,h.name AS hospital,
+                    d.years_experience,d.qualifications,d.languages,'Asia/Kolkata' AS timezone,d.photo_key,
+                    d.created_at,d.updated_at
                     FROM users u JOIN doctors d ON d.user_id=u.user_id
-                    JOIN specialisations s ON s.specialisation_id=d.specialisation_id
+                    LEFT JOIN specialisations s ON s.specialisation_id=d.specialisation_id
                     LEFT JOIN hospitals h ON h.hospital_id=d.hospital_id
                     WHERE u.user_id=%s AND u.role='doctor'""", (user_id,))
-                row=cur.fetchone()
-                return _response(200,{"profile":row}) if row else _response(404,{"message":"Doctor profile not found"})
-            data=_body(event)
-            allowed={"name","licenseNumber","specialisationId","hospitalId","yearsExperience","qualifications","languages","timezone"}
-            if not data or set(data)-allowed: return _response(400,{"message":"Only supported doctor profile fields may be updated","allowedFields":sorted(allowed)})
-            doctor_map={"licenseNumber":"license_number","specialisationId":"specialisation_id","hospitalId":"hospital_id","yearsExperience":"years_experience","qualifications":"qualifications","languages":"languages","timezone":"timezone"}
+                return _response(200, {"profile": cur.fetchone()})
+
+            if method == "POST":
+                if exists:
+                    return _response(409, {"message": "Doctor profile already exists; use PUT to update it."})
+                required = ("licenseNumber", "specialisationId")
+                if any(key not in data for key in required):
+                    return _response(400, {"message": "licenseNumber and specialisationId are required"})
+                full_name = str(data.get("name") or user["name"]).strip()
+                if not full_name or len(full_name) > 150:
+                    return _response(400, {"message": "name must contain 1-150 characters"})
+                cur.execute("""INSERT INTO doctors
+                    (user_id,full_name,license_number,specialisation_id,hospital_id,years_experience,
+                     qualifications,languages,timezone)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,'Asia/Kolkata')""",
+                    (user_id, full_name, str(data["licenseNumber"]).strip(), int(data["specialisationId"]),
+                     data.get("hospitalId") or None, data.get("yearsExperience") or None,
+                     data.get("qualifications") or None, data.get("languages") or None))
+                cur.execute("UPDATE users SET name=%s WHERE user_id=%s AND role='doctor'", (full_name, user_id))
+                conn.commit()
+                return _response(201, {"message": "Doctor profile created", "userId": int(user_id), "timezone": "Asia/Kolkata"})
+
+            if not exists:
+                return _response(404, {"message": "Doctor profile not found; create it with POST /doctors/me"})
+
+            if not data:
+                return _response(400, {"message": "No profile fields supplied"})
             if "name" in data:
-                if not isinstance(data["name"],str) or not data["name"].strip() or len(data["name"])>120: return _response(400,{"message":"Invalid name"})
-            if not any(key in data for key in ("name", *doctor_map)):
-                return _response(400,{"message":"No profile fields supplied"})
-            if "name" in data:
-                cur.execute("UPDATE users SET name=%s WHERE user_id=%s AND role='doctor'", (data["name"].strip(), user_id))
-            # Each SQL statement is static; only values supplied by the caller are bound.
-            doctor_update_sql = {
-                "licenseNumber": "UPDATE doctors SET license_number=%s WHERE user_id=%s",
-                "specialisationId": "UPDATE doctors SET specialisation_id=%s WHERE user_id=%s",
-                "hospitalId": "UPDATE doctors SET hospital_id=%s WHERE user_id=%s",
-                "yearsExperience": "UPDATE doctors SET years_experience=%s WHERE user_id=%s",
-                "qualifications": "UPDATE doctors SET qualifications=%s WHERE user_id=%s",
-                "languages": "UPDATE doctors SET languages=%s WHERE user_id=%s",
-                "timezone": "UPDATE doctors SET timezone=%s WHERE user_id=%s",
+                name = data["name"]
+                if not isinstance(name, str) or not name.strip() or len(name.strip()) > 120:
+                    return _response(400, {"message": "name must contain 1-120 characters"})
+                cur.execute("UPDATE users SET name=%s WHERE user_id=%s AND role='doctor'", (name.strip(), user_id))
+                cur.execute("UPDATE doctors SET full_name=%s WHERE user_id=%s", (name.strip(), user_id))
+
+            fields = {
+                "licenseNumber": "license_number",
+                "specialisationId": "specialisation_id",
+                "hospitalId": "hospital_id",
+                "yearsExperience": "years_experience",
+                "qualifications": "qualifications",
+                "languages": "languages",
             }
-            for key, statement in doctor_update_sql.items():
-                if key in data:
-                    value = data[key] if data[key] != "" else None
-                    cur.execute(statement, (value, user_id))
+            for api_name, column in fields.items():
+                if api_name in data:
+                    value = data[api_name]
+                    if api_name == "licenseNumber":
+                        value = str(value).strip()
+                        if not value or len(value) > 50:
+                            return _response(400, {"message": "licenseNumber must contain 1-50 characters"})
+                    elif api_name in {"specialisationId", "hospitalId", "yearsExperience"}:
+                        value = int(value) if value not in (None, "") else None
+                        if api_name == "yearsExperience" and value is not None and not 0 <= value <= 80:
+                            return _response(400, {"message": "yearsExperience must be between 0 and 80"})
+                        if api_name in {"specialisationId", "hospitalId"} and value is not None and value <= 0:
+                            return _response(400, {"message": f"{api_name} must be a positive integer"})
+                    cur.execute(f"UPDATE doctors SET {column}=%s WHERE user_id=%s", (value if value != "" else None, user_id))
+            cur.execute("UPDATE doctors SET timezone='Asia/Kolkata' WHERE user_id=%s", (user_id,))
         conn.commit()
-        _dispatch_materializer(user_id)
-        return _response(200,{"message":"Doctor profile updated"})
+        return _response(200, {"message": "Doctor profile updated", "timezone": "Asia/Kolkata"})
     except pymysql.err.IntegrityError:
-        conn.rollback(); return _response(409,{"message":"A unique or foreign-key constraint was violated"})
+        conn.rollback()
+        return _response(409, {"message": "A license number, specialisation or hospital reference conflicts with an existing record"})
+    except (KeyError, TypeError, ValueError) as exc:
+        conn.rollback()
+        return _response(400, {"message": str(exc)})
     finally:
         conn.close()
 
@@ -466,157 +530,231 @@ def _presign_photo(user_id, event):
     return _response(200,{"uploadUrl":url,"photoKey":key,"expiresIn":300})
 
 
+def _validate_doctor_schedule(cursor, user_id):
+    """Validate all effective windows for the next 30 IST calendar days."""
+    cursor.execute("""SELECT ct.consultation_type_id,ct.is_active
+        FROM consultation_types ct WHERE ct.doctor_user_id=%s""", (user_id,))
+    types = cursor.fetchall()
+    schedules = []
+    for item in types:
+        cid = item["consultation_type_id"]
+        cursor.execute("""SELECT day_of_week,start_time,end_time FROM availability_patterns
+            WHERE doctor_user_id=%s AND consultation_type_id=%s""", (user_id, cid))
+        patterns = cursor.fetchall()
+        cursor.execute("""SELECT exception_date,exception_type,start_time,end_time
+            FROM availability_exceptions WHERE doctor_user_id=%s AND consultation_type_id=%s""", (user_id, cid))
+        exceptions = cursor.fetchall()
+        cursor.execute("SELECT blackout_date FROM blackout_dates WHERE doctor_user_id=%s", (user_id,))
+        blackouts = [row["blackout_date"] for row in cursor.fetchall()]
+        schedules.append({
+            "user_id": str(user_id), "consultation_type_id": int(cid),
+            "is_active": bool(item["is_active"]), "patterns": patterns,
+            "exceptions": exceptions, "blackouts": blackouts,
+        })
+    first_day = datetime.now(IST).date()
+    dates_to_validate = {first_day + timedelta(days=offset) for offset in range(30)}
+    for schedule in schedules:
+        dates_to_validate.update(
+            date.fromisoformat(str(row["exception_date"])[:10])
+            for row in schedule["exceptions"]
+        )
+    for target_day in sorted(dates_to_validate):
+        validate_doctor_day(schedules, target_day)
+
+
 def _doctor_collection(table_name, user_id, method, event, resource_id=None):
-    data=_body(event) if method in {"POST","PUT","PATCH"} else {}
-    conn=_db_connection()
+    data = _body(event) if method in {"POST", "PUT", "PATCH"} else {}
+    conn = _db_connection()
     try:
         with conn.cursor() as cur:
-            if table_name=="consultation_types":
-                if method=="GET":
-                    cur.execute("SELECT * FROM consultation_types WHERE doctor_user_id=%s ORDER BY consultation_type_id",(user_id,))
-                    return _response(200,{"items":cur.fetchall()})
-                if method=="POST":
-                    required=("name","durationMin","feeAmount","capacity")
-                    if any(k not in data for k in required): return _response(400,{"message":"name, durationMin, feeAmount and capacity are required"})
-                    if data["name"] not in {"video","in_clinic","phone"}: return _response(400,{"message":"Invalid consultation name"})
-                    cur.execute("""INSERT INTO consultation_types(doctor_user_id,name,duration_min,fee_amount,capacity)
-                        VALUES(%s,%s,%s,%s,%s)""",(user_id,data["name"],int(data["durationMin"]),data["feeAmount"],int(data["capacity"])))
-                    new_id=cur.lastrowid; conn.commit(); _dispatch_materializer(user_id)
-                    return _response(201,{"consultationTypeId":new_id,"message":"Consultation type created"})
-                if method in {"PUT","PATCH"} and resource_id:
-                    fields={"name":"name","durationMin":"duration_min","feeAmount":"fee_amount","capacity":"capacity","isActive":"is_active"}
-                    if set(data) - set(fields):
-                        return _response(400,{"message":"Unsupported consultation type fields","allowedFields":sorted(fields)})
-                    if not data: return _response(400,{"message":"No supported fields supplied"})
-                    update_statements = {
-                        "name": "UPDATE consultation_types SET name=%s WHERE consultation_type_id=%s AND doctor_user_id=%s",
-                        "durationMin": "UPDATE consultation_types SET duration_min=%s WHERE consultation_type_id=%s AND doctor_user_id=%s",
-                        "feeAmount": "UPDATE consultation_types SET fee_amount=%s WHERE consultation_type_id=%s AND doctor_user_id=%s",
-                        "capacity": "UPDATE consultation_types SET capacity=%s WHERE consultation_type_id=%s AND doctor_user_id=%s",
-                        "isActive": "UPDATE consultation_types SET is_active=%s WHERE consultation_type_id=%s AND doctor_user_id=%s",
-                    }
-                    cur.execute(
-                        "SELECT consultation_type_id FROM consultation_types WHERE consultation_type_id=%s AND doctor_user_id=%s",
-                        (resource_id, user_id),
-                    )
-                    if cur.fetchone() is None:
-                        return _response(404,{"message":"Consultation type not found"})
-                    for key, statement in update_statements.items():
-                        if key in data:
-                            cur.execute(statement, (data[key], resource_id, user_id))
-                    conn.commit(); _dispatch_materializer(user_id); return _response(200,{"message":"Consultation type updated"})
-                if method=="DELETE" and resource_id:
-                    cur.execute("UPDATE consultation_types SET is_active=0 WHERE consultation_type_id=%s AND doctor_user_id=%s",(resource_id,user_id))
+            if table_name == "consultation_types":
+                if method == "GET":
+                    cur.execute("SELECT * FROM consultation_types WHERE doctor_user_id=%s ORDER BY consultation_type_id", (user_id,))
+                    return _response(200, {"items": cur.fetchall()})
+                if method == "POST":
+                    required = ("name", "durationMin", "feeAmount", "capacity")
+                    if any(key not in data for key in required):
+                        return _response(400, {"message": "name, durationMin, feeAmount and capacity are required"})
+                    name = str(data["name"]).strip().lower()
+                    duration = int(data["durationMin"])
+                    fee = Decimal(str(data["feeAmount"]))
+                    capacity = int(data["capacity"])
+                    if not name or len(name) > 40:
+                        return _response(400, {"message": "name must contain 1-40 characters"})
+                    if not 5 <= duration <= 180:
+                        return _response(400, {"message": "durationMin must be between 5 and 180"})
+                    if fee < 0 or fee > Decimal("99999999.99"):
+                        return _response(400, {"message": "feeAmount must be non-negative and within the supported range"})
+                    if not 1 <= capacity <= 50:
+                        return _response(400, {"message": "capacity must be between 1 and 50"})
+                    cur.execute("INSERT INTO consultation_types(doctor_user_id,name,duration_min,fee_amount,capacity) VALUES(%s,%s,%s,%s,%s)",
+                                (user_id, name, duration, fee, capacity))
+                    new_id = int(cur.lastrowid)
                     conn.commit()
-                    return _response(200,{"message":"Consultation type deactivated"}) if cur.rowcount else _response(404,{"message":"Consultation type not found"})
-            elif table_name=="availability_patterns":
-                if method=="GET":
-                    cur.execute("SELECT * FROM availability_patterns WHERE doctor_user_id=%s ORDER BY day_of_week,start_time",(user_id,))
-                    return _response(200,{"items":cur.fetchall()})
-                if method=="POST":
-                    day=int(data["dayOfWeek"]); start_time=data["startTime"]; end_time=data["endTime"]
-                    if not 1 <= day <= 7 or end_time <= start_time: return _response(400,{"message":"Invalid weekday or availability time window"})
-                    cur.execute("""SELECT pattern_id FROM availability_patterns
-                        WHERE doctor_user_id=%s AND consultation_type_id=%s AND day_of_week=%s
-                        AND NOT (end_time<=%s OR start_time>=%s) LIMIT 1""",
-                        (user_id,int(data["consultationTypeId"]),day,start_time,end_time))
-                    if cur.fetchone(): return _response(409,{"message":"This availability window overlaps an existing pattern"})
-                    cur.execute("""INSERT INTO availability_patterns(doctor_user_id,consultation_type_id,day_of_week,start_time,end_time)
-                        SELECT %s,ct.consultation_type_id,%s,%s,%s FROM consultation_types ct
-                        WHERE ct.consultation_type_id=%s AND ct.doctor_user_id=%s AND ct.is_active=1""",
-                        (user_id,int(data["dayOfWeek"]),data["startTime"],data["endTime"],int(data["consultationTypeId"]),user_id))
-                    if cur.rowcount==0: return _response(400,{"message":"Consultation type does not belong to this doctor"})
-                    new_id=cur.lastrowid; conn.commit(); _dispatch_materializer(user_id)
-                    return _response(201,{"patternId":new_id,"message":"Availability pattern created"})
-                if method in {"PUT","PATCH"} and resource_id:
-                    day=int(data["dayOfWeek"]); start_time=data["startTime"]; end_time=data["endTime"]
-                    if not 1<=day<=7 or end_time<=start_time: return _response(400,{"message":"Invalid weekday or availability time window"})
-                    cur.execute("""SELECT pattern_id FROM availability_patterns WHERE doctor_user_id=%s
-                        AND consultation_type_id=%s AND day_of_week=%s AND pattern_id<>%s
-                        AND NOT (end_time<=%s OR start_time>=%s) LIMIT 1""",
-                        (user_id,int(data["consultationTypeId"]),day,resource_id,start_time,end_time))
-                    if cur.fetchone(): return _response(409,{"message":"This availability window overlaps another pattern"})
-                    cur.execute("""UPDATE availability_patterns SET consultation_type_id=%s,day_of_week=%s,start_time=%s,end_time=%s
-                        WHERE pattern_id=%s AND doctor_user_id=%s""",
-                        (int(data["consultationTypeId"]),day,start_time,end_time,resource_id,user_id))
-                    if not cur.rowcount: return _response(404,{"message":"Pattern not found"})
-                    conn.commit(); _dispatch_materializer(user_id); return _response(200,{"message":"Availability pattern updated"})
-                if method=="DELETE" and resource_id:
-                    cur.execute("DELETE FROM availability_patterns WHERE pattern_id=%s AND doctor_user_id=%s",(resource_id,user_id))
-                    conn.commit(); _dispatch_materializer(user_id)
-                    return _response(200,{"message":"Availability pattern deleted"}) if cur.rowcount else _response(404,{"message":"Pattern not found"})
-            elif table_name=="blackout_dates":
-                if method=="GET":
-                    cur.execute("SELECT * FROM blackout_dates WHERE doctor_user_id=%s ORDER BY blackout_date",(user_id,))
-                    return _response(200,{"items":cur.fetchall()})
-                if method=="POST":
-                    cur.execute("INSERT INTO blackout_dates(doctor_user_id,blackout_date,reason) VALUES(%s,%s,%s)",
-                        (user_id,data["date"],data.get("reason")))
-                    new_id=cur.lastrowid; conn.commit(); _dispatch_materializer(user_id)
-                    return _response(201,{"blackoutId":new_id,"message":"Blackout date created"})
-                if method in {"PUT","PATCH"} and resource_id:
-                    cur.execute("UPDATE blackout_dates SET blackout_date=%s,reason=%s WHERE blackout_id=%s AND doctor_user_id=%s",
-                        (data["date"],data.get("reason"),resource_id,user_id))
-                    if not cur.rowcount: return _response(404,{"message":"Blackout date not found"})
-                    conn.commit(); _dispatch_materializer(user_id); return _response(200,{"message":"Blackout date updated"})
-                if method=="DELETE" and resource_id:
-                    cur.execute("DELETE FROM blackout_dates WHERE blackout_id=%s AND doctor_user_id=%s",(resource_id,user_id))
-                    conn.commit(); _dispatch_materializer(user_id)
-                    return _response(200,{"message":"Blackout date deleted"}) if cur.rowcount else _response(404,{"message":"Blackout date not found"})
-            elif table_name=="availability_exceptions":
-                if method=="GET":
-                    cur.execute("SELECT * FROM availability_exceptions WHERE doctor_user_id=%s ORDER BY exception_date",(user_id,))
-                    return _response(200,{"items":cur.fetchall()})
-                if method=="POST":
-                    cur.execute("""INSERT INTO availability_exceptions(doctor_user_id,consultation_type_id,exception_date,exception_type,start_time,end_time)
-                        SELECT %s,ct.consultation_type_id,%s,%s,%s,%s FROM consultation_types ct
-                        WHERE ct.consultation_type_id=%s AND ct.doctor_user_id=%s""",
-                        (user_id,data["date"],data["type"],data.get("startTime"),data.get("endTime"),int(data["consultationTypeId"]),user_id))
-                    if cur.rowcount==0: return _response(400,{"message":"Consultation type does not belong to this doctor"})
-                    new_id=cur.lastrowid; conn.commit(); _dispatch_materializer(user_id)
-                    return _response(201,{"exceptionId":new_id,"message":"Availability exception created"})
-                if method in {"PUT","PATCH"} and resource_id:
-                    cur.execute("""UPDATE availability_exceptions SET consultation_type_id=%s,exception_date=%s,
-                        exception_type=%s,start_time=%s,end_time=%s WHERE exception_id=%s AND doctor_user_id=%s""",
-                        (int(data["consultationTypeId"]),data["date"],data["type"],data.get("startTime"),data.get("endTime"),resource_id,user_id))
-                    if not cur.rowcount: return _response(404,{"message":"Exception not found"})
-                    conn.commit(); _dispatch_materializer(user_id); return _response(200,{"message":"Availability exception updated"})
-                if method=="DELETE" and resource_id:
-                    cur.execute("DELETE FROM availability_exceptions WHERE exception_id=%s AND doctor_user_id=%s",(resource_id,user_id))
-                    conn.commit(); _dispatch_materializer(user_id)
-                    return _response(200,{"message":"Availability exception deleted"}) if cur.rowcount else _response(404,{"message":"Exception not found"})
-        return _response(405,{"message":"Method not supported for this resource"})
-    except (KeyError,TypeError,ValueError) as exc:
-        conn.rollback(); return _response(400,{"message":f"Invalid request: {exc}"})
+                    return _response(201, {"consultationTypeId": new_id, "message": "Consultation type created"})
+                if method in {"PUT", "PATCH"} and resource_id:
+                    fields = {"name", "durationMin", "feeAmount", "capacity", "isActive"}
+                    if not data or set(data) - fields:
+                        return _response(400, {"message": "Unsupported or empty consultation type update", "allowedFields": sorted(fields)})
+                    cur.execute("SELECT consultation_type_id FROM consultation_types WHERE consultation_type_id=%s AND doctor_user_id=%s", (resource_id, user_id))
+                    if not cur.fetchone():
+                        return _response(404, {"message": "Consultation type not found"})
+                    updates = []
+                    values = []
+                    if "name" in data:
+                        value = str(data["name"]).strip().lower()
+                        if not value or len(value) > 40: raise ValueError("name must contain 1-40 characters")
+                        updates.append("name=%s"); values.append(value)
+                    if "durationMin" in data:
+                        value = int(data["durationMin"])
+                        if not 5 <= value <= 180: raise ValueError("durationMin must be between 5 and 180")
+                        updates.append("duration_min=%s"); values.append(value)
+                    if "feeAmount" in data:
+                        value = Decimal(str(data["feeAmount"]))
+                        if value < 0: raise ValueError("feeAmount must be non-negative")
+                        updates.append("fee_amount=%s"); values.append(value)
+                    if "capacity" in data:
+                        value = int(data["capacity"])
+                        if not 1 <= value <= 50: raise ValueError("capacity must be between 1 and 50")
+                        updates.append("capacity=%s"); values.append(value)
+                    if "isActive" in data:
+                        if not isinstance(data["isActive"], bool): raise ValueError("isActive must be boolean")
+                        updates.append("is_active=%s"); values.append(int(data["isActive"]))
+                    cur.execute("UPDATE consultation_types SET " + ",".join(updates) + " WHERE consultation_type_id=%s AND doctor_user_id=%s", tuple(values + [resource_id, user_id]))
+                    _validate_doctor_schedule(cur, user_id)
+                    conn.commit()
+                    return _response(200, {"message": "Consultation type updated"})
+                if method == "DELETE" and resource_id:
+                    cur.execute("UPDATE consultation_types SET is_active=0 WHERE consultation_type_id=%s AND doctor_user_id=%s", (resource_id, user_id))
+                    if not cur.rowcount: return _response(404, {"message": "Consultation type not found"})
+                    conn.commit()
+                    return _response(200, {"message": "Consultation type deactivated"})
+
+            elif table_name == "availability_patterns":
+                if method == "GET":
+                    cur.execute("SELECT * FROM availability_patterns WHERE doctor_user_id=%s ORDER BY day_of_week,start_time", (user_id,))
+                    return _response(200, {"items": cur.fetchall(), "timezone": "Asia/Kolkata"})
+                if method in {"POST", "PUT", "PATCH"}:
+                    required = ("consultationTypeId", "dayOfWeek", "startTime", "endTime")
+                    if any(key not in data for key in required): raise ValueError("consultationTypeId, dayOfWeek, startTime and endTime are required")
+                    day = int(data["dayOfWeek"])
+                    start_time = dt_time.fromisoformat(str(data["startTime"]))
+                    end_time = dt_time.fromisoformat(str(data["endTime"]))
+                    if not 1 <= day <= 7 or start_time >= end_time: raise ValueError("Invalid weekday or time range")
+                    cid = int(data["consultationTypeId"])
+                    cur.execute("SELECT consultation_type_id FROM consultation_types WHERE consultation_type_id=%s AND doctor_user_id=%s AND is_active=1", (cid, user_id))
+                    if not cur.fetchone(): return _response(400, {"message": "Active consultation type does not belong to this doctor"})
+                    if method == "POST":
+                        cur.execute("INSERT INTO availability_patterns(doctor_user_id,consultation_type_id,day_of_week,start_time,end_time) VALUES(%s,%s,%s,%s,%s)", (user_id, cid, day, start_time, end_time))
+                        new_id = int(cur.lastrowid)
+                    else:
+                        if not resource_id: return _response(400, {"message": "patternId is required"})
+                        cur.execute("UPDATE availability_patterns SET consultation_type_id=%s,day_of_week=%s,start_time=%s,end_time=%s WHERE pattern_id=%s AND doctor_user_id=%s", (cid, day, start_time, end_time, resource_id, user_id))
+                        if not cur.rowcount: return _response(404, {"message": "Availability pattern not found"})
+                        new_id = resource_id
+                    _validate_doctor_schedule(cur, user_id)
+                    conn.commit()
+                    return _response(201 if method == "POST" else 200, {"patternId": new_id, "timezone": "Asia/Kolkata"})
+                if method == "DELETE" and resource_id:
+                    cur.execute("DELETE FROM availability_patterns WHERE pattern_id=%s AND doctor_user_id=%s", (resource_id, user_id))
+                    if not cur.rowcount: return _response(404, {"message": "Availability pattern not found"})
+                    conn.commit()
+                    return _response(200, {"message": "Availability pattern deleted"})
+
+            elif table_name == "blackout_dates":
+                if method == "GET":
+                    cur.execute("SELECT * FROM blackout_dates WHERE doctor_user_id=%s ORDER BY blackout_date", (user_id,))
+                    return _response(200, {"items": cur.fetchall(), "timezone": "Asia/Kolkata"})
+                if method == "POST":
+                    day = date.fromisoformat(str(data["date"]))
+                    if day < datetime.now(IST).date(): raise ValueError("Blackout date cannot be in the past")
+                    cur.execute("INSERT INTO blackout_dates(doctor_user_id,blackout_date,reason) VALUES(%s,%s,%s)", (user_id, day, data.get("reason")))
+                    new_id = int(cur.lastrowid); conn.commit()
+                    return _response(201, {"blackoutId": new_id, "date": day.isoformat()})
+                if method in {"PUT", "PATCH"} and resource_id:
+                    day = date.fromisoformat(str(data["date"]))
+                    if day < datetime.now(IST).date(): raise ValueError("Blackout date cannot be in the past")
+                    cur.execute("UPDATE blackout_dates SET blackout_date=%s,reason=%s WHERE blackout_id=%s AND doctor_user_id=%s", (day, data.get("reason"), resource_id, user_id))
+                    if not cur.rowcount: return _response(404, {"message": "Blackout date not found"})
+                    conn.commit(); return _response(200, {"message": "Blackout date updated"})
+                if method == "DELETE" and resource_id:
+                    cur.execute("DELETE FROM blackout_dates WHERE blackout_id=%s AND doctor_user_id=%s", (resource_id, user_id))
+                    if not cur.rowcount: return _response(404, {"message": "Blackout date not found"})
+                    conn.commit(); return _response(200, {"message": "Blackout date deleted"})
+
+            elif table_name == "availability_exceptions":
+                if method == "GET":
+                    cur.execute("SELECT * FROM availability_exceptions WHERE doctor_user_id=%s ORDER BY exception_date,start_time", (user_id,))
+                    return _response(200, {"items": cur.fetchall(), "timezone": "Asia/Kolkata"})
+                if method in {"POST", "PUT", "PATCH"}:
+                    required = ("consultationTypeId", "date", "type")
+                    if any(key not in data for key in required): raise ValueError("consultationTypeId, date and type are required")
+                    cid = int(data["consultationTypeId"])
+                    day = date.fromisoformat(str(data["date"]))
+                    kind, start_time, end_time = validate_exception_payload(data["type"], data.get("startTime"), data.get("endTime"))
+                    cur.execute("SELECT consultation_type_id FROM consultation_types WHERE consultation_type_id=%s AND doctor_user_id=%s AND is_active=1", (cid, user_id))
+                    if not cur.fetchone(): return _response(400, {"message": "Active consultation type does not belong to this doctor"})
+                    if method == "POST":
+                        cur.execute("INSERT INTO availability_exceptions(doctor_user_id,consultation_type_id,exception_date,exception_type,start_time,end_time) VALUES(%s,%s,%s,%s,%s,%s)", (user_id, cid, day, kind, start_time, end_time))
+                        new_id = int(cur.lastrowid)
+                    else:
+                        cur.execute("UPDATE availability_exceptions SET consultation_type_id=%s,exception_date=%s,exception_type=%s,start_time=%s,end_time=%s WHERE exception_id=%s AND doctor_user_id=%s", (cid, day, kind, start_time, end_time, resource_id, user_id))
+                        if not cur.rowcount: return _response(404, {"message": "Availability exception not found"})
+                        new_id = resource_id
+                    _validate_doctor_schedule(cur, user_id)
+                    conn.commit()
+                    return _response(201 if method == "POST" else 200, {"exceptionId": new_id, "timezone": "Asia/Kolkata"})
+                if method == "DELETE" and resource_id:
+                    cur.execute("DELETE FROM availability_exceptions WHERE exception_id=%s AND doctor_user_id=%s", (resource_id, user_id))
+                    if not cur.rowcount: return _response(404, {"message": "Availability exception not found"})
+                    conn.commit(); return _response(200, {"message": "Availability exception deleted"})
+
+        return _response(405, {"message": "Method not supported for this resource"})
+    except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+        conn.rollback()
+        return _response(400, {"message": f"Invalid request: {exc}"})
     except pymysql.err.IntegrityError:
-        conn.rollback(); return _response(409,{"message":"Duplicate or invalid scheduling record"})
+        conn.rollback()
+        return _response(409, {"message": "Duplicate or invalid scheduling record"})
+    except Exception:
+        conn.rollback()
+        logger.exception("Doctor scheduling operation failed")
+        raise
     finally:
         conn.close()
 
 
 def _doctor_day_schedule(user_id, event):
-    params=_query(event); day=params.get("date")
-    if not day: return _response(400,{"message":"date query parameter is required (YYYY-MM-DD)"})
+    params = _query(event)
+    day_value = params.get("date")
+    if not day_value:
+        return _response(400, {"message": "date query parameter is required (YYYY-MM-DD)"})
     try:
-        from datetime import date, timedelta, time as dt_time
-        local_date=date.fromisoformat(day)
-        conn=_db_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT timezone FROM doctors WHERE user_id=%s",(user_id,))
-                doctor=cur.fetchone()
-        finally:
-            conn.close()
-        if not doctor: return _response(404,{"message":"Doctor profile not found"})
-        zone=ZoneInfo(doctor["timezone"])
-        local_start=datetime.combine(local_date,dt_time.min).replace(tzinfo=zone)
-        local_end=datetime.combine(local_date+timedelta(days=1),dt_time.min).replace(tzinfo=zone)
-        start=_iso_utc(local_start.isoformat())
-        end=_iso_utc(local_end.isoformat())
-        result=_table("SLOTS_TABLE").query(IndexName="gsi-doctor-time",
-            KeyConditionExpression=Key("doctorId").eq(str(user_id)) & Key("startUtc").between(start,end))
-        return _response(200,{"date":day,"items":result.get("Items",[])})
-    except ValueError: return _response(400,{"message":"date must be YYYY-MM-DD"})
+        local_day = date.fromisoformat(day_value)
+    except ValueError:
+        return _response(400, {"message": "date must be YYYY-MM-DD"})
+
+    local_start = datetime.combine(local_day, dt_time.min, tzinfo=IST)
+    local_end = datetime.combine(local_day + timedelta(days=1), dt_time.min, tzinfo=IST)
+    start_utc = local_start.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    end_utc = local_end.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    table = _table("SLOTS_TABLE")
+    query_args = {
+        "IndexName": "gsi-doctor-time",
+        "KeyConditionExpression": Key("doctorId").eq(str(user_id)) & Key("startUtc").between(start_utc, end_utc),
+    }
+    items = []
+    result = table.query(**query_args)
+    items.extend(result.get("Items", []))
+    while result.get("LastEvaluatedKey"):
+        result = table.query(**query_args, ExclusiveStartKey=result["LastEvaluatedKey"])
+        items.extend(result.get("Items", []))
+
+    # The GSI upper bound is inclusive; exclude next-day midnight.
+    items = [item for item in items if item.get("localDate") == local_day.isoformat()]
+    items.sort(key=lambda item: (item.get("startUtc", ""), item.get("consultationTypeId", "")))
+    return _response(200, {"date": local_day.isoformat(), "timezone": "Asia/Kolkata", "items": items, "count": len(items)})
 
 
 def _materializer_trigger(user_id=None):
@@ -698,7 +836,7 @@ def lambda_handler(event, context):
         if method=="GET" and path=="/reference/specialisations": return _reference_data("specialisations")
         if method=="GET" and path=="/reference/hospitals": return _reference_data("hospitals")
         if method=="GET" and path=="/users/me": return _my_account(user_id)
-        if path=="/doctors/me" and role=="doctor" and method in {"GET","PUT","PATCH"}:
+        if path=="/doctors/me" and role=="doctor" and method in {"GET","POST","PUT","PATCH"}:
             return _doctor_profile(user_id,method,event)
         if path=="/doctors/me/photo-upload" and role=="doctor" and method=="POST":
             return _presign_photo(user_id,event)

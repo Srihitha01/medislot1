@@ -75,7 +75,10 @@ jobs:
           AWS_DEFAULT_REGION: ap-south-1
           AUTH_TOKENS_TABLE: medislot-test-auth-tokens
           JWT_SECRET_PARAMETER: /medislot/test/auth/jwt-secret
-        run: python -m unittest discover -s src/auth/tests -p "test_*.py" -v
+        run: |
+          python -m unittest discover -s src/auth/tests -p "test_*.py" -v
+          python -m unittest discover -s src/slots/materializer/tests -p "test_*.py" -v
+          python -m unittest discover -s src/api/tests -p "test_*.py" -v
       - name: Scan Python source
         run: bandit -r src -ll
       - name: Scan repository for secrets
@@ -106,8 +109,9 @@ jobs:
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
       - name: Deploy network stack using Change Set
         shell: bash
         run: |
@@ -180,6 +184,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
       - name: Verify existing SSM SecureString parameters
         id: ssm
         shell: bash
@@ -228,6 +233,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
       - name: Package data template
         run: |
           sam package --template-file cloudformation/data-stack.yaml --s3-bucket "${{ needs.deploy_network.outputs.artifact_bucket }}" --s3-prefix medislot/data --region "$AWS_REGION" --output-template-file /tmp/data-packaged.yaml
@@ -283,6 +289,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
       - name: Deploy IAM stack using Change Set
         shell: bash
         env:
@@ -330,6 +337,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
       - name: Verify RDS schema file is present in the existing Lambda package
         shell: bash
         run: |
@@ -402,6 +410,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
       - name: Wait for RDS and verify schema initializer
         shell: bash
         run: |
@@ -462,8 +471,9 @@ jobs:
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
       - name: Build and validate API Lambda ZIP, upload with unique S3 key
         shell: bash
         env:
@@ -480,11 +490,13 @@ jobs:
           mkdir -p /tmp/app-router-package
           python -m pip install --disable-pip-version-check --no-compile --target /tmp/app-router-package -r src/api/requirements.txt
           cp src/api/app.py /tmp/app-router-package/app.py
+          cp src/api/availability_rules.py /tmp/app-router-package/availability_rules.py
           (cd /tmp/app-router-package && zip -X -q -r /tmp/app-router.zip .)
 
           # Validate the ZIP locally and ensure Lambda's handler module is at its root.
           unzip -tq /tmp/app-router.zip
           unzip -Z1 /tmp/app-router.zip | grep -qx 'app.py'
+          unzip -Z1 /tmp/app-router.zip | grep -qx 'availability_rules.py'
 
           # Use a unique object key per workflow run so no stale artifact can be reused.
           ARTIFACT_KEY="medislot/api/${GITHUB_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/app-router.zip"
@@ -497,6 +509,7 @@ jobs:
             --region "$AWS_REGION" --only-show-errors
           unzip -tq /tmp/app-router-verified.zip
           unzip -Z1 /tmp/app-router-verified.zip | grep -qx 'app.py'
+          unzip -Z1 /tmp/app-router-verified.zip | grep -qx 'availability_rules.py'
           cmp /tmp/app-router.zip /tmp/app-router-verified.zip
 
           # Give CloudFormation/SAM the exact verified S3 ZIP URI.
@@ -558,6 +571,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
       - name: Show deployed stack outputs
         shell: bash
         run: |

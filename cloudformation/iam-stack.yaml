@@ -316,11 +316,21 @@ Resources:
 
                   - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-app-router-role
 
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-slot-scheduler-role
+
                 Condition:
 
                   StringEquals:
 
                     iam:PassedToService: cloudformation.amazonaws.com
+
+              - Sid: PassSlotSchedulerRoleToEventBridgeScheduler
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-slot-scheduler-role
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: scheduler.amazonaws.com
 
   # ---------------------------------------------------------
 
@@ -381,6 +391,18 @@ Resources:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/app-password
 
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/password
+
+        - PolicyName: DecryptSSMSecureStringParameters
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub ssm.${AWS::Region}.${AWS::URLSuffix}
 
         - PolicyName: SendAuthenticationFailuresToDLQ
           PolicyDocument:
@@ -824,6 +846,14 @@ Resources:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/app-password
 
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/jwt-secret
+
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub ssm.${AWS::Region}.${AWS::URLSuffix}
 
               - Effect: Allow
                 Action:

@@ -1,3 +1,7 @@
+"""LEGACY MODULE: active doctor endpoints are implemented in src/api/app.py.
+
+This module is not referenced by the current CloudFormation templates.
+"""
 
 import json
 import logging
@@ -151,9 +155,9 @@ def get_doctor_profile(cursor, user_id):
 
 def get_dashboard(cursor, user_id, timezone_name):
     try:
-        doctor_timezone = ZoneInfo(timezone_name)
+        doctor_timezone = ZoneInfo("Asia/Kolkata")
     except Exception:
-        doctor_timezone = ZoneInfo("UTC")
+        doctor_timezone = ZoneInfo("Asia/Kolkata")
 
     now_local = datetime.now(doctor_timezone)
     start_local = datetime.combine(
@@ -236,7 +240,7 @@ def get_dashboard(cursor, user_id, timezone_name):
             "consultation_types"
         ) or 0,
         "local_date": now_local.date().isoformat(),
-        "timezone": timezone_name,
+        "timezone": "Asia/Kolkata",
     }
 
 
@@ -392,7 +396,7 @@ def lambda_handler(event, context):
                     dashboard = get_dashboard(
                         cursor,
                         user_id,
-                        profile.get("timezone") or "UTC"
+                        "Asia/Kolkata"
                     )
                     return response(200, {"dashboard": dashboard})
 
