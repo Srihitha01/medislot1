@@ -48,7 +48,60 @@ def _schema_statements():
     ]
 
 
+def _table_names():
+    """Table names in the order the schema file creates them."""
+    sql = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
+    # Only real statements: a line that starts with CREATE TABLE.
+    # (Comment lines start with "--" and are skipped.)
+    names = re.findall(
+        r"^\s*CREATE TABLE IF NOT EXISTS\s+(\w+)", sql, re.MULTILINE
+    )
+
+    for name in names:
+        check_identifier(name, "table name")
+
+    return names
+
+
+def _uses_old_uuid_ids(cursor, db_name):
+    """True when users.user_id is still the old text (UUID) column."""
+    cursor.execute(
+        "SELECT DATA_TYPE FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'users' "
+        "AND COLUMN_NAME = 'user_id'",
+        (db_name,)
+    )
+    row = cursor.fetchone()
+
+    return bool(row) and str(row[0]).lower() in ("char", "varchar")
+
+
+def _drop_all_tables(cursor):
+    """Delete every MediSlot table. Development use only."""
+    cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
+
+    for name in reversed(_table_names()):
+        cursor.execute(f"DROP TABLE IF EXISTS `{name}`")
+
+    cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
+
+
+def _reset_allowed(environment, event):
+    """A reset deletes all data, so it needs an explicit confirmation."""
+    if environment not in ("dev", "test"):
+        raise ValueError("reset is only allowed in the dev and test environments")
+
+    if event.get("confirm") != "DELETE_ALL_DATA":
+        raise ValueError('reset needs "confirm": "DELETE_ALL_DATA" in the event')
+
+
 def lambda_handler(event, context):
+    event = event or {}
+    action = event.get("action", "initialize")
+
+    if action not in ("initialize", "reset"):
+        raise ValueError('action must be "initialize" or "reset"')
+
     environment = os.environ["ENVIRONMENT"]
 
     db_name = check_identifier(
@@ -112,6 +165,28 @@ def lambda_handler(event, context):
     try:
         with connection.cursor() as cursor:
 
+            if action == "reset":
+                _reset_allowed(environment, event)
+                _drop_all_tables(cursor)
+
+            elif _uses_old_uuid_ids(cursor, db_name):
+                # CREATE TABLE IF NOT EXISTS cannot change existing columns.
+                connection.rollback()
+                logger.error("Old UUID tables found; reset is required")
+
+                return {
+                    "statusCode": 409,
+                    "body": json.dumps({
+                        "status": "error",
+                        "message": (
+                            "The database still has the old UUID user ids. "
+                            "Run the schema-init Lambda once with "
+                            '{"action": "reset", "confirm": "DELETE_ALL_DATA"} '
+                            "(this deletes all data), then deploy again."
+                        )
+                    })
+                }
+
             # Create all database tables
             for statement in _schema_statements():
                 cursor.execute(statement)
@@ -161,7 +236,11 @@ def lambda_handler(event, context):
         "statusCode": 200,
         "body": json.dumps({
             "status": "ok",
-            "message": "UUID schema initialized",
+            "message": (
+                "Database reset and schema created"
+                if action == "reset"
+                else "Schema initialized"
+            ),
             "database": db_name,
             "appUser": app_user
         })

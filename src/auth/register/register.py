@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import re
-import uuid
 import boto3
 import bcrypt
 import pymysql
@@ -252,8 +251,8 @@ def lambda_handler(event, context):
                     )
                 })
 
-        # Use one UUID as the identity across users and the role-specific profile.
-        user_id = str(uuid.uuid4())
+        # The database numbers each new user (1, 2, 3 ...). That number is the
+        # identity shared by the users table and the role-specific profile.
 
         # Create the account and role-specific profile in one transaction.
         conn = db()
@@ -262,11 +261,10 @@ def lambda_handler(event, context):
             cur.execute(
                 """
                 INSERT INTO users
-                    (user_id, name, email, password_hash, role, status)
-                VALUES (%s, %s, %s, %s, %s, 'active')
+                    (name, email, password_hash, role, status)
+                VALUES (%s, %s, %s, %s, 'active')
                 """,
                 (
-                    user_id,
                     name,
                     email,
                     bcrypt.hashpw(
@@ -276,6 +274,9 @@ def lambda_handler(event, context):
                     role
                 )
             )
+
+            # The new user's number, assigned by MySQL.
+            user_id = cur.lastrowid
 
             if role == "patient":
                 cur.execute(

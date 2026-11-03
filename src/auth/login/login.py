@@ -243,7 +243,8 @@ def lambda_handler(event, context):
                 {"message": "Invalid email or password"}
             )
 
-        # Generate UUID-based identity and session.
+        # The user id is the number from the users table (1, 2, 3 ...).
+        # The session id and token id are random UUIDs, so they cannot be guessed.
         now = int(time.time())
 
         user_id = str(user["user_id"])

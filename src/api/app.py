@@ -94,6 +94,9 @@ def _principal(event: dict[str, Any]) -> tuple[str | None, str | None]:
     context = (event.get("requestContext") or {}).get("authorizer") or {}
     user_id = context.get("userId") or context.get("userid")
     role = context.get("role")
+    # User ids are whole numbers (1, 2, 3 ...). Anything else is not a real user.
+    if user_id is not None and not re.fullmatch(r"[1-9][0-9]{0,19}", str(user_id)):
+        user_id = None
     return (str(user_id) if user_id else None, str(role).lower() if role else None)
 
 
