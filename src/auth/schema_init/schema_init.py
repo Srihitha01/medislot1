@@ -1,4 +1,3 @@
-
 import json
 import logging
 import os
@@ -178,7 +177,11 @@ def _uses_old_uuid_ids(cursor, database):
 
 def _connect():
     """
-    Connect to MediSlot MySQL using SSM parameters.
+    Connect to MediSlot MySQL as the RDS master user.
+
+    RDS only creates the master user (medislotadmin). The application
+    user (medislot_app) does not exist until _ensure_app_user() creates
+    it, so the schema initializer must authenticate as the master user.
     """
     environment = os.environ["ENVIRONMENT"]
 
@@ -192,44 +195,88 @@ def _connect():
         f"/medislot/{environment}/db/port"
     )
 
-    password_parameter = os.environ.get(
-        "DB_PASSWORD_PARAMETER",
-        f"/medislot/{environment}/db/app-password"
+    master_password_parameter = os.environ.get(
+        "DB_MASTER_PASSWORD_PARAMETER",
+        f"/medislot/{environment}/db/password"
+    )
+
+    master_user = os.environ.get(
+        "DB_MASTER_USERNAME",
+        "medislotadmin"
     )
 
     host = get_parameter(host_parameter)
 
     port = int(get_parameter(port_parameter))
 
-    password = get_parameter(
-        password_parameter,
+    master_password = get_parameter(
+        master_password_parameter,
         decrypt=True
     )
-
-    db_user = os.environ.get("DB_USER")
-
-    if not db_user:
-        db_user_parameter = os.environ.get(
-            "DB_USER_PARAMETER"
-        )
-
-        if not db_user_parameter:
-            raise ValueError(
-                "DB_USER or DB_USER_PARAMETER must be configured"
-            )
-
-        db_user = get_parameter(db_user_parameter)
 
     return pymysql.connect(
         host=host,
         port=port,
-        user=db_user,
-        password=password,
+        user=master_user,
+        password=master_password,
         database=os.environ.get("DB_NAME", "medislot"),
         connect_timeout=10,
         read_timeout=30,
         write_timeout=30,
         autocommit=False
+    )
+
+
+_USER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]{1,32}$")
+_DB_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+
+
+def _ensure_app_user(cursor, database):
+    """
+    Create (or refresh) the application MySQL user and grant it DML
+    access to the MediSlot database. Idempotent.
+    """
+    environment = os.environ["ENVIRONMENT"]
+
+    app_user = (
+        os.environ.get("DB_APP_USERNAME")
+        or os.environ.get("DB_USER")
+        or "medislot_app"
+    )
+
+    if not _USER_NAME_PATTERN.match(app_user):
+        raise ValueError("Invalid application database username")
+
+    if not _DB_NAME_PATTERN.match(database):
+        raise ValueError("Invalid database name")
+
+    app_password_parameter = (
+        os.environ.get("DB_APP_PASSWORD_PARAMETER")
+        or os.environ.get("DB_PASSWORD_PARAMETER")
+        or f"/medislot/{environment}/db/app-password"
+    )
+
+    app_password = get_parameter(
+        app_password_parameter,
+        decrypt=True
+    )
+
+    # '%%' is a literal '%' after PyMySQL parameter interpolation.
+    cursor.execute(
+        "CREATE USER IF NOT EXISTS %s@'%%' IDENTIFIED BY %s",
+        (app_user, app_password)
+    )
+
+    # Keep the MySQL password in sync with the SSM parameter.
+    cursor.execute(
+        "ALTER USER %s@'%%' IDENTIFIED BY %s",
+        (app_user, app_password)
+    )
+
+    cursor.execute(
+        f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* "
+        "TO %s@'%%'",
+        (app_user,)
     )
 
 
@@ -343,6 +390,8 @@ def lambda_handler(event, context):
                         }
                     )
 
+                _ensure_app_user(cursor, database)
+
                 _create_schema(cursor)
 
                 conn.commit()
@@ -354,6 +403,7 @@ def lambda_handler(event, context):
                 return response(
                     200,
                     {
+                        "status": "ok",
                         "message": (
                             "Schema initialized successfully"
                         )
@@ -370,6 +420,8 @@ def lambda_handler(event, context):
 
             _drop_schema(cursor)
 
+            _ensure_app_user(cursor, database)
+
             _create_schema(cursor)
 
             conn.commit()
@@ -381,6 +433,7 @@ def lambda_handler(event, context):
             return response(
                 200,
                 {
+                    "status": "ok",
                     "message": (
                         "Database reset and schema created"
                     )
@@ -395,7 +448,7 @@ def lambda_handler(event, context):
         BotoCoreError,
         ClientError,
         pymysql.MySQLError
-    ):
+    ) as exc:
         if conn:
             conn.rollback()
 
@@ -403,12 +456,20 @@ def lambda_handler(event, context):
             "Schema initialization failed"
         )
 
+        error_code = (
+            exc.args[0]
+            if exc.args and isinstance(exc.args[0], int)
+            else None
+        )
+
         return response(
             500,
             {
                 "message": (
                     "Schema initialization failed"
-                )
+                ),
+                "error_type": type(exc).__name__,
+                "error_code": error_code
             }
         )
 
