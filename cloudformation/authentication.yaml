@@ -324,40 +324,24 @@ Resources:
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetA
           - Fn::ImportValue: !Sub medislot-${Environment}-PrivateSubnetB
 
-  SlotMaterializerSchedulerRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub medislot-${Environment}-slot-scheduler-role
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: scheduler.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: InvokeSlotMaterializer
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action: lambda:InvokeFunction
-                Resource: !GetAtt SlotMaterializerFunction.Arn
-
   SlotMaterializerSchedule:
-    Type: AWS::Scheduler::Schedule
+    Type: AWS::Events::Rule
     Properties:
       Name: !Sub medislot-${Environment}-slot-materializer-daily
       Description: Materializes the rolling 30-day doctor availability window daily at 00:15 IST
-      ScheduleExpression: cron(15 0 * * ? *)
-      ScheduleExpressionTimezone: Asia/Kolkata
-      FlexibleTimeWindow:
-        Mode: "OFF"
+      ScheduleExpression: cron(45 18 * * ? *)
       State: ENABLED
-      Target:
-        Arn: !GetAtt SlotMaterializerFunction.Arn
-        RoleArn: !GetAtt SlotMaterializerSchedulerRole.Arn
-        Input: '{"source":"eventbridge-scheduler","windowDays":30}'
+      Targets:
+        - Id: SlotMaterializerTarget
+          Arn: !GetAtt SlotMaterializerFunction.Arn
+
+  AllowEventBridgeToInvokeSlotMaterializer:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SlotMaterializerFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SlotMaterializerSchedule.Arn
 
   SlotMaterializerAsyncFailureConfig:
     Type: AWS::Lambda::EventInvokeConfig
