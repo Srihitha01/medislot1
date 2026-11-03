@@ -48,60 +48,73 @@ def _schema_statements():
     ]
 
 
-def _table_names():
-    """Table names in the order the schema file creates them."""
-    sql = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
-    # Only real statements: a line that starts with CREATE TABLE.
-    # (Comment lines start with "--" and are skipped.)
-    names = re.findall(
-        r"^\s*CREATE TABLE IF NOT EXISTS\s+(\w+)", sql, re.MULTILINE
-    )
 
-    for name in names:
-        check_identifier(name, "table name")
+def ensure_sequential_public_user_ids(connection):
+    """Add public_user_id without changing existing UUID primary keys.
 
-    return names
+    Existing UUIDs remain the internal FK/JWT/DynamoDB identity. The numeric
+    ID is an additional stable, auto-incrementing public identifier.
+    Safe to run repeatedly. Run during a controlled deployment window so
+    registrations are not occurring while a legacy table is being backfilled.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS column_count
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'users'
+              AND COLUMN_NAME = 'public_user_id'
+            """
+        )
+        if int(cursor.fetchone()[0]) == 0:
+            cursor.execute(
+                "ALTER TABLE users ADD COLUMN public_user_id "
+                "BIGINT UNSIGNED NULL"
+            )
 
+        # Fill only missing values; never renumber an ID already assigned.
+        cursor.execute(
+            "SELECT COALESCE(MAX(public_user_id), 0) AS max_id "
+            "FROM users"
+        )
+        next_id = int(cursor.fetchone()[0]) + 1
+        cursor.execute(
+            "SELECT user_id FROM users "
+            "WHERE public_user_id IS NULL ORDER BY created_at, user_id"
+        )
+        missing_users = cursor.fetchall()
+        for row in missing_users:
+            cursor.execute(
+                "UPDATE users SET public_user_id = %s WHERE user_id = %s "
+                "AND public_user_id IS NULL",
+                (next_id, row[0])
+            )
+            next_id += 1
 
-def _uses_old_uuid_ids(cursor, db_name):
-    """True when users.user_id is still the old text (UUID) column."""
-    cursor.execute(
-        "SELECT DATA_TYPE FROM information_schema.COLUMNS "
-        "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'users' "
-        "AND COLUMN_NAME = 'user_id'",
-        (db_name,)
-    )
-    row = cursor.fetchone()
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS index_count
+            FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'users'
+              AND INDEX_NAME = 'uq_users_public_id'
+            """
+        )
+        if int(cursor.fetchone()[0]) == 0:
+            cursor.execute(
+                "ALTER TABLE users ADD UNIQUE KEY uq_users_public_id "
+                "(public_user_id)"
+            )
 
-    return bool(row) and str(row[0]).lower() in ("char", "varchar")
-
-
-def _drop_all_tables(cursor):
-    """Delete every MediSlot table. Development use only."""
-    cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
-
-    for name in reversed(_table_names()):
-        cursor.execute(f"DROP TABLE IF EXISTS `{name}`")
-
-    cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
-
-
-def _reset_allowed(environment, event):
-    """A reset deletes all data, so it needs an explicit confirmation."""
-    if environment not in ("dev", "test"):
-        raise ValueError("reset is only allowed in the dev and test environments")
-
-    if event.get("confirm") != "DELETE_ALL_DATA":
-        raise ValueError('reset needs "confirm": "DELETE_ALL_DATA" in the event')
+        # AUTO_INCREMENT starts above the largest preserved/backfilled ID.
+        cursor.execute(
+            "ALTER TABLE users MODIFY COLUMN public_user_id "
+            "BIGINT UNSIGNED NOT NULL AUTO_INCREMENT"
+        )
 
 
 def lambda_handler(event, context):
-    event = event or {}
-    action = event.get("action", "initialize")
-
-    if action not in ("initialize", "reset"):
-        raise ValueError('action must be "initialize" or "reset"')
-
     environment = os.environ["ENVIRONMENT"]
 
     db_name = check_identifier(
@@ -165,31 +178,13 @@ def lambda_handler(event, context):
     try:
         with connection.cursor() as cursor:
 
-            if action == "reset":
-                _reset_allowed(environment, event)
-                _drop_all_tables(cursor)
-
-            elif _uses_old_uuid_ids(cursor, db_name):
-                # CREATE TABLE IF NOT EXISTS cannot change existing columns.
-                connection.rollback()
-                logger.error("Old UUID tables found; reset is required")
-
-                return {
-                    "statusCode": 409,
-                    "body": json.dumps({
-                        "status": "error",
-                        "message": (
-                            "The database still has the old UUID user ids. "
-                            "Run the schema-init Lambda once with "
-                            '{"action": "reset", "confirm": "DELETE_ALL_DATA"} '
-                            "(this deletes all data), then deploy again."
-                        )
-                    })
-                }
-
             # Create all database tables
             for statement in _schema_statements():
                 cursor.execute(statement)
+
+            # Upgrade existing UUID-based installations without changing
+            # primary keys or any existing foreign-key relationships.
+            ensure_sequential_public_user_ids(connection)
 
             # Safely escape the application password
             escaped_password = connection.escape(app_password)
@@ -236,11 +231,7 @@ def lambda_handler(event, context):
         "statusCode": 200,
         "body": json.dumps({
             "status": "ok",
-            "message": (
-                "Database reset and schema created"
-                if action == "reset"
-                else "Schema initialized"
-            ),
+            "message": "Schema initialized; sequential public user IDs verified",
             "database": db_name,
             "appUser": app_user
         })

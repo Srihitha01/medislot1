@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import uuid
 import boto3
 import bcrypt
 import pymysql
@@ -251,8 +252,8 @@ def lambda_handler(event, context):
                     )
                 })
 
-        # The database numbers each new user (1, 2, 3 ...). That number is the
-        # identity shared by the users table and the role-specific profile.
+        # Use one UUID as the identity across users and the role-specific profile.
+        user_id = str(uuid.uuid4())
 
         # Create the account and role-specific profile in one transaction.
         conn = db()
@@ -261,10 +262,11 @@ def lambda_handler(event, context):
             cur.execute(
                 """
                 INSERT INTO users
-                    (name, email, password_hash, role, status)
-                VALUES (%s, %s, %s, %s, 'active')
+                    (user_id, name, email, password_hash, role, status)
+                VALUES (%s, %s, %s, %s, %s, 'active')
                 """,
                 (
+                    user_id,
                     name,
                     email,
                     bcrypt.hashpw(
@@ -275,8 +277,11 @@ def lambda_handler(event, context):
                 )
             )
 
-            # The new user's number, assigned by MySQL.
-            user_id = cur.lastrowid
+            cur.execute(
+                "SELECT public_user_id FROM users WHERE user_id = %s",
+                (user_id,)
+            )
+            public_user_id = int(cur.fetchone()["public_user_id"])
 
             if role == "patient":
                 cur.execute(
@@ -343,13 +348,14 @@ def lambda_handler(event, context):
 
         logger.info(json.dumps({
             "event": "registration_succeeded",
-            "userId": user_id,
+            "userId": public_user_id,
+            "internalUserId": user_id,
             "role": role
         }))
 
         return response(201, {
             "message": f"{role.capitalize()} registration successful",
-            "userId": user_id,
+            "userId": public_user_id,
             "role": role
         })
 

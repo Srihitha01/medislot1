@@ -207,6 +207,7 @@ def lambda_handler(event, context):
                     """
                     SELECT
                         user_id,
+                        public_user_id,
                         email,
                         password_hash,
                         role,
@@ -243,11 +244,11 @@ def lambda_handler(event, context):
                 {"message": "Invalid email or password"}
             )
 
-        # The user id is the number from the users table (1, 2, 3 ...).
-        # The session id and token id are random UUIDs, so they cannot be guessed.
+        # Generate UUID-based identity and session.
         now = int(time.time())
 
-        user_id = str(user["user_id"])
+        user_id = str(user["user_id"])  # immutable internal identity
+        public_user_id = int(user["public_user_id"])
         role = user["role"]
 
         access_jti = str(uuid.uuid4())
@@ -259,6 +260,7 @@ def lambda_handler(event, context):
         access = jwt.encode(
             {
                 "sub": user_id,
+                "publicUserId": public_user_id,
                 "role": role,
                 "iat": now,
                 "exp": access_exp,
@@ -285,7 +287,8 @@ def lambda_handler(event, context):
         logger.info(
             json.dumps({
                 "event": "login_succeeded",
-                "userId": user_id,
+                "userId": public_user_id,
+                "internalUserId": user_id,
                 "role": role
             })
         )
@@ -297,7 +300,9 @@ def lambda_handler(event, context):
                 "tokenType": "Bearer",
                 "expiresIn": ACCESS_MIN * 60,
                 "refreshToken": refresh,
-                "refreshExpiresIn": REFRESH_DAYS * 86400
+                "refreshExpiresIn": REFRESH_DAYS * 86400,
+                "userId": public_user_id,
+                "role": role
             }
         )
 
