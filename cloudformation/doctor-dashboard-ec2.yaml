@@ -3,6 +3,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   MediSlot Doctor Dashboard EC2 infrastructure.
   Ubuntu 24.04 with Flask, Gunicorn, Nginx and AWS Systems Manager access.
+  Public HTTP access is intentionally enabled for the development dashboard.
 
 Parameters:
   Environment:
@@ -27,24 +28,27 @@ Parameters:
     Default: 0.0.0.0/0
     Description: >
       IPv4 CIDR allowed to access the dashboard over HTTP.
-      Restrict this to your public IP address with /32 where possible.
+      0.0.0.0/0 intentionally allows all doctors to reach the dashboard.
+      Use HTTPS and authenticated application sessions before production use.
 
 Resources:
+  #checkov:skip=CKV_AWS_260: Public HTTP on port 80 is an explicit requirement for this dashboard deployment. Application authentication must be enforced by the dashboard; HTTPS should be added before production.
   DoctorDashboardSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow HTTP access to the MediSlot Doctor Dashboard.
+      GroupDescription: Allow public HTTP access to the MediSlot Doctor Dashboard.
       VpcId:
         Fn::ImportValue:
           Fn::Sub: medislot-${Environment}-VpcId
       SecurityGroupIngress:
-        - Description: HTTP access to the Doctor Dashboard.
+        - Description: Public HTTP access for doctors to reach the dashboard through Nginx.
           IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           CidrIp: !Ref DashboardAccessCidr
       SecurityGroupEgress:
-        - IpProtocol: "-1"
+        - Description: Allow outbound traffic for operating system updates, Python packages and AWS service access.
+          IpProtocol: "-1"
           CidrIp: 0.0.0.0/0
       Tags:
         - Key: Name
@@ -83,6 +87,7 @@ Resources:
       Roles:
         - !Ref DoctorDashboardRole
 
+  #checkov:skip=CKV_AWS_88: A public IPv4 address is intentionally required because all doctors must reach this EC2-hosted dashboard directly over the internet. The instance is placed in the existing public subnet and exposes only HTTP port 80 through its security group; Gunicorn is bound to loopback.
   DoctorDashboardInstance:
     Type: AWS::EC2::Instance
     Properties:
