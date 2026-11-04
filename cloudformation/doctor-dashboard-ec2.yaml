@@ -1,0 +1,271 @@
+
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >
+  MediSlot Doctor Dashboard EC2 infrastructure.
+  Ubuntu 24.04, Flask, Gunicorn, Nginx and SSM access.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues:
+      - t3.small
+      - t3.medium
+
+  DashboardAccessCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: >
+      Restrict this to your public IP in CIDR format
+      before production deployment.
+
+Resources:
+
+  DoctorDashboardSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP access to MediSlot Doctor Dashboard
+      VpcId:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref DashboardAccessCidr
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-doctor-dashboard-${Environment}-sg
+
+  DoctorDashboardRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-doctor-dashboard-${Environment}-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-doctor-dashboard-${Environment}-role
+
+  DoctorDashboardInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub medislot-doctor-dashboard-${Environment}-profile
+      Roles:
+        - !Ref DoctorDashboardRole
+
+  DoctorDashboardInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: "{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id}}"
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref DoctorDashboardInstanceProfile
+
+      SubnetId:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-PublicSubnetA
+
+      SecurityGroupIds:
+        - !Ref DoctorDashboardSecurityGroup
+
+      AssociatePublicIpAddress: true
+
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+
+      Monitoring: true
+
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: true
+
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eux
+
+          exec > >(tee /var/log/medislot-dashboard-setup.log | logger -t user-data -s 2>/dev/console) 2>&1
+
+          export DEBIAN_FRONTEND=noninteractive
+
+          apt-get update -y
+          apt-get install -y python3 python3-venv python3-pip nginx curl
+
+          mkdir -p /opt/medislot-dashboard
+          cd /opt/medislot-dashboard
+
+          python3 -m venv venv
+
+          /opt/medislot-dashboard/venv/bin/pip install --upgrade pip
+          /opt/medislot-dashboard/venv/bin/pip install flask gunicorn requests
+
+          cat > app.py <<'PYTHON'
+          from flask import Flask, jsonify, render_template_string
+
+          app = Flask(__name__)
+
+          @app.route("/")
+          def home():
+              return render_template_string("""
+              <!DOCTYPE html>
+              <html lang="en">
+              <head>
+                  <meta charset="UTF-8">
+                  <meta name="viewport" content="width=device-width, initial-scale=1">
+                  <title>MediSlot Doctor Dashboard</title>
+                  <style>
+                      body {
+                          margin: 0;
+                          font-family: Arial, sans-serif;
+                          background: #f4f7fb;
+                          color: #243247;
+                      }
+                      header {
+                          background: #123b62;
+                          color: white;
+                          padding: 24px 40px;
+                      }
+                      main {
+                          padding: 40px;
+                      }
+                      .card {
+                          background: white;
+                          padding: 28px;
+                          border-radius: 12px;
+                          max-width: 650px;
+                          box-shadow: 0 3px 14px rgba(0,0,0,.07);
+                      }
+                      .status {
+                          color: #16834a;
+                          font-weight: bold;
+                      }
+                  </style>
+              </head>
+              <body>
+                  <header>
+                      <h1>MediSlot</h1>
+                      <p>Doctor Dashboard</p>
+                  </header>
+                  <main>
+                      <div class="card">
+                          <h2>Welcome to MediSlot</h2>
+                          <p>Your Doctor Dashboard server is running.</p>
+                          <p class="status">Application status: Online</p>
+                          <p>Flask + Gunicorn + Nginx</p>
+                      </div>
+                  </main>
+              </body>
+              </html>
+              """)
+
+          @app.route("/health")
+          def health():
+              return jsonify(status="healthy"), 200
+
+          if __name__ == "__main__":
+              app.run(host="127.0.0.1", port=8000)
+          PYTHON
+
+          cat > /etc/systemd/system/medislot-dashboard.service <<'SERVICE'
+          [Unit]
+          Description=MediSlot Doctor Dashboard Flask Application
+          After=network.target
+
+          [Service]
+          User=ubuntu
+          Group=ubuntu
+          WorkingDirectory=/opt/medislot-dashboard
+          ExecStart=/opt/medislot-dashboard/venv/bin/gunicorn --workers 2 --bind 127.0.0.1:8000 --access-logfile - --error-logfile - app:app
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+          SERVICE
+
+          cat > /etc/nginx/sites-available/medislot-dashboard <<'NGINX'
+          server {
+              listen 80;
+              server_name _;
+
+              location / {
+                  proxy_pass http://127.0.0.1:8000;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+          NGINX
+
+          rm -f /etc/nginx/sites-enabled/default
+          ln -s /etc/nginx/sites-available/medislot-dashboard /etc/nginx/sites-enabled/medislot-dashboard
+
+          systemctl daemon-reload
+          systemctl enable medislot-dashboard
+          systemctl restart medislot-dashboard
+          nginx -t
+          systemctl enable nginx
+          systemctl restart nginx
+
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-doctor-dashboard-${Environment}
+        - Key: Project
+          Value: MediSlot
+        - Key: Component
+          Value: DoctorDashboard
+
+Outputs:
+
+  InstanceId:
+    Description: Doctor Dashboard EC2 instance ID
+    Value: !Ref DoctorDashboardInstance
+
+  PublicIp:
+    Description: Doctor Dashboard public IP
+    Value: !GetAtt DoctorDashboardInstance.PublicIp
+
+  DashboardUrl:
+    Description: Doctor Dashboard URL
+    Value: !Sub
+      - http://${PublicAddress}
+      - PublicAddress: !GetAtt DoctorDashboardInstance.PublicDnsName
+
+  HealthCheckUrl:
+    Description: Doctor Dashboard health endpoint
+    Value: !Sub
+      - http://${PublicAddress}/health
+      - PublicAddress: !GetAtt DoctorDashboardInstance.PublicDnsName
+
+  SecurityGroupId:
+    Value: !Ref DoctorDashboardSecurityGroup
+
+  InstanceRoleArn:
+    Value: !GetAtt DoctorDashboardRole.Arn

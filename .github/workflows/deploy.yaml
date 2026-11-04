@@ -27,6 +27,7 @@ env:
   DATA_STACK: medislot-data-dev
   IAM_STACK: medislot-iam-dev
   AUTH_STACK: medislot-auth-dev
+  DASHBOARD_STACK: medislot-doctor-dashboard-dev
 
 jobs:
   validate:
@@ -55,7 +56,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for template in cloudformation/network-stack.yaml cloudformation/data-stack.yaml cloudformation/iam-stack.yaml cloudformation/authentication.yaml cloudformation/api-stack.yaml; do
+          for template in \
+            cloudformation/network-stack.yaml \
+            cloudformation/data-stack.yaml \
+            cloudformation/iam-stack.yaml \
+            cloudformation/authentication.yaml \
+            cloudformation/api-stack.yaml \
+            cloudformation/doctor-dashboard-ec2.yaml; do
             if [[ ! -s "$template" ]]; then
               echo "::error::Missing or empty template: $template"
               exit 1
@@ -578,9 +585,125 @@ jobs:
           aws cloudformation execute-change-set --stack-name "$APP_STACK" --change-set-name "$change_set"
           if [[ "$change_type" == CREATE ]]; then aws cloudformation wait stack-create-complete --stack-name "$APP_STACK"; else aws cloudformation wait stack-update-complete --stack-name "$APP_STACK"; fi
 
+
+  deploy_doctor_dashboard:
+    name: Deploy Doctor Dashboard EC2
+    needs: [deploy_network, deploy_api]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: development
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials using GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Verify network stack exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws cloudformation describe-stacks \
+            --stack-name "$NETWORK_STACK" \
+            --region "$AWS_REGION" >/dev/null
+          aws cloudformation list-exports \
+            --region "$AWS_REGION" \
+            --query "Exports[?Name=='medislot-${ENVIRONMENT}-VpcId' || Name=='medislot-${ENVIRONMENT}-PublicSubnetA'].[Name,Value]" \
+            --output table
+
+      - name: Deploy Doctor Dashboard using Change Set
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if aws cloudformation describe-stacks \
+            --stack-name "$DASHBOARD_STACK" \
+            --region "$AWS_REGION" >/dev/null 2>&1; then
+            change_type=UPDATE
+          else
+            change_type=CREATE
+          fi
+
+          change_set="${DASHBOARD_STACK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          aws cloudformation create-change-set \
+            --stack-name "$DASHBOARD_STACK" \
+            --change-set-name "$change_set" \
+            --change-set-type "$change_type" \
+            --template-body file://cloudformation/doctor-dashboard-ec2.yaml \
+            --parameters \
+              ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
+              ParameterKey=InstanceType,ParameterValue=t3.small \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --description "Doctor Dashboard deployment ${GITHUB_RUN_ID}" \
+            --region "$AWS_REGION"
+
+          if ! aws cloudformation wait change-set-create-complete \
+            --stack-name "$DASHBOARD_STACK" \
+            --change-set-name "$change_set" \
+            --region "$AWS_REGION"; then
+
+            reason=$(aws cloudformation describe-change-set \
+              --stack-name "$DASHBOARD_STACK" \
+              --change-set-name "$change_set" \
+              --query StatusReason \
+              --output text \
+              --region "$AWS_REGION" 2>/dev/null || true)
+
+            if [[ "$reason" == *"didn't contain changes"* ]] || \
+               [[ "$reason" == *"No updates are to be performed"* ]]; then
+              echo "Doctor Dashboard stack is already up to date."
+              aws cloudformation delete-change-set \
+                --stack-name "$DASHBOARD_STACK" \
+                --change-set-name "$change_set" \
+                --region "$AWS_REGION" || true
+              exit 0
+            fi
+
+            echo "::error::Doctor Dashboard Change Set creation failed: $reason"
+            exit 1
+          fi
+
+          aws cloudformation describe-change-set \
+            --stack-name "$DASHBOARD_STACK" \
+            --change-set-name "$change_set" \
+            --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' \
+            --output table \
+            --region "$AWS_REGION"
+
+          aws cloudformation execute-change-set \
+            --stack-name "$DASHBOARD_STACK" \
+            --change-set-name "$change_set" \
+            --region "$AWS_REGION"
+
+          if [[ "$change_type" == CREATE ]]; then
+            aws cloudformation wait stack-create-complete \
+              --stack-name "$DASHBOARD_STACK" \
+              --region "$AWS_REGION"
+          else
+            aws cloudformation wait stack-update-complete \
+              --stack-name "$DASHBOARD_STACK" \
+              --region "$AWS_REGION"
+          fi
+
+          echo "Doctor Dashboard infrastructure deployment completed."
+
   show_outputs:
     name: Show Deployed Stack Outputs
-    needs: [deploy_network, deploy_data, deploy_iam, deploy_auth, deploy_api]
+    needs:
+      - deploy_network
+      - deploy_data
+      - deploy_iam
+      - deploy_auth
+      - deploy_api
+      - deploy_doctor_dashboard
     if: success() && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: development
@@ -598,7 +721,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for stack in "$NETWORK_STACK" "$DATA_STACK" "$IAM_STACK" "$AUTH_STACK" "medislot-api-${ENVIRONMENT}"; do
+          for stack in \
+            "$NETWORK_STACK" \
+            "$DATA_STACK" \
+            "$IAM_STACK" \
+            "$AUTH_STACK" \
+            "medislot-api-${ENVIRONMENT}" \
+            "$DASHBOARD_STACK"; do
             echo "Outputs for $stack"
             aws cloudformation describe-stacks \
               --stack-name "$stack" \
