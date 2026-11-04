@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MediSlot | Register as {{ role|capitalize }}</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #2563eb; --primary-dark: #1d4ed8; --primary-light: #eff6ff;
+            --background: #f5f7fb; --surface: #fff; --text: #172033;
+            --muted: #718096; --border: #e8edf4;
+            --success: #15803d; --success-bg: #dcfce7;
+            --danger: #b91c1c; --danger-bg: #fee2e2;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: "Inter", sans-serif; background: var(--background);
+               color: var(--text); padding: 30px 14px; }
+        .card { max-width: 640px; margin: 0 auto; background: var(--surface);
+                border: 1px solid var(--border); border-radius: 14px; padding: 30px; }
+        .logo { font-size: 25px; font-weight: 800; color: var(--primary); margin-bottom: 6px; }
+        .logo span { color: var(--text); }
+        h1 { font-size: 20px; margin-bottom: 18px; }
+        .tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+        .tabs a { flex: 1; text-align: center; padding: 10px; border-radius: 9px;
+                  font-size: 13px; font-weight: 600; text-decoration: none;
+                  color: #64748b; background: #f1f5f9; }
+        .tabs a.active { background: var(--primary-light); color: var(--primary); }
+        .message { padding: 12px 15px; border-radius: 9px; font-size: 13px; margin-bottom: 16px; }
+        .message.error { color: var(--danger); background: var(--danger-bg); }
+        .message.success { color: var(--success); background: var(--success-bg); }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+        .field { display: flex; flex-direction: column; gap: 6px; }
+        .field.full { grid-column: 1 / -1; }
+        label { font-size: 12px; font-weight: 600; }
+        input, select, textarea { width: 100%; min-height: 40px; padding: 9px 11px;
+            border: 1px solid #d7deea; border-radius: 8px; font: inherit; font-size: 13px; }
+        textarea { min-height: 70px; resize: vertical; }
+        input:focus, select:focus, textarea:focus { outline: none; border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(37,99,235,.08); }
+        button { width: 100%; margin-top: 20px; border: 0; border-radius: 8px; padding: 12px;
+                 background: var(--primary); color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+        button:hover { background: var(--primary-dark); }
+        .foot { text-align: center; margin-top: 16px; font-size: 12px; color: var(--muted); }
+        .foot a { color: var(--primary); font-weight: 600; text-decoration: none; }
+        @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+<div class="card">
+    <div class="logo">Medi<span>Slot</span></div>
+    <h1>Create your {{ role }} account</h1>
+
+    <div class="tabs">
+        <a href="{{ url_for('register_doctor') }}" class="{{ 'active' if role == 'doctor' }}">Doctor</a>
+        <a href="{{ url_for('register_patient') }}" class="{{ 'active' if role == 'patient' }}">Patient</a>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, text in messages %}
+            <div class="message {{ category }}">{{ text }}</div>
+        {% endfor %}
+    {% endwith %}
+
+    <form method="post" novalidate>
+        <div class="grid">
+            <div class="field">
+                <label for="name">Full name</label>
+                <input id="name" name="name" maxlength="120" required value="{{ form.get('name', '') }}">
+            </div>
+            <div class="field">
+                <label for="email">Email</label>
+                <input id="email" name="email" type="email" maxlength="254" required value="{{ form.get('email', '') }}">
+            </div>
+            <div class="field">
+                <label for="password">Password</label>
+                <input id="password" name="password" type="password" minlength="8" required autocomplete="new-password">
+            </div>
+            <div class="field">
+                <label for="confirm_password">Confirm password</label>
+                <input id="confirm_password" name="confirm_password" type="password" minlength="8" required autocomplete="new-password">
+            </div>
+
+            {% if role == 'doctor' %}
+            <div class="field">
+                <label for="license_number">Medical license number</label>
+                <input id="license_number" name="license_number" maxlength="100" required value="{{ form.get('license_number', '') }}">
+            </div>
+            <div class="field">
+                <label for="specialisation_id">Specialisation</label>
+                {% if specialisations %}
+                <select id="specialisation_id" name="specialisation_id" required>
+                    <option value="">Select specialisation</option>
+                    {% for item in specialisations %}
+                    <option value="{{ item.specialisation_id }}"
+                        {{ 'selected' if form.get('specialisation_id') == item.specialisation_id|string }}>
+                        {{ item.name }}
+                    </option>
+                    {% endfor %}
+                </select>
+                {% else %}
+                <input id="specialisation_id" name="specialisation_id" type="number" min="1"
+                       placeholder="Specialisation ID" required value="{{ form.get('specialisation_id', '') }}">
+                {% endif %}
+            </div>
+            <div class="field">
+                <label for="hospital_id">Hospital (optional)</label>
+                {% if hospitals %}
+                <select id="hospital_id" name="hospital_id">
+                    <option value="">Select hospital</option>
+                    {% for item in hospitals %}
+                    <option value="{{ item.hospital_id }}"
+                        {{ 'selected' if form.get('hospital_id') == item.hospital_id|string }}>
+                        {{ item.name }}
+                    </option>
+                    {% endfor %}
+                </select>
+                {% else %}
+                <input id="hospital_id" name="hospital_id" type="number" min="1"
+                       placeholder="Hospital ID" value="{{ form.get('hospital_id', '') }}">
+                {% endif %}
+            </div>
+            <div class="field">
+                <label for="years_experience">Years of experience</label>
+                <input id="years_experience" name="years_experience" type="number" min="0" max="80"
+                       value="{{ form.get('years_experience', '') }}">
+            </div>
+            <div class="field full">
+                <label for="qualifications">Qualifications</label>
+                <textarea id="qualifications" name="qualifications" maxlength="2000">{{ form.get('qualifications', '') }}</textarea>
+            </div>
+            <div class="field full">
+                <label for="languages">Languages</label>
+                <textarea id="languages" name="languages" maxlength="1000"
+                          placeholder="English, Telugu, Hindi">{{ form.get('languages', '') }}</textarea>
+            </div>
+            {% else %}
+            <div class="field">
+                <label for="phone">Phone</label>
+                <input id="phone" name="phone" type="tel" maxlength="20" required value="{{ form.get('phone', '') }}">
+            </div>
+            <div class="field">
+                <label for="city">City</label>
+                <input id="city" name="city" maxlength="80" required value="{{ form.get('city', '') }}">
+            </div>
+            {% endif %}
+        </div>
+
+        <button type="submit">Create {{ role }} account</button>
+    </form>
+
+    <p class="foot">Already registered? <a href="{{ url_for('login') }}">Log in</a></p>
+</div>
+</body>
+</html>

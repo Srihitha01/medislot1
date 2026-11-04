@@ -1,10 +1,27 @@
+# Python
 .venv/
 venv/
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+# AWS / deployment outputs
 .aws-sam/
-deployed-app-router/
-deployed-app-router.zip
+deployed-*/
+deployed-*.zip
 deployed-template.yaml
+processed-template.yaml
+# Local secrets and outputs
+.env
+.env.*
+!.env.example
+key.json
 get-active-session.json
+materializer-response.json
+materializer-test.json
+slot-query.json
+filter.json
+deployed-api.json
 desktop.ini
+.DS_Store

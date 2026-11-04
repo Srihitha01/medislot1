@@ -652,7 +652,8 @@
                 grid-template-columns: 1fr;
             }
         }
-    </style>
+        [hidden] { display: none !important; }
+</style>
 </head>
 
 <body>
@@ -1524,6 +1525,15 @@
         await loadDoctorPhoto();
     }
 
+    function photoLoadFailed() {
+        $("profilePhoto").hidden = true;
+        $("profilePhotoPlaceholder").hidden = false;
+        $("headerPhoto").hidden = true;
+        $("headerInitials").hidden = false;
+    }
+    $("headerPhoto").addEventListener("error", photoLoadFailed);
+    $("profilePhoto").addEventListener("error", photoLoadFailed);
+
     async function loadDoctorPhoto() {
         try {
             const result = await apiRequest("/doctors/me/photo-url");
@@ -1544,6 +1554,7 @@
                 $("headerInitials").hidden = false;
             }
         } catch (error) {
+            photoLoadFailed();
             console.warn("Could not load doctor photo:", error);
         }
     }
@@ -1984,6 +1995,9 @@
                 throw new Error(`Photo upload failed (${uploadResponse.status}).`);
             }
 
+            await apiRequest("/doctors/me/photo-complete", "POST", {
+                photoKey: signed.photoKey
+            });
             await loadDoctorPhoto();
             $("doctorPhoto").value = "";
 

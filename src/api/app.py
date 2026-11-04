@@ -1118,32 +1118,6 @@ def _presign_photo(user_id, event):
             ExpiresIn=300,
         )
 
-        conn = _db_connection()
-
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE doctors
-                    SET photo_key = %s
-                    WHERE user_id = %s
-                    """,
-                    (key, user_id),
-                )
-
-                if cur.rowcount == 0:
-                    conn.rollback()
-
-                    return _response(
-                        404,
-                        {"message": "Doctor profile not found"},
-                    )
-
-            conn.commit()
-
-        finally:
-            conn.close()
-
         return _response(
             200,
             {
@@ -1161,6 +1135,38 @@ def _presign_photo(user_id, event):
             500,
             {"message": "Could not prepare photo upload"},
         )
+
+
+def _complete_photo_upload(user_id, event):
+    """Publish a photo only after verifying that the S3 PUT succeeded."""
+    data = _body(event)
+    key = data.get("photoKey")
+    bucket = os.environ.get("DOCTOR_PHOTOS_BUCKET")
+    prefix = f"doctors/{int(user_id)}/"
+    if not isinstance(key, str) or not key.startswith(prefix) or "/" in key[len(prefix):]:
+        return _response(400, {"message": "Invalid photo key"})
+    if not bucket:
+        return _response(500, {"message": "Photo storage is not configured"})
+    try:
+        obj = boto3.client("s3").head_object(Bucket=bucket, Key=key)
+        if obj.get("ContentLength", 0) > 5 * 1024 * 1024:
+            return _response(400, {"message": "Photo exceeds 5 MB"})
+        if obj.get("ContentType") not in {"image/jpeg", "image/png", "image/webp"}:
+            return _response(400, {"message": "Unsupported photo type"})
+        conn = _db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE doctors SET photo_key = %s WHERE user_id = %s", (key, user_id))
+                if cur.rowcount == 0:
+                    conn.rollback()
+                    return _response(404, {"message": "Doctor profile not found"})
+            conn.commit()
+        finally:
+            conn.close()
+        return _response(200, {"message": "Photo saved"})
+    except Exception:
+        logger.exception("Doctor photo finalization failed")
+        return _response(500, {"message": "Could not save uploaded photo"})
 
 
 def _doctor_photo_url(user_id):
@@ -2616,6 +2622,13 @@ def lambda_handler(event, context):
             and method == "POST"
         ):
             return _presign_photo(user_id, event)
+
+        if (
+            path == "/doctors/me/photo-complete"
+            and role == "doctor"
+            and method == "POST"
+        ):
+            return _complete_photo_upload(user_id, event)
 
         # Doctor photo display URL
         if (

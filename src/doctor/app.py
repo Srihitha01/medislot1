@@ -1,4 +1,5 @@
 import os
+import re
 import secrets
 from datetime import timedelta
 from functools import wraps
@@ -25,9 +26,18 @@ API_BASE_URL = os.environ.get(
     "https://vmfftty8x3.execute-api.ap-south-1.amazonaws.com/Stage",
 ).rstrip("/")
 
-# Change this environment variable if your API Gateway
-# login route is different.
 LOGIN_PATH = os.environ.get("MEDISLOT_LOGIN_PATH", "/login")
+
+# Change these if your API Gateway register routes are different.
+REGISTER_DOCTOR_PATH = os.environ.get(
+    "MEDISLOT_REGISTER_DOCTOR_PATH", "/register/doctor"
+)
+REGISTER_PATIENT_PATH = os.environ.get(
+    "MEDISLOT_REGISTER_PATIENT_PATH", "/register/patient"
+)
+
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+PHONE_PATTERN = re.compile(r"^\+?[0-9\s\-]{7,15}$")
 
 
 # --------------------------------------------------
@@ -43,7 +53,6 @@ app.wsgi_app = ProxyFix(
     x_host=1,
 )
 
-# Persistent Flask signing key
 SECRET_FILE = os.environ.get(
     "FLASK_SECRET_FILE",
     "/opt/medislot-dashboard/.flask_secret",
@@ -81,11 +90,86 @@ app.config.update(
 
 
 # --------------------------------------------------
-# API helper
+# API helpers
 # --------------------------------------------------
 
 def api_url(path):
     return f"{API_BASE_URL}/{path.lstrip('/')}"
+
+
+def load_reference(path):
+    """Fetch dropdown data. Returns [] if the API needs a token or fails."""
+    try:
+        response = requests.get(
+            api_url(path),
+            headers={"Accept": "application/json"},
+            timeout=(5, 10),
+        )
+        if response.status_code == 200:
+            return response.json().get("items", [])
+    except (requests.RequestException, ValueError):
+        app.logger.warning("Could not load reference data: %s", path)
+    return []
+
+
+def post_registration(path, payload):
+    """
+    Send a registration request to the MediSlot API.
+    Returns (success, message).
+    """
+    try:
+        response = requests.post(
+            api_url(path),
+            json=payload,
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            timeout=(5, 20),
+        )
+    except requests.RequestException:
+        app.logger.exception("MediSlot register API request failed")
+        return False, "Cannot reach the MediSlot service. Please try again."
+
+    try:
+        result = response.json()
+    except ValueError:
+        result = {}
+
+    if response.status_code in (200, 201):
+        return True, result.get(
+            "message", "Registration successful. Please log in."
+        )
+
+    if response.status_code == 409:
+        return False, result.get(
+            "message", "An account with this email already exists."
+        )
+
+    if response.status_code >= 500:
+        return False, "The registration service had a problem. Please try again."
+
+    return False, result.get(
+        "message", "Registration failed. Please check your details."
+    )
+
+
+def validate_common(form):
+    """Checks shared by doctor and patient registration. Returns error or None."""
+    name = form.get("name", "").strip()
+    email = form.get("email", "").strip().lower()
+    password = form.get("password", "")
+    confirm = form.get("confirm_password", "")
+
+    if not name:
+        return "Please enter your full name."
+    if not EMAIL_PATTERN.match(email):
+        return "Please enter a valid email address."
+    if len(password) < 8:
+        return "Password must be at least 8 characters long."
+    if password != confirm:
+        return "Passwords do not match."
+    return None
 
 
 # --------------------------------------------------
@@ -140,7 +224,7 @@ def health():
 
 
 # --------------------------------------------------
-# Doctor login
+# Login
 # --------------------------------------------------
 
 @app.route("/", methods=["GET", "POST"])
@@ -159,19 +243,13 @@ def login():
         password = request.form.get("password", "")
 
         if not email or not password:
-            flash(
-                "Please enter your email and password.",
-                "error",
-            )
+            flash("Please enter your email and password.", "error")
             return render_template("login.html"), 400
 
         try:
             response = requests.post(
                 api_url(LOGIN_PATH),
-                json={
-                    "email": email,
-                    "password": password,
-                },
+                json={"email": email, "password": password},
                 headers={
                     "Accept": "application/json",
                     "Content-Type": "application/json",
@@ -215,7 +293,6 @@ def login():
                 )
                 return render_template("login.html"), 502
 
-            # Start a fresh authenticated session
             session.clear()
             session.permanent = True
 
@@ -227,9 +304,7 @@ def login():
             return redirect(url_for("dashboard"))
 
         except requests.RequestException:
-            app.logger.exception(
-                "MediSlot login API request failed"
-            )
+            app.logger.exception("MediSlot login API request failed")
 
             flash(
                 "Cannot reach the MediSlot login service. Please try again.",
@@ -239,6 +314,139 @@ def login():
             return render_template("login.html"), 502
 
     return render_template("login.html")
+
+
+# --------------------------------------------------
+# Registration
+# --------------------------------------------------
+
+@app.get("/register")
+def register():
+    return redirect(url_for("register_patient"))
+
+
+@app.route("/register/doctor", methods=["GET", "POST"])
+def register_doctor():
+
+    specialisations = load_reference("/reference/specialisations")
+    hospitals = load_reference("/reference/hospitals")
+
+    def render(status=200):
+        return (
+            render_template(
+                "register.html",
+                role="doctor",
+                form=request.form,
+                specialisations=specialisations,
+                hospitals=hospitals,
+            ),
+            status,
+        )
+
+    if request.method == "GET":
+        return render()
+
+    error = validate_common(request.form)
+
+    license_number = request.form.get("license_number", "").strip()
+    specialisation_id = request.form.get("specialisation_id", "").strip()
+    hospital_id = request.form.get("hospital_id", "").strip()
+    experience = request.form.get("years_experience", "").strip()
+
+    if not error and not license_number:
+        error = "Please enter your medical license number."
+    if not error and not specialisation_id.isdigit():
+        error = "Please select your specialisation."
+    if not error and hospital_id and not hospital_id.isdigit():
+        error = "Please select a valid hospital."
+    if not error and experience and (
+        not experience.isdigit() or int(experience) > 80
+    ):
+        error = "Years of experience must be between 0 and 80."
+
+    if error:
+        flash(error, "error")
+        return render(400)
+
+    payload = {
+        "role": "doctor",
+        "name": request.form["name"].strip(),
+        "email": request.form["email"].strip().lower(),
+        "password": request.form["password"],
+        "licenseNumber": license_number,
+        "specialisationId": int(specialisation_id),
+        "hospitalId": int(hospital_id) if hospital_id else None,
+        "yearsExperience": int(experience) if experience else None,
+        "qualifications": request.form.get("qualifications", "").strip(),
+        "languages": request.form.get("languages", "").strip(),
+        "timezone": "Asia/Kolkata",
+    }
+
+    success, message = post_registration(REGISTER_DOCTOR_PATH, payload)
+
+    if not success:
+        flash(message, "error")
+        return render(400)
+
+    flash(
+        f"{message} After logging in, upload your photo from the Profile page.",
+        "success",
+    )
+    return redirect(url_for("login"))
+
+
+@app.route("/register/patient", methods=["GET", "POST"])
+def register_patient():
+
+    def render(status=200):
+        return (
+            render_template(
+                "register.html",
+                role="patient",
+                form=request.form,
+                specialisations=[],
+                hospitals=[],
+            ),
+            status,
+        )
+
+    if request.method == "GET":
+        return render()
+
+    error = validate_common(request.form)
+
+    phone = request.form.get("phone", "").strip()
+    city = request.form.get("city", "").strip()
+
+    if not error and not PHONE_PATTERN.match(phone):
+        error = "Please enter a valid phone number."
+    if not error and not city:
+        error = "Please enter your city."
+
+    if error:
+        flash(error, "error")
+        return render(400)
+
+    payload = {
+        "role": "patient",
+        "name": request.form["name"].strip(),
+        "email": request.form["email"].strip().lower(),
+        "password": request.form["password"],
+        "phone": phone,
+        "city": city,
+    }
+
+    success, message = post_registration(REGISTER_PATIENT_PATH, payload)
+
+    if not success:
+        flash(message, "error")
+        return render(400)
+
+    flash(
+        f"{message} Patients use the MediSlot patient app to book appointments.",
+        "success",
+    )
+    return redirect(url_for("login"))
 
 
 # --------------------------------------------------
@@ -264,11 +472,7 @@ def dashboard():
 def logout():
 
     session.clear()
-
-    flash(
-        "You have been logged out.",
-        "success",
-    )
+    flash("You have been logged out.", "success")
 
     return redirect(url_for("login"))
 
@@ -289,8 +493,4 @@ def not_found(error):
 
 if __name__ == "__main__":
 
-    app.run(
-        host="127.0.0.1",
-        port=8000,
-        debug=False,
-    )
+    app.run(host="127.0.0.1", port=8000, debug=False)
