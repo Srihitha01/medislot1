@@ -174,33 +174,13 @@ Resources:
                   - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-doctor-dashboard-${Environment}/*
 
               - Sid: ReadCloudFormationDeploymentState
-
                 Effect: Allow
-
                 Action:
-
                   - cloudformation:DescribeAccountLimits
-
                   - cloudformation:ListStacks
-
                   - cloudformation:ListExports
-
                   - cloudformation:ListImports
-
-                Resource:
-
-                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-network-${Environment}/*
-
-                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-data-${Environment}/*
-
-                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-iam-${Environment}/*
-
-                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-auth-${Environment}/*
-
-                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-application-${Environment}/*
-
-                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-api-${Environment}/*
-                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-doctor-dashboard-${Environment}/*
+                Resource: "*"
 
               - Sid: ReadArtifactBucketMetadata
 
@@ -332,7 +312,34 @@ Resources:
 
                   StringEquals:
 
-                    iam:PassedToService: cloudformation.amazonaws.com
+                    iam:PassedToService: lambda.amazonaws.com
+
+              # Allow CloudFormation to create and update only the named MediSlot
+              # Lambda execution roles. Passing these roles is authorized separately.
+              - Sid: ManageMediSlotLambdaExecutionRoles
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:TagRole
+                  - iam:UntagRole
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-register-role
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-login-role
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-refresh-role
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-logout-role
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-authorizer-role
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-app-router-role
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-slot-scheduler-role
 
               - Sid: PassSlotSchedulerRoleToEventBridgeScheduler
                 Effect: Allow
@@ -442,6 +449,184 @@ Resources:
                 Effect: Allow
                 Action:
                   - ec2:Describe*
+                Resource: "*"
+
+              - Sid: DeployMediSlotLambdaAndApiResources
+                Effect: Allow
+                Action:
+                  - lambda:CreateFunction
+                  - lambda:DeleteFunction
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:UpdateFunctionCode
+                  - lambda:UpdateFunctionConfiguration
+                  - lambda:PublishVersion
+                  - lambda:CreateAlias
+                  - lambda:UpdateAlias
+                  - lambda:DeleteAlias
+                  - lambda:AddPermission
+                  - lambda:RemovePermission
+                  - lambda:PutFunctionConcurrency
+                  - lambda:DeleteFunctionConcurrency
+                  - lambda:TagResource
+                  - lambda:UntagResource
+                  - apigateway:GET
+                  - apigateway:POST
+                  - apigateway:PUT
+                  - apigateway:PATCH
+                  - apigateway:DELETE
+                Resource: "*"
+
+              - Sid: DeployMediSlotDatabaseAndStorageResources
+                Effect: Allow
+                Action:
+                  - rds:CreateDBInstance
+                  - rds:DeleteDBInstance
+                  - rds:ModifyDBInstance
+                  - rds:DescribeDBInstances
+                  - rds:CreateDBSubnetGroup
+                  - rds:DeleteDBSubnetGroup
+                  - rds:ModifyDBSubnetGroup
+                  - rds:DescribeDBSubnetGroups
+                  - rds:AddTagsToResource
+                  - rds:RemoveTagsFromResource
+                  - rds:ListTagsForResource
+                  - dynamodb:CreateTable
+                  - dynamodb:DeleteTable
+                  - dynamodb:UpdateTable
+                  - dynamodb:DescribeTable
+                  - dynamodb:DescribeContinuousBackups
+                  - dynamodb:UpdateContinuousBackups
+                  - dynamodb:DescribeTimeToLive
+                  - dynamodb:UpdateTimeToLive
+                  - dynamodb:TagResource
+                  - dynamodb:UntagResource
+                  - dynamodb:ListTagsOfResource
+                  - s3:CreateBucket
+                  - s3:DeleteBucket
+                  - s3:PutBucketPolicy
+                  - s3:GetBucketPolicy
+                  - s3:DeleteBucketPolicy
+                  - s3:PutBucketTagging
+                  - s3:GetBucketTagging
+                  - s3:PutEncryptionConfiguration
+                  - s3:GetEncryptionConfiguration
+                  - s3:PutBucketPublicAccessBlock
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:GetBucketVersioning
+                  - s3:PutBucketVersioning
+                  - s3:GetBucketLifecycleConfiguration
+                  - s3:PutBucketLifecycleConfiguration
+                Resource: "*"
+
+              - Sid: DeployMediSlotMessagingAndEvents
+                Effect: Allow
+                Action:
+                  - sqs:CreateQueue
+                  - sqs:DeleteQueue
+                  - sqs:GetQueueAttributes
+                  - sqs:SetQueueAttributes
+                  - sqs:GetQueueUrl
+                  - sqs:TagQueue
+                  - sqs:UntagQueue
+                  - sqs:ListQueueTags
+                  - sns:CreateTopic
+                  - sns:DeleteTopic
+                  - sns:GetTopicAttributes
+                  - sns:SetTopicAttributes
+                  - sns:Subscribe
+                  - sns:Unsubscribe
+                  - sns:ListSubscriptionsByTopic
+                  - sns:TagResource
+                  - sns:UntagResource
+                  - events:PutRule
+                  - events:DeleteRule
+                  - events:DescribeRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                  - events:ListTargetsByRule
+                  - events:EnableRule
+                  - events:DisableRule
+                  - events:TagResource
+                  - events:UntagResource
+                  - scheduler:CreateSchedule
+                  - scheduler:UpdateSchedule
+                  - scheduler:DeleteSchedule
+                  - scheduler:GetSchedule
+                  - scheduler:ListSchedules
+                Resource: "*"
+
+              - Sid: DeployMediSlotMonitoringAndLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:DeleteLogGroup
+                  - logs:PutRetentionPolicy
+                  - logs:DeleteRetentionPolicy
+                  - logs:DescribeLogGroups
+                  - logs:TagResource
+                  - logs:UntagResource
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:DeleteAlarms
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:PutDashboard
+                  - cloudwatch:DeleteDashboards
+                  - cloudwatch:GetDashboard
+                  - cloudwatch:ListDashboards
+                  - cloudwatch:PutMetricData
+                Resource: "*"
+
+              - Sid: DeployMediSlotNetworkResources
+                Effect: Allow
+                Action:
+                  - ec2:CreateVpc
+                  - ec2:DeleteVpc
+                  - ec2:ModifyVpcAttribute
+                  - ec2:CreateTags
+                  - ec2:DeleteTags
+                  - ec2:CreateInternetGateway
+                  - ec2:DeleteInternetGateway
+                  - ec2:AttachInternetGateway
+                  - ec2:DetachInternetGateway
+                  - ec2:CreateSubnet
+                  - ec2:DeleteSubnet
+                  - ec2:ModifySubnetAttribute
+                  - ec2:CreateRouteTable
+                  - ec2:DeleteRouteTable
+                  - ec2:CreateRoute
+                  - ec2:DeleteRoute
+                  - ec2:ReplaceRoute
+                  - ec2:AssociateRouteTable
+                  - ec2:DisassociateRouteTable
+                  - ec2:CreateSecurityGroup
+                  - ec2:DeleteSecurityGroup
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:AuthorizeSecurityGroupEgress
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupEgress
+                  - ec2:CreateVpcEndpoint
+                  - ec2:DeleteVpcEndpoints
+                  - ec2:ModifyVpcEndpoint
+                  - ec2:Describe*
+                Resource: "*"
+
+              - Sid: UpdateMediSlotDeploymentRolePolicy
+                Effect: Allow
+                Action:
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:TagRole
+                  - iam:UntagRole
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-github-actions-deploy-role
+
+              - Sid: CreateMediSlotServiceLinkedRoles
+                Effect: Allow
+                Action:
+                  - iam:CreateServiceLinkedRole
                 Resource: "*"
 
   # ---------------------------------------------------------

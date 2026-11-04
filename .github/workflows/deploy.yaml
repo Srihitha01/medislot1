@@ -22,7 +22,6 @@ env:
   AWS_REGION: ap-south-1
   AWS_DEFAULT_REGION: ap-south-1
   ENVIRONMENT: dev
-  SAM_CLI_TELEMETRY: "0"
   NETWORK_STACK: medislot-network-dev
   DATA_STACK: medislot-data-dev
   IAM_STACK: medislot-iam-dev
@@ -31,7 +30,7 @@ env:
 
 jobs:
   validate:
-    name: Validate CloudFormation and SAM
+    name: Validate CloudFormation and Python
     runs-on: ubuntu-latest
     steps:
       # Gitleaks scans the pull-request commit range. Fetch the full history
@@ -44,14 +43,23 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Verify AWS OIDC role repository variable
+        if: github.event_name != 'pull_request'
+        env:
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${AWS_ROLE_ARN:-}" ]]; then
+            echo "::error::Create the GitHub Actions repository variable AWS_ROLE_ARN with the IAM deployment role ARN. Do not store it as a secret."
+            exit 1
+          fi
       - name: Install validation tools and application dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install cfn-lint bandit tzdata
           python -m pip install -r src/auth/requirements.txt
           python -m pip install -r src/slots/materializer/requirements.txt
-      - name: Set up AWS SAM CLI
-        uses: aws-actions/setup-sam@v2
       - name: Check required templates and lint CloudFormation
         shell: bash
         run: |
@@ -70,11 +78,6 @@ jobs:
             echo "Linting $template"
             cfn-lint "$template"
           done
-      - name: Validate SAM templates
-        run: |
-          sam validate --template-file cloudformation/data-stack.yaml
-          sam validate --template-file cloudformation/authentication.yaml
-          sam validate --template-file cloudformation/api-stack.yaml
       - name: Compile Python source
         run: python -m compileall -q src
       - name: Run unit tests
@@ -97,7 +100,7 @@ jobs:
       - name: Scan repository for secrets
         uses: gitleaks/gitleaks-action@v2
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Scan infrastructure templates
         uses: bridgecrewio/checkov-action@v12
         with:
@@ -122,7 +125,7 @@ jobs:
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
       - name: Deploy network stack using Change Set
@@ -195,7 +198,7 @@ jobs:
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
       - name: Verify existing SSM SecureString parameters
@@ -228,7 +231,7 @@ jobs:
           get_version "/medislot/${ENVIRONMENT}/auth/jwt-secret" "jwt_secret_version"
 
   deploy_data:
-    name: Deploy Data Stack with SAM
+    name: Deploy Data Stack
     needs: [deploy_network, verify_ssm]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -239,17 +242,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Set up AWS SAM CLI
-        uses: aws-actions/setup-sam@v2
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
-      - name: Package data template
-        run: |
-          sam package --template-file cloudformation/data-stack.yaml --s3-bucket "${{ needs.deploy_network.outputs.artifact_bucket }}" --s3-prefix medislot/data --region "$AWS_REGION" --output-template-file /tmp/data-packaged.yaml
       - name: Deploy data stack using Change Set
         shell: bash
         env:
@@ -260,7 +258,7 @@ jobs:
           change_set="${DATA_STACK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           aws cloudformation create-change-set \
             --stack-name "$DATA_STACK" --change-set-name "$change_set" --change-set-type "$change_type" \
-            --template-body file:///tmp/data-packaged.yaml \
+            --template-body file://cloudformation/data-stack.yaml \
             --parameters ParameterKey=Environment,ParameterValue="$ENVIRONMENT" ParameterKey=DBInstanceClass,ParameterValue=db.t3.micro ParameterKey=DBAllocatedStorage,ParameterValue=20 ParameterKey=DBPasswordParameterVersion,ParameterValue="$DB_PASSWORD_VERSION" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
             --description "GitHub Actions run ${GITHUB_RUN_ID}"
@@ -300,13 +298,15 @@ jobs:
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
       - name: Deploy IAM stack using Change Set
         shell: bash
         env:
           ARTIFACT_BUCKET: ${{ needs.deploy_network.outputs.artifact_bucket }}
+          GITHUB_OWNER_ID: ${{ github.repository_owner_id }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -euo pipefail
           if aws cloudformation describe-stacks --stack-name "$IAM_STACK" >/dev/null 2>&1; then change_type=UPDATE; else change_type=CREATE; fi
@@ -314,7 +314,13 @@ jobs:
           aws cloudformation create-change-set \
             --stack-name "$IAM_STACK" --change-set-name "$change_set" --change-set-type "$change_type" \
             --template-body file://cloudformation/iam-stack.yaml \
-            --parameters ParameterKey=Environment,ParameterValue="$ENVIRONMENT" ParameterKey=GitHubOwner,ParameterValue="${GITHUB_REPOSITORY_OWNER}" ParameterKey=GitHubRepository,ParameterValue="${GITHUB_REPOSITORY#*/}" ParameterKey=DeploymentArtifactBucketName,ParameterValue="$ARTIFACT_BUCKET" \
+            --parameters \
+              ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
+              ParameterKey=GitHubOwner,ParameterValue="$GITHUB_REPOSITORY_OWNER" \
+              ParameterKey=GitHubRepository,ParameterValue="${GITHUB_REPOSITORY#*/}" \
+              ParameterKey=GitHubOwnerId,ParameterValue="$GITHUB_OWNER_ID" \
+              ParameterKey=GitHubRepositoryId,ParameterValue="$GITHUB_REPOSITORY_ID" \
+              ParameterKey=DeploymentArtifactBucketName,ParameterValue="$ARTIFACT_BUCKET" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --description "GitHub Actions run ${GITHUB_RUN_ID}"
           if ! aws cloudformation wait change-set-create-complete --stack-name "$IAM_STACK" --change-set-name "$change_set"; then
@@ -343,12 +349,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Set up AWS SAM CLI
-        uses: aws-actions/setup-sam@v2
+      - name: Set up Python 3.12 for Lambda packaging
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
       - name: Verify RDS schema file is present in the existing Lambda package
@@ -359,22 +367,56 @@ jobs:
           test -s src/auth/schema_init/schema.sql
           echo "Found schema initializer and src/auth/schema_init/schema.sql."
 
-      - name: Build authentication Lambda dependencies
-        run: |
-          set -euo pipefail
-          sam build --template-file cloudformation/authentication.yaml --use-container
-          test -s .aws-sam/build/SchemaInitializerFunction/schema_init/schema_init.py
-          test -s .aws-sam/build/SchemaInitializerFunction/schema_init/schema.sql
-
-      - name: Package authentication template
+      - name: Build and package authentication Lambda code with AWS CLI
+        shell: bash
         env:
           ARTIFACT_BUCKET: ${{ needs.deploy_network.outputs.artifact_bucket }}
         run: |
           set -euo pipefail
-          sam package \
-            --template-file .aws-sam/build/template.yaml \
+
+          # Stage the complete shared authentication source tree, including schema.sql.
+          rm -rf .build/auth-package .build/materializer-package
+          mkdir -p .build/auth-package .build/materializer-package
+          cp -a src/auth/. .build/auth-package/
+          cp -a src/slots/materializer/. .build/materializer-package/
+
+          # Install dependencies into the exact directories used as Lambda CodeUri.
+          python -m pip install --disable-pip-version-check --no-compile \
+            --target .build/auth-package -r src/auth/requirements.txt
+          python -m pip install --disable-pip-version-check --no-compile \
+            --target .build/materializer-package -r src/slots/materializer/requirements.txt
+
+          # Do not ship local test/cache artifacts in Lambda packages.
+          find .build/auth-package .build/materializer-package -type d \
+            \( -name tests -o -name __pycache__ -o -name .pytest_cache \) -prune -exec rm -rf {} +
+          find .build/auth-package .build/materializer-package -type f \
+            \( -name '*.pyc' -o -name '*.pyo' \) -delete
+
+          test -s .build/auth-package/schema_init/schema_init.py
+          test -s .build/auth-package/schema_init/schema.sql
+          test -s .build/materializer-package/materializer.py
+
+          # Point the serverless function resources at the staged, dependency-complete directories.
+          python - <<'PYCODE'
+          from pathlib import Path
+          template_path = Path("cloudformation/authentication.yaml")
+          template = template_path.read_text(encoding="utf-8")
+          auth_code_uri = "      CodeUri: ../src/auth/"
+          materializer_code_uri = "      CodeUri: ../src/slots/materializer/"
+          if template.count(auth_code_uri) != 7:
+              raise SystemExit(f"Expected 7 authentication CodeUri entries, found {template.count(auth_code_uri)}")
+          if template.count(materializer_code_uri) != 1:
+              raise SystemExit(f"Expected 1 materializer CodeUri entry, found {template.count(materializer_code_uri)}")
+          template = template.replace(auth_code_uri, "      CodeUri: ../.build/auth-package/", 7)
+          template = template.replace(materializer_code_uri, "      CodeUri: ../.build/materializer-package/", 1)
+          Path("cloudformation/authentication-packaged-source.yaml").write_text(template, encoding="utf-8")
+          PYCODE
+
+          # AWS CLI packages local CodeUri directories to S3; no SAM CLI is needed.
+          aws cloudformation package \
+            --template-file cloudformation/authentication-packaged-source.yaml \
             --s3-bucket "$ARTIFACT_BUCKET" \
-            --s3-prefix "medislot/authentication/${GITHUB_SHA}/${GITHUB_RUN_ID}" \
+            --s3-prefix "medislot/authentication/${GITHUB_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --region "$AWS_REGION" \
             --output-template-file /tmp/auth-packaged.yaml
       - name: Deploy authentication stack using Change Set
@@ -421,7 +463,7 @@ jobs:
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
       - name: Wait for RDS and verify schema initializer
@@ -479,12 +521,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Set up AWS SAM CLI
-        uses: aws-actions/setup-sam@v2
+      - name: Set up Python 3.12 for Lambda packaging
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
       - name: Build and validate API Lambda ZIP, upload with unique S3 key
@@ -541,7 +585,7 @@ jobs:
           fi
           cmp /tmp/app-router.zip /tmp/app-router-verified.zip
 
-          # Give CloudFormation/SAM the exact verified S3 ZIP URI.
+          # Give CloudFormation the exact verified S3 ZIP URI.
           export ARTIFACT_KEY
           python - <<'PYCODE'
           import os
@@ -602,7 +646,7 @@ jobs:
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
@@ -714,7 +758,7 @@ jobs:
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
       - name: Show deployed stack outputs
