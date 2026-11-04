@@ -1,9 +1,9 @@
+
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
   MediSlot Doctor Dashboard EC2 infrastructure.
   Ubuntu 24.04 with Flask, Gunicorn, Nginx and AWS Systems Manager access.
-  Public HTTP access is intentionally enabled for the development dashboard.
 
 Parameters:
   Environment:
@@ -13,7 +13,6 @@ Parameters:
       - dev
       - test
       - prod
-    Description: MediSlot deployment environment.
 
   InstanceType:
     Type: String
@@ -21,11 +20,10 @@ Parameters:
     AllowedValues:
       - t3.small
       - t3.medium
-    Description: EC2 instance type for the Doctor Dashboard.
 
   ArtifactBucket:
     Type: String
-    Description: Existing CloudFormation-managed deployment artifact bucket.
+    Description: Existing deployment artifact bucket.
 
   ArtifactKey:
     Type: String
@@ -33,45 +31,39 @@ Parameters:
 
   ApiBaseUrl:
     Type: String
-    Description: API Gateway invoke URL including the environment stage.
+    Description: API Gateway invoke URL including stage.
 
   LoginPath:
     Type: String
     Default: /auth/login
     AllowedPattern: '^/.*'
-    Description: Login API route path.
 
   DashboardAccessCidr:
     Type: String
     Default: 0.0.0.0/0
-    Description: >
-      IPv4 CIDR allowed to access the dashboard over HTTP.
-      0.0.0.0/0 intentionally allows all doctors to reach the dashboard.
-      Use HTTPS and authenticated application sessions before production use.
+    Description: IPv4 CIDR allowed to access the dashboard over HTTP.
 
 Resources:
   DoctorDashboardSecurityGroup:
     Type: AWS::EC2::SecurityGroup
-    Metadata:
-      checkov:
-        skip:
-          - id: CKV_AWS_260
-            comment: "Public HTTP on port 80 is an explicit requirement for this dashboard deployment. Application authentication must be enforced by the dashboard; HTTPS should be added before production."
     Properties:
-      GroupDescription: Allow public HTTP access to the MediSlot Doctor Dashboard.
+      GroupDescription: Allow HTTP access to MediSlot Doctor Dashboard.
       VpcId:
         Fn::ImportValue:
           Fn::Sub: medislot-${Environment}-VpcId
+
       SecurityGroupIngress:
-        - Description: Public HTTP access for doctors to reach the dashboard through Nginx.
+        - Description: Dashboard HTTP access.
           IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           CidrIp: !Ref DashboardAccessCidr
+
       SecurityGroupEgress:
-        - Description: Allow outbound traffic for operating system updates, Python packages and AWS service access.
+        - Description: Allow outbound traffic.
           IpProtocol: "-1"
           CidrIp: 0.0.0.0/0
+
       Tags:
         - Key: Name
           Value: !Sub medislot-doctor-dashboard-${Environment}-sg
@@ -84,7 +76,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-doctor-dashboard-${Environment}-role
-      Description: EC2 role for MediSlot Doctor Dashboard with SSM access.
+
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -94,8 +86,10 @@ Resources:
                 - ec2.amazonaws.com
             Action:
               - sts:AssumeRole
+
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
       Policies:
         - PolicyName: DownloadDoctorDashboardArtifact
           PolicyDocument:
@@ -105,6 +99,7 @@ Resources:
                 Action:
                   - s3:GetObject
                 Resource: !Sub arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ArtifactKey}
+
       Tags:
         - Key: Project
           Value: MediSlot
@@ -120,23 +115,22 @@ Resources:
 
   DoctorDashboardInstance:
     Type: AWS::EC2::Instance
-    Metadata:
-      checkov:
-        skip:
-          - id: CKV_AWS_88
-            comment: "A public IPv4 address is intentionally required because all doctors must reach this EC2-hosted dashboard directly over the internet. The instance sits in the existing public subnet and exposes only HTTP port 80 through its security group; Gunicorn is bound to loopback."
     Properties:
       ImageId: "{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id}}"
+
       InstanceType: !Ref InstanceType
+
       IamInstanceProfile: !Ref DoctorDashboardInstanceProfile
 
       NetworkInterfaces:
         - DeviceIndex: "0"
           AssociatePublicIpAddress: true
           DeleteOnTermination: true
+
           SubnetId:
             Fn::ImportValue:
               Fn::Sub: medislot-${Environment}-PublicSubnetA
+
           GroupSet:
             - !Ref DoctorDashboardSecurityGroup
 
@@ -160,18 +154,25 @@ Resources:
           set -euo pipefail
 
           exec > >(tee /var/log/medislot-dashboard-setup.log | logger -t user-data -s 2>/dev/console) 2>&1
+
           export DEBIAN_FRONTEND=noninteractive
 
           apt-get update -y
+
           apt-get install -y python3 python3-venv python3-pip nginx curl unzip awscli
 
           install -d -o ubuntu -g ubuntu /opt/medislot-dashboard
+
           aws s3 cp "s3://${ArtifactBucket}/${ArtifactKey}" /tmp/doctor-dashboard-app.zip
+
           unzip -o /tmp/doctor-dashboard-app.zip -d /opt/medislot-dashboard
+
           chown -R ubuntu:ubuntu /opt/medislot-dashboard
 
           python3 -m venv /opt/medislot-dashboard/venv
+
           /opt/medislot-dashboard/venv/bin/pip install --upgrade pip
+
           /opt/medislot-dashboard/venv/bin/pip install -r /opt/medislot-dashboard/requirements.txt
 
           cat > /etc/systemd/system/medislot-dashboard.service <<'SERVICE'
@@ -200,6 +201,7 @@ Resources:
               listen 80;
               server_name _;
               client_max_body_size 2m;
+
               location / {
                   proxy_pass http://127.0.0.1:8000;
                   proxy_set_header Host $host;
@@ -211,10 +213,15 @@ Resources:
           NGINX
 
           rm -f /etc/nginx/sites-enabled/default
+
           ln -sfn /etc/nginx/sites-available/medislot-dashboard /etc/nginx/sites-enabled/medislot-dashboard
+
           nginx -t
+
           systemctl daemon-reload
+
           systemctl enable --now medislot-dashboard
+
           systemctl enable --now nginx
 
       Tags:
