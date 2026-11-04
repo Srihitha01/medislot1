@@ -99,10 +99,10 @@ jobs:
           missing=0
 
           for file in \
-            doctor-dashboard-app/app.py \
-            doctor-dashboard-app/requirements.txt \
-            doctor-dashboard-app/templates/login.html \
-            doctor-dashboard-app/templates/doctor_dashboard.html; do
+            src/doctor/app.py \
+            src/doctor/requirements.txt \
+            src/doctor/templates/login.html \
+            src/doctor/templates/doctor_dashboard.html; do
 
             if [[ ! -s "$file" ]]; then
               echo "::error::Missing or empty dashboard file: $file"
@@ -1146,10 +1146,10 @@ jobs:
           missing=0
 
           for file in \
-            doctor-dashboard-app/app.py \
-            doctor-dashboard-app/requirements.txt \
-            doctor-dashboard-app/templates/login.html \
-            doctor-dashboard-app/templates/doctor_dashboard.html; do
+            src/doctor/app.py \
+            src/doctor/requirements.txt \
+            src/doctor/templates/login.html \
+            src/doctor/templates/doctor_dashboard.html; do
 
             if [[ ! -s "$file" ]]; then
               echo "::error::Missing or empty dashboard file: $file"
@@ -1208,8 +1208,8 @@ jobs:
           rm -f doctor-dashboard-app.zip
 
           (
-            cd doctor-dashboard-app
-            zip -qr ../doctor-dashboard-app.zip . \
+            cd src/doctor
+            zip -qr ../../doctor-dashboard-app.zip . \
               -x '.venv/*' '*/__pycache__/*' '*.pyc' '.git/*'
           )
 
