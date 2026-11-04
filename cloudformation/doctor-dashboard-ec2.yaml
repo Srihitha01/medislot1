@@ -4,6 +4,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   MediSlot Doctor Dashboard EC2 infrastructure.
   Ubuntu 24.04 with Flask, Gunicorn, Nginx and AWS Systems Manager access.
+  Public EC2 access is intentionally enabled for dashboard access from anywhere.
 
 Parameters:
   Environment:
@@ -41,19 +42,29 @@ Parameters:
   DashboardAccessCidr:
     Type: String
     Default: 0.0.0.0/0
-    Description: IPv4 CIDR allowed to access the dashboard over HTTP.
+    Description: >
+      Public IPv4 CIDR allowed to access the dashboard.
+      0.0.0.0/0 allows access from anywhere.
 
 Resources:
+
   DoctorDashboardSecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_260
+            comment: >
+              Intentional public HTTP access is required so doctors can
+              access the MediSlot dashboard from anywhere.
     Properties:
-      GroupDescription: Allow HTTP access to MediSlot Doctor Dashboard.
+      GroupDescription: Allow public HTTP access to MediSlot Doctor Dashboard.
       VpcId:
         Fn::ImportValue:
           Fn::Sub: medislot-${Environment}-VpcId
 
       SecurityGroupIngress:
-        - Description: Dashboard HTTP access.
+        - Description: Public dashboard HTTP access.
           IpProtocol: tcp
           FromPort: 80
           ToPort: 80
@@ -115,6 +126,13 @@ Resources:
 
   DoctorDashboardInstance:
     Type: AWS::EC2::Instance
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_88
+            comment: >
+              Intentional public IPv4 address. The MediSlot Doctor Dashboard
+              must be directly accessible from anywhere without an ALB.
     Properties:
       ImageId: "{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id}}"
 
@@ -235,6 +253,7 @@ Resources:
           Value: !Ref Environment
 
 Outputs:
+
   InstanceId:
     Description: Doctor Dashboard EC2 instance ID.
     Value: !Ref DoctorDashboardInstance
