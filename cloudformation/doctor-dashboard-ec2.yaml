@@ -1,11 +1,11 @@
-
 AWSTemplateFormatVersion: "2010-09-09"
-
+ 
 Description: >
   MediSlot Doctor Dashboard EC2 infrastructure.
   Ubuntu 24.04 with Flask, Gunicorn, Nginx and AWS Systems Manager access.
   Public EC2 access is intentionally enabled for dashboard access from anywhere.
-
+  A fixed Elastic IP keeps the dashboard URL stable across redeployments.
+ 
 Parameters:
   Environment:
     Type: String
@@ -14,40 +14,40 @@ Parameters:
       - dev
       - test
       - prod
-
+ 
   InstanceType:
     Type: String
     Default: t3.small
     AllowedValues:
       - t3.small
       - t3.medium
-
+ 
   ArtifactBucket:
     Type: String
     Description: Existing deployment artifact bucket.
-
+ 
   ArtifactKey:
     Type: String
     Description: S3 object key for doctor-dashboard-app.zip.
-
+ 
   ApiBaseUrl:
     Type: String
     Description: API Gateway invoke URL including stage.
-
+ 
   LoginPath:
     Type: String
     Default: /auth/login
     AllowedPattern: '^/.*'
-
+ 
   DashboardAccessCidr:
     Type: String
     Default: 0.0.0.0/0
     Description: >
       Public IPv4 CIDR allowed to access the dashboard.
       0.0.0.0/0 allows access from anywhere.
-
+ 
 Resources:
-
+ 
   DoctorDashboardSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Metadata:
@@ -62,19 +62,19 @@ Resources:
       VpcId:
         Fn::ImportValue:
           Fn::Sub: medislot-${Environment}-VpcId
-
+ 
       SecurityGroupIngress:
         - Description: Public dashboard HTTP access.
           IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           CidrIp: !Ref DashboardAccessCidr
-
+ 
       SecurityGroupEgress:
         - Description: Allow outbound traffic.
           IpProtocol: "-1"
           CidrIp: 0.0.0.0/0
-
+ 
       Tags:
         - Key: Name
           Value: !Sub medislot-doctor-dashboard-${Environment}-sg
@@ -82,12 +82,12 @@ Resources:
           Value: MediSlot
         - Key: Environment
           Value: !Ref Environment
-
+ 
   DoctorDashboardRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-doctor-dashboard-${Environment}-role
-
+ 
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -97,10 +97,10 @@ Resources:
                 - ec2.amazonaws.com
             Action:
               - sts:AssumeRole
-
+ 
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-
+ 
       Policies:
         - PolicyName: DownloadDoctorDashboardArtifact
           PolicyDocument:
@@ -110,20 +110,40 @@ Resources:
                 Action:
                   - s3:GetObject
                 Resource: !Sub arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ArtifactKey}
-
+ 
       Tags:
         - Key: Project
           Value: MediSlot
         - Key: Environment
           Value: !Ref Environment
-
+ 
   DoctorDashboardInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
       InstanceProfileName: !Sub medislot-doctor-dashboard-${Environment}-profile
       Roles:
         - !Ref DoctorDashboardRole
-
+ 
+  # Fixed public IP so the dashboard URL does not change when the instance
+  # is replaced on each deployment (ArtifactKey changes on every run).
+  DoctorDashboardEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-doctor-dashboard-${Environment}-eip
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+ 
+  DoctorDashboardEipAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt DoctorDashboardEip.AllocationId
+      InstanceId: !Ref DoctorDashboardInstance
+ 
   DoctorDashboardInstance:
     Type: AWS::EC2::Instance
     Metadata:
@@ -135,29 +155,29 @@ Resources:
               must be directly accessible from anywhere without an ALB.
     Properties:
       ImageId: "{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id}}"
-
+ 
       InstanceType: !Ref InstanceType
-
+ 
       IamInstanceProfile: !Ref DoctorDashboardInstanceProfile
-
+ 
       NetworkInterfaces:
         - DeviceIndex: "0"
           AssociatePublicIpAddress: true
           DeleteOnTermination: true
-
+ 
           SubnetId:
             Fn::ImportValue:
               Fn::Sub: medislot-${Environment}-PublicSubnetA
-
+ 
           GroupSet:
             - !Ref DoctorDashboardSecurityGroup
-
+ 
       MetadataOptions:
         HttpEndpoint: enabled
         HttpTokens: required
-
+ 
       Monitoring: true
-
+ 
       BlockDeviceMappings:
         - DeviceName: /dev/sda1
           Ebs:
@@ -165,40 +185,49 @@ Resources:
             VolumeType: gp3
             Encrypted: true
             DeleteOnTermination: true
-
+ 
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
           set -euo pipefail
-
+ 
           exec > >(tee /var/log/medislot-dashboard-setup.log | logger -t user-data -s 2>/dev/console) 2>&1
-
+ 
           export DEBIAN_FRONTEND=noninteractive
-
+          export AWS_DEFAULT_REGION="${AWS::Region}"
+ 
           apt-get update -y
-
-          apt-get install -y python3 python3-venv python3-pip nginx curl unzip awscli
-
+ 
+          # NOTE: "awscli" is NOT available as an apt package on Ubuntu 24.04,
+          # so it is installed below from the official AWS CLI v2 bundle.
+          apt-get install -y python3 python3-venv python3-pip nginx curl unzip
+ 
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+            unzip -q -o /tmp/awscliv2.zip -d /tmp
+            /tmp/aws/install --update
+          fi
+ 
           install -d -o ubuntu -g ubuntu /opt/medislot-dashboard
-
-          aws s3 cp "s3://${ArtifactBucket}/${ArtifactKey}" /tmp/doctor-dashboard-app.zip
-
+ 
+          /usr/local/bin/aws s3 cp "s3://${ArtifactBucket}/${ArtifactKey}" /tmp/doctor-dashboard-app.zip
+ 
           unzip -o /tmp/doctor-dashboard-app.zip -d /opt/medislot-dashboard
-
+ 
           chown -R ubuntu:ubuntu /opt/medislot-dashboard
-
+ 
           python3 -m venv /opt/medislot-dashboard/venv
-
+ 
           /opt/medislot-dashboard/venv/bin/pip install --upgrade pip
-
+ 
           /opt/medislot-dashboard/venv/bin/pip install -r /opt/medislot-dashboard/requirements.txt
-
+ 
           cat > /etc/systemd/system/medislot-dashboard.service <<'SERVICE'
           [Unit]
           Description=MediSlot Doctor Dashboard Flask Application
           Wants=network-online.target
           After=network-online.target
-
+ 
           [Service]
           User=ubuntu
           Group=ubuntu
@@ -209,17 +238,17 @@ Resources:
           ExecStart=/opt/medislot-dashboard/venv/bin/gunicorn --workers 2 --bind 127.0.0.1:8000 --access-logfile - --error-logfile - app:app
           Restart=always
           RestartSec=5
-
+ 
           [Install]
           WantedBy=multi-user.target
           SERVICE
-
+ 
           cat > /etc/nginx/sites-available/medislot-dashboard <<'NGINX'
           server {
               listen 80;
               server_name _;
               client_max_body_size 2m;
-
+ 
               location / {
                   proxy_pass http://127.0.0.1:8000;
                   proxy_set_header Host $host;
@@ -229,19 +258,19 @@ Resources:
               }
           }
           NGINX
-
+ 
           rm -f /etc/nginx/sites-enabled/default
-
+ 
           ln -sfn /etc/nginx/sites-available/medislot-dashboard /etc/nginx/sites-enabled/medislot-dashboard
-
+ 
           nginx -t
-
+ 
           systemctl daemon-reload
-
+ 
           systemctl enable --now medislot-dashboard
-
+ 
           systemctl enable --now nginx
-
+ 
       Tags:
         - Key: Name
           Value: !Sub medislot-doctor-dashboard-${Environment}
@@ -251,37 +280,29 @@ Resources:
           Value: DoctorDashboard
         - Key: Environment
           Value: !Ref Environment
-
+ 
 Outputs:
-
+ 
   InstanceId:
     Description: Doctor Dashboard EC2 instance ID.
     Value: !Ref DoctorDashboardInstance
-
+ 
   PublicIp:
-    Description: Doctor Dashboard public IPv4 address.
-    Value: !GetAtt DoctorDashboardInstance.PublicIp
-
-  PublicDns:
-    Description: Doctor Dashboard public DNS name.
-    Value: !GetAtt DoctorDashboardInstance.PublicDnsName
-
+    Description: Doctor Dashboard fixed Elastic IP address.
+    Value: !Ref DoctorDashboardEip
+ 
   DashboardUrl:
-    Description: Doctor Dashboard URL.
-    Value: !Sub
-      - http://${DashboardHost}
-      - DashboardHost: !GetAtt DoctorDashboardInstance.PublicDnsName
-
+    Description: Doctor Dashboard URL (HTTP only, port 80).
+    Value: !Sub http://${DoctorDashboardEip}
+ 
   HealthCheckUrl:
     Description: Doctor Dashboard health endpoint.
-    Value: !Sub
-      - http://${DashboardHost}/health
-      - DashboardHost: !GetAtt DoctorDashboardInstance.PublicDnsName
-
+    Value: !Sub http://${DoctorDashboardEip}/health
+ 
   SecurityGroupId:
     Description: Doctor Dashboard security group ID.
     Value: !Ref DoctorDashboardSecurityGroup
-
+ 
   InstanceRoleArn:
     Description: Doctor Dashboard EC2 IAM role ARN.
     Value: !GetAtt DoctorDashboardRole.Arn
