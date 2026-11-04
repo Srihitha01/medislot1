@@ -91,6 +91,31 @@ jobs:
             cfn-lint "$template"
           done
 
+      - name: Check Doctor Dashboard application files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          missing=0
+
+          for file in \
+            doctor-dashboard-app/app.py \
+            doctor-dashboard-app/requirements.txt \
+            doctor-dashboard-app/templates/login.html \
+            doctor-dashboard-app/templates/doctor_dashboard.html; do
+
+            if [[ ! -s "$file" ]]; then
+              echo "::error::Missing or empty dashboard file: $file"
+              missing=1
+            fi
+          done
+
+          if [[ "$missing" -ne 0 ]]; then
+            exit 1
+          fi
+
+          echo "All Doctor Dashboard application files are present."
+
       - name: Compile Python source
         run: python -m compileall -q src
 
@@ -167,12 +192,34 @@ jobs:
         run: |
           set -euo pipefail
 
-          if aws cloudformation describe-stacks \
-            --stack-name "$NETWORK_STACK" >/dev/null 2>&1; then
-            change_type=UPDATE
-          else
-            change_type=CREATE
-          fi
+          resolve_change_type() {
+            local stack="$1" status
+            status=$(aws cloudformation describe-stacks \
+              --stack-name "$stack" \
+              --query 'Stacks[0].StackStatus' \
+              --output text 2>/dev/null || echo NONE)
+
+            case "$status" in
+              NONE|REVIEW_IN_PROGRESS)
+                change_type=CREATE
+                ;;
+              ROLLBACK_COMPLETE)
+                echo "Stack $stack is in ROLLBACK_COMPLETE; deleting it before recreating."
+                aws cloudformation delete-stack --stack-name "$stack"
+                aws cloudformation wait stack-delete-complete --stack-name "$stack"
+                change_type=CREATE
+                ;;
+              *_IN_PROGRESS)
+                echo "::error::Stack $stack is busy ($status). Wait for it to finish and re-run."
+                exit 1
+                ;;
+              *)
+                change_type=UPDATE
+                ;;
+            esac
+          }
+
+          resolve_change_type "$NETWORK_STACK"
 
           change_set="${NETWORK_STACK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
@@ -245,7 +292,11 @@ jobs:
             exit 1
           fi
 
-          aws s3api head-bucket --bucket "$bucket"
+          if ! aws s3api head-bucket --bucket "$bucket" 2>/tmp/head-bucket-error.txt; then
+            cat /tmp/head-bucket-error.txt
+            echo "::error::Cannot access artifact bucket $bucket. Make sure $IAM_STACK was deployed with DeploymentArtifactBucketName=$bucket."
+            exit 1
+          fi
 
           echo "name=$bucket" >> "$GITHUB_OUTPUT"
           echo "Using CloudFormation-managed artifact bucket: $bucket"
@@ -348,12 +399,34 @@ jobs:
         run: |
           set -euo pipefail
 
-          if aws cloudformation describe-stacks \
-            --stack-name "$DATA_STACK" >/dev/null 2>&1; then
-            change_type=UPDATE
-          else
-            change_type=CREATE
-          fi
+          resolve_change_type() {
+            local stack="$1" status
+            status=$(aws cloudformation describe-stacks \
+              --stack-name "$stack" \
+              --query 'Stacks[0].StackStatus' \
+              --output text 2>/dev/null || echo NONE)
+
+            case "$status" in
+              NONE|REVIEW_IN_PROGRESS)
+                change_type=CREATE
+                ;;
+              ROLLBACK_COMPLETE)
+                echo "Stack $stack is in ROLLBACK_COMPLETE; deleting it before recreating."
+                aws cloudformation delete-stack --stack-name "$stack"
+                aws cloudformation wait stack-delete-complete --stack-name "$stack"
+                change_type=CREATE
+                ;;
+              *_IN_PROGRESS)
+                echo "::error::Stack $stack is busy ($status). Wait for it to finish and re-run."
+                exit 1
+                ;;
+              *)
+                change_type=UPDATE
+                ;;
+            esac
+          }
+
+          resolve_change_type "$DATA_STACK"
 
           change_set="${DATA_STACK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
@@ -419,11 +492,14 @@ jobs:
           fi
 
   # ============================================================
-  # 5. IAM STACK
+  # 5. VERIFY IAM STACK
+  # The IAM stack contains the GitHub deployment role itself, so
+  # this pipeline cannot create or update it. Deploy it manually
+  # with administrator credentials; this job only verifies it.
   # ============================================================
 
-  deploy_iam:
-    name: Deploy IAM Stack
+  verify_iam:
+    name: Verify IAM Stack
     needs: [deploy_data, deploy_network]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -434,9 +510,6 @@ jobs:
       id-token: write
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -444,82 +517,39 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Deploy IAM stack using Change Set
+      - name: Verify IAM stack exists and uses the current artifact bucket
         shell: bash
         env:
           ARTIFACT_BUCKET: ${{ needs.deploy_network.outputs.artifact_bucket }}
-          GITHUB_OWNER_ID: ${{ github.repository_owner_id }}
-          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -euo pipefail
 
-          if aws cloudformation describe-stacks \
-            --stack-name "$IAM_STACK" >/dev/null 2>&1; then
-            change_type=UPDATE
-          else
-            change_type=CREATE
-          fi
-
-          change_set="${IAM_STACK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-
-          aws cloudformation create-change-set \
+          status=$(aws cloudformation describe-stacks \
             --stack-name "$IAM_STACK" \
-            --change-set-name "$change_set" \
-            --change-set-type "$change_type" \
-            --template-body file://cloudformation/iam-stack.yaml \
-            --parameters \
-              ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
-              ParameterKey=GitHubOwner,ParameterValue="$GITHUB_REPOSITORY_OWNER" \
-              ParameterKey=GitHubRepository,ParameterValue="${GITHUB_REPOSITORY#*/}" \
-              ParameterKey=GitHubOwnerId,ParameterValue="$GITHUB_OWNER_ID" \
-              ParameterKey=GitHubRepositoryId,ParameterValue="$GITHUB_REPOSITORY_ID" \
-              ParameterKey=DeploymentArtifactBucketName,ParameterValue="$ARTIFACT_BUCKET" \
-            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-            --description "GitHub Actions run ${GITHUB_RUN_ID}"
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || echo NOT_FOUND)
 
-          if ! aws cloudformation wait change-set-create-complete \
+          case "$status" in
+            CREATE_COMPLETE|UPDATE_COMPLETE|UPDATE_ROLLBACK_COMPLETE)
+              echo "$IAM_STACK status: $status"
+              ;;
+            *)
+              echo "::error::$IAM_STACK is not healthy (status: $status). Deploy it manually with administrator credentials."
+              exit 1
+              ;;
+          esac
+
+          configured=$(aws cloudformation describe-stacks \
             --stack-name "$IAM_STACK" \
-            --change-set-name "$change_set"; then
+            --query "Stacks[0].Parameters[?ParameterKey=='DeploymentArtifactBucketName'].ParameterValue | [0]" \
+            --output text)
 
-            reason=$(aws cloudformation describe-change-set \
-              --stack-name "$IAM_STACK" \
-              --change-set-name "$change_set" \
-              --query StatusReason \
-              --output text 2>/dev/null || true)
-
-            if [[ "$reason" == *"didn't contain changes"* ]] || \
-               [[ "$reason" == *"No updates are to be performed"* ]]; then
-
-              echo "IAM stack is already up to date."
-
-              aws cloudformation delete-change-set \
-                --stack-name "$IAM_STACK" \
-                --change-set-name "$change_set" || true
-
-              exit 0
-            fi
-
-            echo "::error::IAM Change Set creation failed: $reason"
+          if [[ "$configured" != "$ARTIFACT_BUCKET" ]]; then
+            echo "::error::$IAM_STACK was deployed with DeploymentArtifactBucketName='$configured' but the network stack bucket is '$ARTIFACT_BUCKET'. Redeploy the IAM stack manually: aws cloudformation deploy --stack-name $IAM_STACK --template-file cloudformation/iam-stack.yaml --capabilities CAPABILITY_NAMED_IAM --parameter-overrides Environment=$ENVIRONMENT DeploymentArtifactBucketName=$ARTIFACT_BUCKET"
             exit 1
           fi
 
-          aws cloudformation describe-change-set \
-            --stack-name "$IAM_STACK" \
-            --change-set-name "$change_set" \
-            --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' \
-            --output table
-
-          aws cloudformation execute-change-set \
-            --stack-name "$IAM_STACK" \
-            --change-set-name "$change_set"
-
-          if [[ "$change_type" == CREATE ]]; then
-            aws cloudformation wait stack-create-complete \
-              --stack-name "$IAM_STACK"
-          else
-            aws cloudformation wait stack-update-complete \
-              --stack-name "$IAM_STACK"
-          fi
+          echo "IAM stack is healthy and uses artifact bucket $ARTIFACT_BUCKET."
 
   # ============================================================
   # 6. AUTHENTICATION STACK
@@ -527,7 +557,7 @@ jobs:
 
   deploy_auth:
     name: Deploy Authentication Stack
-    needs: [deploy_iam, verify_ssm, deploy_network]
+    needs: [verify_iam, verify_ssm, deploy_network]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: development
@@ -647,12 +677,34 @@ jobs:
         run: |
           set -euo pipefail
 
-          if aws cloudformation describe-stacks \
-            --stack-name "$AUTH_STACK" >/dev/null 2>&1; then
-            change_type=UPDATE
-          else
-            change_type=CREATE
-          fi
+          resolve_change_type() {
+            local stack="$1" status
+            status=$(aws cloudformation describe-stacks \
+              --stack-name "$stack" \
+              --query 'Stacks[0].StackStatus' \
+              --output text 2>/dev/null || echo NONE)
+
+            case "$status" in
+              NONE|REVIEW_IN_PROGRESS)
+                change_type=CREATE
+                ;;
+              ROLLBACK_COMPLETE)
+                echo "Stack $stack is in ROLLBACK_COMPLETE; deleting it before recreating."
+                aws cloudformation delete-stack --stack-name "$stack"
+                aws cloudformation wait stack-delete-complete --stack-name "$stack"
+                change_type=CREATE
+                ;;
+              *_IN_PROGRESS)
+                echo "::error::Stack $stack is busy ($status). Wait for it to finish and re-run."
+                exit 1
+                ;;
+              *)
+                change_type=UPDATE
+                ;;
+            esac
+          }
+
+          resolve_change_type "$AUTH_STACK"
 
           change_set="${AUTH_STACK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
@@ -963,12 +1015,34 @@ jobs:
 
           APP_STACK="medislot-api-${ENVIRONMENT}"
 
-          if aws cloudformation describe-stacks \
-            --stack-name "$APP_STACK" >/dev/null 2>&1; then
-            change_type=UPDATE
-          else
-            change_type=CREATE
-          fi
+          resolve_change_type() {
+            local stack="$1" status
+            status=$(aws cloudformation describe-stacks \
+              --stack-name "$stack" \
+              --query 'Stacks[0].StackStatus' \
+              --output text 2>/dev/null || echo NONE)
+
+            case "$status" in
+              NONE|REVIEW_IN_PROGRESS)
+                change_type=CREATE
+                ;;
+              ROLLBACK_COMPLETE)
+                echo "Stack $stack is in ROLLBACK_COMPLETE; deleting it before recreating."
+                aws cloudformation delete-stack --stack-name "$stack"
+                aws cloudformation wait stack-delete-complete --stack-name "$stack"
+                change_type=CREATE
+                ;;
+              *_IN_PROGRESS)
+                echo "::error::Stack $stack is busy ($status). Wait for it to finish and re-run."
+                exit 1
+                ;;
+              *)
+                change_type=UPDATE
+                ;;
+            esac
+          }
+
+          resolve_change_type "$APP_STACK"
 
           change_set="${APP_STACK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
@@ -1057,14 +1131,59 @@ jobs:
         run: |
           set -euo pipefail
 
-          aws cloudformation describe-stacks \
-            --stack-name "$NETWORK_STACK" \
-            --region "$AWS_REGION" >/dev/null
+          for export_suffix in VpcId PublicSubnetA; do
+            export_name="medislot-${ENVIRONMENT}-${export_suffix}"
 
-          aws cloudformation list-exports \
-            --region "$AWS_REGION" \
-            --query "Exports[?Name=='medislot-${ENVIRONMENT}-VpcId' || Name=='medislot-${ENVIRONMENT}-PublicSubnetA'].[Name,Value]" \
-            --output table
+            value=$(aws cloudformation describe-stacks \
+              --stack-name "$NETWORK_STACK" \
+              --query "Stacks[0].Outputs[?ExportName=='${export_name}'].OutputValue | [0]" \
+              --output text)
+
+            if [[ -z "$value" || "$value" == "None" ]]; then
+              echo "::warning::Export $export_name was not found in $NETWORK_STACK outputs."
+            else
+              echo "Found export $export_name = $value"
+            fi
+          done
+
+      - name: Verify dashboard files and template parameters
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          missing=0
+
+          for file in \
+            doctor-dashboard-app/app.py \
+            doctor-dashboard-app/requirements.txt \
+            doctor-dashboard-app/templates/login.html \
+            doctor-dashboard-app/templates/doctor_dashboard.html; do
+
+            if [[ ! -s "$file" ]]; then
+              echo "::error::Missing or empty dashboard file: $file"
+              missing=1
+            fi
+          done
+
+          for parameter in \
+            Environment \
+            InstanceType \
+            ArtifactBucket \
+            ArtifactKey \
+            ApiBaseUrl \
+            LoginPath; do
+
+            if ! grep -qE "^  ${parameter}:" cloudformation/doctor-dashboard-ec2.yaml; then
+              echo "::error::cloudformation/doctor-dashboard-ec2.yaml does not declare parameter $parameter, but the workflow passes it."
+              missing=1
+            fi
+          done
+
+          if [[ "$missing" -ne 0 ]]; then
+            exit 1
+          fi
+
+          echo "Dashboard files and template parameters are present."
 
       - name: Deploy Doctor Dashboard using S3 template and Change Set
         shell: bash
@@ -1079,10 +1198,11 @@ jobs:
             --stack-name "$APP_STACK" \
             --region "$AWS_REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='ApplicationApiBaseUrl'].OutputValue | [0]" \
-            --output text)
+            --output text 2>/tmp/api-stack-error.txt || true)
 
           if [[ -z "$API_BASE_URL" || "$API_BASE_URL" == "None" ]]; then
-            echo "::error::ApplicationApiBaseUrl output was not found in $APP_STACK."
+            cat /tmp/api-stack-error.txt 2>/dev/null || true
+            echo "::error::ApplicationApiBaseUrl output was not found in $APP_STACK. Deploy the API stack first."
             exit 1
           fi
 
@@ -1091,19 +1211,16 @@ jobs:
             exit 1
           fi
 
-          # Verify the dashboard application files.
-          test -s doctor-dashboard-app/app.py
-          test -s doctor-dashboard-app/requirements.txt
-          test -s doctor-dashboard-app/templates/login.html
-          test -s doctor-dashboard-app/templates/doctor_dashboard.html
-
           # Build the dashboard ZIP.
           rm -f doctor-dashboard-app.zip
 
           (
             cd doctor-dashboard-app
-            zip -qr ../doctor-dashboard-app.zip .
+            zip -qr ../doctor-dashboard-app.zip . \
+              -x '.venv/*' '*/__pycache__/*' '*.pyc' '.git/*'
           )
+
+          unzip -tq doctor-dashboard-app.zip
 
           ARTIFACT_PREFIX="medislot/doctor-dashboard/${GITHUB_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
@@ -1127,13 +1244,39 @@ jobs:
 
           TEMPLATE_URL="https://${ARTIFACT_BUCKET}.s3.${AWS_REGION}.amazonaws.com/${TEMPLATE_KEY}"
 
-          if aws cloudformation describe-stacks \
-            --stack-name "$DASHBOARD_STACK" \
-            --region "$AWS_REGION" >/dev/null 2>&1; then
-            change_type=UPDATE
-          else
-            change_type=CREATE
-          fi
+          resolve_change_type() {
+            local stack="$1" status
+            status=$(aws cloudformation describe-stacks \
+              --stack-name "$stack" \
+              --region "$AWS_REGION" \
+              --query 'Stacks[0].StackStatus' \
+              --output text 2>/dev/null || echo NONE)
+
+            case "$status" in
+              NONE|REVIEW_IN_PROGRESS)
+                change_type=CREATE
+                ;;
+              ROLLBACK_COMPLETE)
+                echo "Stack $stack is in ROLLBACK_COMPLETE; deleting it before recreating."
+                aws cloudformation delete-stack \
+                  --stack-name "$stack" \
+                  --region "$AWS_REGION"
+                aws cloudformation wait stack-delete-complete \
+                  --stack-name "$stack" \
+                  --region "$AWS_REGION"
+                change_type=CREATE
+                ;;
+              *_IN_PROGRESS)
+                echo "::error::Stack $stack is busy ($status). Wait for it to finish and re-run."
+                exit 1
+                ;;
+              *)
+                change_type=UPDATE
+                ;;
+            esac
+          }
+
+          resolve_change_type "$DASHBOARD_STACK"
 
           change_set="${DASHBOARD_STACK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
@@ -1161,6 +1304,7 @@ jobs:
             reason=$(aws cloudformation describe-change-set \
               --stack-name "$DASHBOARD_STACK" \
               --change-set-name "$change_set" \
+              --region "$AWS_REGION" \
               --query StatusReason \
               --output text 2>/dev/null || true)
 
@@ -1184,6 +1328,7 @@ jobs:
           aws cloudformation describe-change-set \
             --stack-name "$DASHBOARD_STACK" \
             --change-set-name "$change_set" \
+            --region "$AWS_REGION" \
             --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' \
             --output table
 
@@ -1212,7 +1357,7 @@ jobs:
     needs:
       - deploy_network
       - deploy_data
-      - deploy_iam
+      - verify_iam
       - deploy_auth
       - deploy_api
       - deploy_doctor_dashboard
