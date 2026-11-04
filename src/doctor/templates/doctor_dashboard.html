@@ -707,9 +707,13 @@
 
     <div class="sidebar-bottom">
         <nav class="nav-menu">
-            <a href="/logout" id="logoutButton">
-                <span class="nav-icon">⇥</span><span class="nav-text">Logout</span>
-            </a>
+            <div class="sidebar-bottom">
+                <form method="post" action="/logout">
+                    <button type="submit" class="btn btn-light" style="width:100%;">
+                        ⇥ Logout
+                    </button>
+                </form>
+            </div>
         </nav>
     </div>
 </aside>
@@ -1244,7 +1248,9 @@
                 <button type="button" class="btn btn-light" onclick="showSection('profile')">
                     Edit Doctor Profile
                 </button>
-                <a class="btn btn-danger" href="/logout" style="text-decoration:none;">Logout</a>
+                <form method="post" action="/logout" style="display:inline;">
+                    <button type="submit" class="btn btn-danger">Logout</button>
+                </form>
             </div>
         </div>
     </section>

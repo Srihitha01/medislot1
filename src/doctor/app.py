@@ -260,7 +260,7 @@ def dashboard():
 # Logout
 # --------------------------------------------------
 
-@app.post("/logout")
+@app.route("/logout", methods=["GET", "POST"])
 def logout():
 
     session.clear()
