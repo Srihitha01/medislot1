@@ -1,9 +1,8 @@
-
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
   MediSlot Doctor Dashboard EC2 infrastructure.
-  Ubuntu 24.04, Flask, Gunicorn, Nginx and SSM access.
+  Ubuntu 24.04 with Flask, Gunicorn, Nginx and AWS Systems Manager access.
 
 Parameters:
   Environment:
@@ -13,6 +12,7 @@ Parameters:
       - dev
       - test
       - prod
+    Description: MediSlot deployment environment.
 
   InstanceType:
     Type: String
@@ -20,25 +20,26 @@ Parameters:
     AllowedValues:
       - t3.small
       - t3.medium
+    Description: EC2 instance type for the Doctor Dashboard.
 
   DashboardAccessCidr:
     Type: String
     Default: 0.0.0.0/0
     Description: >
-      Restrict this to your public IP in CIDR format
-      before production deployment.
+      IPv4 CIDR allowed to access the dashboard over HTTP.
+      Restrict this to your public IP address with /32 where possible.
 
 Resources:
-
   DoctorDashboardSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow HTTP access to MediSlot Doctor Dashboard
+      GroupDescription: Allow HTTP access to the MediSlot Doctor Dashboard.
       VpcId:
         Fn::ImportValue:
           Fn::Sub: medislot-${Environment}-VpcId
       SecurityGroupIngress:
-        - IpProtocol: tcp
+        - Description: HTTP access to the Doctor Dashboard.
+          IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           CidrIp: !Ref DashboardAccessCidr
@@ -48,11 +49,16 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-doctor-dashboard-${Environment}-sg
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
 
   DoctorDashboardRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-doctor-dashboard-${Environment}-role
+      Description: EC2 role for MediSlot Doctor Dashboard with SSM access.
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -65,8 +71,10 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
       Tags:
-        - Key: Name
-          Value: !Sub medislot-doctor-dashboard-${Environment}-role
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
 
   DoctorDashboardInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -82,14 +90,15 @@ Resources:
       InstanceType: !Ref InstanceType
       IamInstanceProfile: !Ref DoctorDashboardInstanceProfile
 
-      SubnetId:
-        Fn::ImportValue:
-          Fn::Sub: medislot-${Environment}-PublicSubnetA
-
-      SecurityGroupIds:
-        - !Ref DoctorDashboardSecurityGroup
-
-      AssociatePublicIpAddress: true
+      NetworkInterfaces:
+        - DeviceIndex: "0"
+          AssociatePublicIpAddress: true
+          DeleteOnTermination: true
+          SubnetId:
+            Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-PublicSubnetA
+          GroupSet:
+            - !Ref DoctorDashboardSecurityGroup
 
       MetadataOptions:
         HttpEndpoint: enabled
@@ -106,7 +115,7 @@ Resources:
             DeleteOnTermination: true
 
       UserData:
-        Fn::Base64: !Sub |
+        Fn::Base64: |
           #!/bin/bash
           set -eux
 
@@ -117,15 +126,14 @@ Resources:
           apt-get update -y
           apt-get install -y python3 python3-venv python3-pip nginx curl
 
-          mkdir -p /opt/medislot-dashboard
+          install -d -o ubuntu -g ubuntu /opt/medislot-dashboard
           cd /opt/medislot-dashboard
 
-          python3 -m venv venv
-
+          python3 -m venv /opt/medislot-dashboard/venv
           /opt/medislot-dashboard/venv/bin/pip install --upgrade pip
           /opt/medislot-dashboard/venv/bin/pip install flask gunicorn requests
 
-          cat > app.py <<'PYTHON'
+          cat > /opt/medislot-dashboard/app.py <<'PYTHON'
           from flask import Flask, jsonify, render_template_string
 
           app = Flask(__name__)
@@ -140,6 +148,7 @@ Resources:
                   <meta name="viewport" content="width=device-width, initial-scale=1">
                   <title>MediSlot Doctor Dashboard</title>
                   <style>
+                      * { box-sizing: border-box; }
                       body {
                           margin: 0;
                           font-family: Arial, sans-serif;
@@ -151,14 +160,12 @@ Resources:
                           color: white;
                           padding: 24px 40px;
                       }
-                      main {
-                          padding: 40px;
-                      }
+                      main { padding: 40px; }
                       .card {
                           background: white;
                           padding: 28px;
                           border-radius: 12px;
-                          max-width: 650px;
+                          max-width: 680px;
                           box-shadow: 0 3px 14px rgba(0,0,0,.07);
                       }
                       .status {
@@ -173,12 +180,12 @@ Resources:
                       <p>Doctor Dashboard</p>
                   </header>
                   <main>
-                      <div class="card">
+                      <section class="card">
                           <h2>Welcome to MediSlot</h2>
                           <p>Your Doctor Dashboard server is running.</p>
                           <p class="status">Application status: Online</p>
                           <p>Flask + Gunicorn + Nginx</p>
-                      </div>
+                      </section>
                   </main>
               </body>
               </html>
@@ -187,10 +194,9 @@ Resources:
           @app.route("/health")
           def health():
               return jsonify(status="healthy"), 200
-
-          if __name__ == "__main__":
-              app.run(host="127.0.0.1", port=8000)
           PYTHON
+
+          chown -R ubuntu:ubuntu /opt/medislot-dashboard
 
           cat > /etc/systemd/system/medislot-dashboard.service <<'SERVICE'
           [Unit]
@@ -230,6 +236,7 @@ Resources:
           systemctl daemon-reload
           systemctl enable medislot-dashboard
           systemctl restart medislot-dashboard
+
           nginx -t
           systemctl enable nginx
           systemctl restart nginx
@@ -241,31 +248,38 @@ Resources:
           Value: MediSlot
         - Key: Component
           Value: DoctorDashboard
+        - Key: Environment
+          Value: !Ref Environment
 
 Outputs:
-
   InstanceId:
-    Description: Doctor Dashboard EC2 instance ID
+    Description: Doctor Dashboard EC2 instance ID.
     Value: !Ref DoctorDashboardInstance
 
   PublicIp:
-    Description: Doctor Dashboard public IP
+    Description: Doctor Dashboard public IPv4 address.
     Value: !GetAtt DoctorDashboardInstance.PublicIp
 
+  PublicDns:
+    Description: Doctor Dashboard public DNS name.
+    Value: !GetAtt DoctorDashboardInstance.PublicDnsName
+
   DashboardUrl:
-    Description: Doctor Dashboard URL
+    Description: Doctor Dashboard URL.
     Value: !Sub
-      - http://${PublicAddress}
-      - PublicAddress: !GetAtt DoctorDashboardInstance.PublicDnsName
+      - http://${DashboardHost}
+      - DashboardHost: !GetAtt DoctorDashboardInstance.PublicDnsName
 
   HealthCheckUrl:
-    Description: Doctor Dashboard health endpoint
+    Description: Doctor Dashboard health endpoint.
     Value: !Sub
-      - http://${PublicAddress}/health
-      - PublicAddress: !GetAtt DoctorDashboardInstance.PublicDnsName
+      - http://${DashboardHost}/health
+      - DashboardHost: !GetAtt DoctorDashboardInstance.PublicDnsName
 
   SecurityGroupId:
+    Description: Doctor Dashboard security group ID.
     Value: !Ref DoctorDashboardSecurityGroup
 
   InstanceRoleArn:
+    Description: Doctor Dashboard EC2 IAM role ARN.
     Value: !GetAtt DoctorDashboardRole.Arn
