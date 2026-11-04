@@ -29,20 +29,26 @@ env:
   DASHBOARD_STACK: medislot-doctor-dashboard-dev
 
 jobs:
+
+  # ============================================================
+  # 1. VALIDATE
+  # ============================================================
+
   validate:
     name: Validate CloudFormation and Python
     runs-on: ubuntu-latest
+
     steps:
-      # Gitleaks scans the pull-request commit range. Fetch the full history
-      # so both the base and head commits are available to Git.
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Verify AWS OIDC role repository secret
         if: github.event_name != 'pull_request'
         env:
@@ -50,20 +56,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           if [[ -z "${AWS_ROLE_ARN:-}" ]]; then
             echo "::error::Create the GitHub Actions repository secret AWS_ROLE_ARN with the IAM deployment role ARN."
             exit 1
           fi
+
       - name: Install validation tools and application dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install cfn-lint bandit tzdata
           python -m pip install -r src/auth/requirements.txt
           python -m pip install -r src/slots/materializer/requirements.txt
+
       - name: Check required templates and lint CloudFormation
         shell: bash
         run: |
           set -euo pipefail
+
           for template in \
             cloudformation/network-stack.yaml \
             cloudformation/data-stack.yaml \
@@ -71,15 +81,19 @@ jobs:
             cloudformation/authentication.yaml \
             cloudformation/api-stack.yaml \
             cloudformation/doctor-dashboard-ec2.yaml; do
+
             if [[ ! -s "$template" ]]; then
               echo "::error::Missing or empty template: $template"
               exit 1
             fi
+
             echo "Linting $template"
             cfn-lint "$template"
           done
+
       - name: Compile Python source
         run: python -m compileall -q src
+
       - name: Run unit tests
         shell: bash
         env:
@@ -89,18 +103,29 @@ jobs:
           JWT_SECRET_PARAMETER: /medislot/test/auth/jwt-secret
         run: |
           set -euo pipefail
-          python -m unittest discover -s src/auth/tests -p "test_*.py" -v
-          python -m unittest discover -s src/slots/materializer/tests -p "test_*.py" -v
-          # API tests are optional: only run them if the folder exists.
+
+          python -m unittest discover \
+            -s src/auth/tests \
+            -p "test_*.py" -v
+
+          python -m unittest discover \
+            -s src/slots/materializer/tests \
+            -p "test_*.py" -v
+
           if [[ -d src/api/tests ]]; then
-            python -m unittest discover -s src/api/tests -p "test_*.py" -v
+            python -m unittest discover \
+              -s src/api/tests \
+              -p "test_*.py" -v
           fi
+
       - name: Scan Python source
         run: bandit -r src -ll
+
       - name: Scan repository for secrets
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
       - name: Scan infrastructure templates
         uses: bridgecrewio/checkov-action@v12
         with:
@@ -108,78 +133,126 @@ jobs:
           framework: cloudformation
           soft_fail: false
 
+  # ============================================================
+  # 2. NETWORK STACK
+  # ============================================================
+
   deploy_network:
     name: Deploy Network Stack
     needs: validate
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: development
+
     permissions:
       contents: read
       id-token: write
+
     outputs:
       artifact_bucket: ${{ steps.bucket.outputs.name }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
+
       - name: Deploy network stack using Change Set
         shell: bash
         run: |
           set -euo pipefail
-          if aws cloudformation describe-stacks --stack-name "$NETWORK_STACK" >/dev/null 2>&1; then
+
+          if aws cloudformation describe-stacks \
+            --stack-name "$NETWORK_STACK" >/dev/null 2>&1; then
             change_type=UPDATE
           else
             change_type=CREATE
           fi
+
           change_set="${NETWORK_STACK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
           aws cloudformation create-change-set \
             --stack-name "$NETWORK_STACK" \
             --change-set-name "$change_set" \
             --change-set-type "$change_type" \
             --template-body file://cloudformation/network-stack.yaml \
-            --parameters ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
+            --parameters \
+              ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --description "GitHub Actions run ${GITHUB_RUN_ID}"
-          if ! aws cloudformation wait change-set-create-complete --stack-name "$NETWORK_STACK" --change-set-name "$change_set"; then
-            reason=$(aws cloudformation describe-change-set --stack-name "$NETWORK_STACK" --change-set-name "$change_set" --query StatusReason --output text 2>/dev/null || true)
-            if [[ "$reason" == *"didn't contain changes"* ]] || [[ "$reason" == *"No updates are to be performed"* ]]; then
-              echo "Network stack is already up to date. No deployment is required."
-              aws cloudformation delete-change-set --stack-name "$NETWORK_STACK" --change-set-name "$change_set" || true
+
+          if ! aws cloudformation wait change-set-create-complete \
+            --stack-name "$NETWORK_STACK" \
+            --change-set-name "$change_set"; then
+
+            reason=$(aws cloudformation describe-change-set \
+              --stack-name "$NETWORK_STACK" \
+              --change-set-name "$change_set" \
+              --query StatusReason \
+              --output text 2>/dev/null || true)
+
+            if [[ "$reason" == *"didn't contain changes"* ]] || \
+               [[ "$reason" == *"No updates are to be performed"* ]]; then
+
+              echo "Network stack is already up to date."
+
+              aws cloudformation delete-change-set \
+                --stack-name "$NETWORK_STACK" \
+                --change-set-name "$change_set" || true
             else
               echo "::error::Network Change Set creation failed: $reason"
               exit 1
             fi
+
           else
-            aws cloudformation describe-change-set --stack-name "$NETWORK_STACK" --change-set-name "$change_set" --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' --output table
-            aws cloudformation execute-change-set --stack-name "$NETWORK_STACK" --change-set-name "$change_set"
+            aws cloudformation describe-change-set \
+              --stack-name "$NETWORK_STACK" \
+              --change-set-name "$change_set" \
+              --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' \
+              --output table
+
+            aws cloudformation execute-change-set \
+              --stack-name "$NETWORK_STACK" \
+              --change-set-name "$change_set"
+
             if [[ "$change_type" == CREATE ]]; then
-              aws cloudformation wait stack-create-complete --stack-name "$NETWORK_STACK"
+              aws cloudformation wait stack-create-complete \
+                --stack-name "$NETWORK_STACK"
             else
-              aws cloudformation wait stack-update-complete --stack-name "$NETWORK_STACK"
+              aws cloudformation wait stack-update-complete \
+                --stack-name "$NETWORK_STACK"
             fi
           fi
+
       - name: Resolve deployment artifact bucket
         id: bucket
         shell: bash
         run: |
           set -euo pipefail
+
           bucket=$(aws cloudformation describe-stacks \
             --stack-name "$NETWORK_STACK" \
             --query "Stacks[0].Outputs[?OutputKey=='DeploymentArtifactsBucketName'].OutputValue | [0]" \
             --output text)
+
           if [[ -z "$bucket" || "$bucket" == "None" ]]; then
             echo "::error::DeploymentArtifactsBucketName output was not found in $NETWORK_STACK."
             exit 1
           fi
+
           aws s3api head-bucket --bucket "$bucket"
+
           echo "name=$bucket" >> "$GITHUB_OUTPUT"
           echo "Using CloudFormation-managed artifact bucket: $bucket"
+
+  # ============================================================
+  # 3. VERIFY SSM PARAMETERS
+  # ============================================================
 
   verify_ssm:
     name: Verify existing SSM SecureString parameters
@@ -187,13 +260,16 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: development
+
     permissions:
       contents: read
       id-token: write
+
     outputs:
       db_password_version: ${{ steps.ssm.outputs.db_password_version }}
       app_password_version: ${{ steps.ssm.outputs.app_password_version }}
       jwt_secret_version: ${{ steps.ssm.outputs.jwt_secret_version }}
+
     steps:
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -201,6 +277,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
+
       - name: Verify existing SSM SecureString parameters
         id: ssm
         shell: bash
@@ -226,9 +303,21 @@ jobs:
             echo "Verified $parameter_name (version $version)."
           }
 
-          get_version "/medislot/${ENVIRONMENT}/db/password" "db_password_version"
-          get_version "/medislot/${ENVIRONMENT}/db/app-password" "app_password_version"
-          get_version "/medislot/${ENVIRONMENT}/auth/jwt-secret" "jwt_secret_version"
+          get_version \
+            "/medislot/${ENVIRONMENT}/db/password" \
+            "db_password_version"
+
+          get_version \
+            "/medislot/${ENVIRONMENT}/db/app-password" \
+            "app_password_version"
+
+          get_version \
+            "/medislot/${ENVIRONMENT}/auth/jwt-secret" \
+            "jwt_secret_version"
+
+  # ============================================================
+  # 4. DATA STACK
+  # ============================================================
 
   deploy_data:
     name: Deploy Data Stack
@@ -236,52 +325,102 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: development
+
     permissions:
       contents: read
       id-token: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
+
       - name: Deploy data stack using Change Set
         shell: bash
         env:
           DB_PASSWORD_VERSION: ${{ needs.verify_ssm.outputs.db_password_version }}
         run: |
           set -euo pipefail
-          if aws cloudformation describe-stacks --stack-name "$DATA_STACK" >/dev/null 2>&1; then change_type=UPDATE; else change_type=CREATE; fi
+
+          if aws cloudformation describe-stacks \
+            --stack-name "$DATA_STACK" >/dev/null 2>&1; then
+            change_type=UPDATE
+          else
+            change_type=CREATE
+          fi
+
           change_set="${DATA_STACK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
           aws cloudformation create-change-set \
-            --stack-name "$DATA_STACK" --change-set-name "$change_set" --change-set-type "$change_type" \
+            --stack-name "$DATA_STACK" \
+            --change-set-name "$change_set" \
+            --change-set-type "$change_type" \
             --template-body file://cloudformation/data-stack.yaml \
-            --parameters ParameterKey=Environment,ParameterValue="$ENVIRONMENT" ParameterKey=DBInstanceClass,ParameterValue=db.t3.micro ParameterKey=DBAllocatedStorage,ParameterValue=20 ParameterKey=DBPasswordParameterVersion,ParameterValue="$DB_PASSWORD_VERSION" \
+            --parameters \
+              ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
+              ParameterKey=DBInstanceClass,ParameterValue=db.t3.micro \
+              ParameterKey=DBAllocatedStorage,ParameterValue=20 \
+              ParameterKey=DBPasswordParameterVersion,ParameterValue="$DB_PASSWORD_VERSION" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
             --description "GitHub Actions run ${GITHUB_RUN_ID}"
-          if ! aws cloudformation wait change-set-create-complete --stack-name "$DATA_STACK" --change-set-name "$change_set"; then
-            reason=$(aws cloudformation describe-change-set --stack-name "$DATA_STACK" --change-set-name "$change_set" --query StatusReason --output text 2>/dev/null || true)
+
+          if ! aws cloudformation wait change-set-create-complete \
+            --stack-name "$DATA_STACK" \
+            --change-set-name "$change_set"; then
+
+            reason=$(aws cloudformation describe-change-set \
+              --stack-name "$DATA_STACK" \
+              --change-set-name "$change_set" \
+              --query StatusReason \
+              --output text 2>/dev/null || true)
+
             shopt -s nocasematch
-            if [[ "$reason" == *"didn't contain changes"* || "$reason" == *"No updates are to be performed"* ]]; then
+
+            if [[ "$reason" == *"didn't contain changes"* || \
+                  "$reason" == *"No updates are to be performed"* ]]; then
+
               shopt -u nocasematch
-              echo "Data stack is already up to date. No deployment is required."
-              aws cloudformation delete-change-set --stack-name "$DATA_STACK" --change-set-name "$change_set" || true
+
+              echo "Data stack is already up to date."
+
+              aws cloudformation delete-change-set \
+                --stack-name "$DATA_STACK" \
+                --change-set-name "$change_set" || true
+
               exit 0
             fi
+
             echo "::error::Data Change Set creation failed: $reason"
             exit 1
           fi
-          aws cloudformation describe-change-set --stack-name "$DATA_STACK" --change-set-name "$change_set" \
-            --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' --output table
-          aws cloudformation execute-change-set --stack-name "$DATA_STACK" --change-set-name "$change_set"
+
+          aws cloudformation describe-change-set \
+            --stack-name "$DATA_STACK" \
+            --change-set-name "$change_set" \
+            --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' \
+            --output table
+
+          aws cloudformation execute-change-set \
+            --stack-name "$DATA_STACK" \
+            --change-set-name "$change_set"
+
           if [[ "$change_type" == CREATE ]]; then
-            aws cloudformation wait stack-create-complete --stack-name "$DATA_STACK"
+            aws cloudformation wait stack-create-complete \
+              --stack-name "$DATA_STACK"
           else
-            aws cloudformation wait stack-update-complete --stack-name "$DATA_STACK"
+            aws cloudformation wait stack-update-complete \
+              --stack-name "$DATA_STACK"
           fi
+
+  # ============================================================
+  # 5. IAM STACK
+  # ============================================================
 
   deploy_iam:
     name: Deploy IAM Stack
@@ -289,18 +428,22 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: development
+
     permissions:
       contents: read
       id-token: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
+
       - name: Deploy IAM stack using Change Set
         shell: bash
         env:
@@ -309,10 +452,20 @@ jobs:
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -euo pipefail
-          if aws cloudformation describe-stacks --stack-name "$IAM_STACK" >/dev/null 2>&1; then change_type=UPDATE; else change_type=CREATE; fi
+
+          if aws cloudformation describe-stacks \
+            --stack-name "$IAM_STACK" >/dev/null 2>&1; then
+            change_type=UPDATE
+          else
+            change_type=CREATE
+          fi
+
           change_set="${IAM_STACK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
           aws cloudformation create-change-set \
-            --stack-name "$IAM_STACK" --change-set-name "$change_set" --change-set-type "$change_type" \
+            --stack-name "$IAM_STACK" \
+            --change-set-name "$change_set" \
+            --change-set-type "$change_type" \
             --template-body file://cloudformation/iam-stack.yaml \
             --parameters \
               ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
@@ -323,19 +476,54 @@ jobs:
               ParameterKey=DeploymentArtifactBucketName,ParameterValue="$ARTIFACT_BUCKET" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --description "GitHub Actions run ${GITHUB_RUN_ID}"
-          if ! aws cloudformation wait change-set-create-complete --stack-name "$IAM_STACK" --change-set-name "$change_set"; then
-            reason=$(aws cloudformation describe-change-set --stack-name "$IAM_STACK" --change-set-name "$change_set" --query StatusReason --output text 2>/dev/null || true)
-            if [[ "$reason" == *"didn't contain changes"* ]] || [[ "$reason" == *"No updates are to be performed"* ]]; then
-              echo "IAM stack is already up to date. No deployment is required."
-              aws cloudformation delete-change-set --stack-name "$IAM_STACK" --change-set-name "$change_set" || true
+
+          if ! aws cloudformation wait change-set-create-complete \
+            --stack-name "$IAM_STACK" \
+            --change-set-name "$change_set"; then
+
+            reason=$(aws cloudformation describe-change-set \
+              --stack-name "$IAM_STACK" \
+              --change-set-name "$change_set" \
+              --query StatusReason \
+              --output text 2>/dev/null || true)
+
+            if [[ "$reason" == *"didn't contain changes"* ]] || \
+               [[ "$reason" == *"No updates are to be performed"* ]]; then
+
+              echo "IAM stack is already up to date."
+
+              aws cloudformation delete-change-set \
+                --stack-name "$IAM_STACK" \
+                --change-set-name "$change_set" || true
+
               exit 0
             fi
+
             echo "::error::IAM Change Set creation failed: $reason"
             exit 1
           fi
-          aws cloudformation describe-change-set --stack-name "$IAM_STACK" --change-set-name "$change_set" --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' --output table
-          aws cloudformation execute-change-set --stack-name "$IAM_STACK" --change-set-name "$change_set"
-          if [[ "$change_type" == CREATE ]]; then aws cloudformation wait stack-create-complete --stack-name "$IAM_STACK"; else aws cloudformation wait stack-update-complete --stack-name "$IAM_STACK"; fi
+
+          aws cloudformation describe-change-set \
+            --stack-name "$IAM_STACK" \
+            --change-set-name "$change_set" \
+            --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' \
+            --output table
+
+          aws cloudformation execute-change-set \
+            --stack-name "$IAM_STACK" \
+            --change-set-name "$change_set"
+
+          if [[ "$change_type" == CREATE ]]; then
+            aws cloudformation wait stack-create-complete \
+              --stack-name "$IAM_STACK"
+          else
+            aws cloudformation wait stack-update-complete \
+              --stack-name "$IAM_STACK"
+          fi
+
+  # ============================================================
+  # 6. AUTHENTICATION STACK
+  # ============================================================
 
   deploy_auth:
     name: Deploy Authentication Stack
@@ -343,28 +531,35 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: development
+
     permissions:
       contents: read
       id-token: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
       - name: Set up Python 3.12 for Lambda packaging
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
+
       - name: Verify RDS schema file is present in the existing Lambda package
         shell: bash
         run: |
           set -euo pipefail
+
           test -s src/auth/schema_init/schema_init.py
           test -s src/auth/schema_init/schema.sql
+
           echo "Found schema initializer and src/auth/schema_init/schema.sql."
 
       - name: Build and package authentication Lambda code with AWS CLI
@@ -374,21 +569,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Stage the complete shared authentication source tree, including schema.sql.
           rm -rf .build/auth-package .build/materializer-package
+
           mkdir -p .build/auth-package .build/materializer-package
+
           cp -a src/auth/. .build/auth-package/
           cp -a src/slots/materializer/. .build/materializer-package/
 
-          # Install dependencies into the exact directories used as Lambda CodeUri.
           python -m pip install --disable-pip-version-check --no-compile \
-            --target .build/auth-package -r src/auth/requirements.txt
-          python -m pip install --disable-pip-version-check --no-compile \
-            --target .build/materializer-package -r src/slots/materializer/requirements.txt
+            --target .build/auth-package \
+            -r src/auth/requirements.txt
 
-          # Do not ship local test/cache artifacts in Lambda packages.
+          python -m pip install --disable-pip-version-check --no-compile \
+            --target .build/materializer-package \
+            -r src/slots/materializer/requirements.txt
+
           find .build/auth-package .build/materializer-package -type d \
-            \( -name tests -o -name __pycache__ -o -name .pytest_cache \) -prune -exec rm -rf {} +
+            \( -name tests -o -name __pycache__ -o -name .pytest_cache \) \
+            -prune -exec rm -rf {} +
+
           find .build/auth-package .build/materializer-package -type f \
             \( -name '*.pyc' -o -name '*.pyo' \) -delete
 
@@ -396,29 +595,50 @@ jobs:
           test -s .build/auth-package/schema_init/schema.sql
           test -s .build/materializer-package/materializer.py
 
-          # Point the serverless function resources at the staged, dependency-complete directories.
           python - <<'PYCODE'
           from pathlib import Path
+
           template_path = Path("cloudformation/authentication.yaml")
           template = template_path.read_text(encoding="utf-8")
+
           auth_code_uri = "      CodeUri: ../src/auth/"
           materializer_code_uri = "      CodeUri: ../src/slots/materializer/"
+
           if template.count(auth_code_uri) != 7:
-              raise SystemExit(f"Expected 7 authentication CodeUri entries, found {template.count(auth_code_uri)}")
+              raise SystemExit(
+                  f"Expected 7 authentication CodeUri entries, found {template.count(auth_code_uri)}"
+              )
+
           if template.count(materializer_code_uri) != 1:
-              raise SystemExit(f"Expected 1 materializer CodeUri entry, found {template.count(materializer_code_uri)}")
-          template = template.replace(auth_code_uri, "      CodeUri: ../.build/auth-package/", 7)
-          template = template.replace(materializer_code_uri, "      CodeUri: ../.build/materializer-package/", 1)
-          Path("cloudformation/authentication-packaged-source.yaml").write_text(template, encoding="utf-8")
+              raise SystemExit(
+                  f"Expected 1 materializer CodeUri entry, found {template.count(materializer_code_uri)}"
+              )
+
+          template = template.replace(
+              auth_code_uri,
+              "      CodeUri: ../.build/auth-package/",
+              7
+          )
+
+          template = template.replace(
+              materializer_code_uri,
+              "      CodeUri: ../.build/materializer-package/",
+              1
+          )
+
+          Path("cloudformation/authentication-packaged-source.yaml").write_text(
+              template,
+              encoding="utf-8"
+          )
           PYCODE
 
-          # AWS CLI packages local CodeUri directories to S3; no SAM CLI is needed.
           aws cloudformation package \
             --template-file cloudformation/authentication-packaged-source.yaml \
             --s3-bucket "$ARTIFACT_BUCKET" \
             --s3-prefix "medislot/authentication/${GITHUB_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --region "$AWS_REGION" \
             --output-template-file /tmp/auth-packaged.yaml
+
       - name: Deploy authentication stack using Change Set
         shell: bash
         env:
@@ -426,27 +646,75 @@ jobs:
           JWT_SECRET_VERSION: ${{ needs.verify_ssm.outputs.jwt_secret_version }}
         run: |
           set -euo pipefail
-          if aws cloudformation describe-stacks --stack-name "$AUTH_STACK" >/dev/null 2>&1; then change_type=UPDATE; else change_type=CREATE; fi
+
+          if aws cloudformation describe-stacks \
+            --stack-name "$AUTH_STACK" >/dev/null 2>&1; then
+            change_type=UPDATE
+          else
+            change_type=CREATE
+          fi
+
           change_set="${AUTH_STACK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
           aws cloudformation create-change-set \
-            --stack-name "$AUTH_STACK" --change-set-name "$change_set" --change-set-type "$change_type" \
+            --stack-name "$AUTH_STACK" \
+            --change-set-name "$change_set" \
+            --change-set-type "$change_type" \
             --template-body file:///tmp/auth-packaged.yaml \
-            --parameters ParameterKey=Environment,ParameterValue="$ENVIRONMENT" ParameterKey=DBPasswordParameterVersion,ParameterValue="$APP_PASSWORD_VERSION" ParameterKey=JWTSecretParameterVersion,ParameterValue="$JWT_SECRET_VERSION" \
+            --parameters \
+              ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
+              ParameterKey=DBPasswordParameterVersion,ParameterValue="$APP_PASSWORD_VERSION" \
+              ParameterKey=JWTSecretParameterVersion,ParameterValue="$JWT_SECRET_VERSION" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
             --description "GitHub Actions run ${GITHUB_RUN_ID}"
-          if ! aws cloudformation wait change-set-create-complete --stack-name "$AUTH_STACK" --change-set-name "$change_set"; then
-            reason=$(aws cloudformation describe-change-set --stack-name "$AUTH_STACK" --change-set-name "$change_set" --query StatusReason --output text 2>/dev/null || true)
-            if [[ "$reason" == *"didn't contain changes"* ]] || [[ "$reason" == *"No updates are to be performed"* ]]; then
-              echo "Authentication stack is already up to date. No deployment is required."
-              aws cloudformation delete-change-set --stack-name "$AUTH_STACK" --change-set-name "$change_set" || true
+
+          if ! aws cloudformation wait change-set-create-complete \
+            --stack-name "$AUTH_STACK" \
+            --change-set-name "$change_set"; then
+
+            reason=$(aws cloudformation describe-change-set \
+              --stack-name "$AUTH_STACK" \
+              --change-set-name "$change_set" \
+              --query StatusReason \
+              --output text 2>/dev/null || true)
+
+            if [[ "$reason" == *"didn't contain changes"* ]] || \
+               [[ "$reason" == *"No updates are to be performed"* ]]; then
+
+              echo "Authentication stack is already up to date."
+
+              aws cloudformation delete-change-set \
+                --stack-name "$AUTH_STACK" \
+                --change-set-name "$change_set" || true
+
               exit 0
             fi
+
             echo "::error::Authentication Change Set creation failed: $reason"
             exit 1
           fi
-          aws cloudformation describe-change-set --stack-name "$AUTH_STACK" --change-set-name "$change_set" --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' --output table
-          aws cloudformation execute-change-set --stack-name "$AUTH_STACK" --change-set-name "$change_set"
-          if [[ "$change_type" == CREATE ]]; then aws cloudformation wait stack-create-complete --stack-name "$AUTH_STACK"; else aws cloudformation wait stack-update-complete --stack-name "$AUTH_STACK"; fi
+
+          aws cloudformation describe-change-set \
+            --stack-name "$AUTH_STACK" \
+            --change-set-name "$change_set" \
+            --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' \
+            --output table
+
+          aws cloudformation execute-change-set \
+            --stack-name "$AUTH_STACK" \
+            --change-set-name "$change_set"
+
+          if [[ "$change_type" == CREATE ]]; then
+            aws cloudformation wait stack-create-complete \
+              --stack-name "$AUTH_STACK"
+          else
+            aws cloudformation wait stack-update-complete \
+              --stack-name "$AUTH_STACK"
+          fi
+
+  # ============================================================
+  # 7. INITIALIZE DATABASE SCHEMA
+  # ============================================================
 
   initialize_database_schema:
     name: Initialize RDS schema
@@ -454,60 +722,98 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: development
+
     permissions:
       contents: read
       id-token: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
+
       - name: Wait for RDS and verify schema initializer
         shell: bash
         run: |
           set -euo pipefail
+
           DB_INSTANCE="medislot-${ENVIRONMENT}-mysql"
           SCHEMA_FUNCTION="medislot-${ENVIRONMENT}-schema-init"
-          aws rds wait db-instance-available --db-instance-identifier "$DB_INSTANCE"
-          aws lambda get-function --function-name "$SCHEMA_FUNCTION" >/dev/null
+
+          aws rds wait db-instance-available \
+            --db-instance-identifier "$DB_INSTANCE"
+
+          aws lambda get-function \
+            --function-name "$SCHEMA_FUNCTION" >/dev/null
+
           echo "RDS is available; schema initializer is deployed."
 
       - name: Initialize database schema
         shell: bash
         run: |
           set -euo pipefail
+
           FUNCTION_NAME="medislot-${ENVIRONMENT}-schema-init"
+
           aws lambda invoke \
             --function-name "$FUNCTION_NAME" \
             --invocation-type RequestResponse \
             --cli-binary-format raw-in-base64-out \
             --payload '{"action":"initialize"}' \
-            /tmp/schema-init-response.json > /tmp/schema-init-metadata.json
+            /tmp/schema-init-response.json \
+            > /tmp/schema-init-metadata.json
+
           cat /tmp/schema-init-metadata.json
           cat /tmp/schema-init-response.json
+
           python - <<'PY'
           import json
           from pathlib import Path
-          metadata = json.loads(Path("/tmp/schema-init-metadata.json").read_text())
+
+          metadata = json.loads(
+              Path("/tmp/schema-init-metadata.json").read_text()
+          )
+
           if metadata.get("FunctionError"):
-              raise SystemExit("Schema initializer Lambda returned FunctionError.")
-          result = json.loads(Path("/tmp/schema-init-response.json").read_text())
+              raise SystemExit(
+                  "Schema initializer Lambda returned FunctionError."
+              )
+
+          result = json.loads(
+              Path("/tmp/schema-init-response.json").read_text()
+          )
+
           if result.get("statusCode") != 200:
-              raise SystemExit(f"Schema initialization failed: {result}")
+              raise SystemExit(
+                  f"Schema initialization failed: {result}"
+              )
+
           body = result.get("body", {})
+
           if isinstance(body, str):
               try:
                   body = json.loads(body)
               except json.JSONDecodeError:
                   pass
-          if isinstance(body, dict) and "status" in body and body["status"] not in ("ok", "success"):
-              raise SystemExit(f"Schema initialization failed: {body}")
+
+          if isinstance(body, dict) and "status" in body:
+              if body["status"] not in ("ok", "success"):
+                  raise SystemExit(
+                      f"Schema initialization failed: {body}"
+                  )
+
           print("Database schema initialization succeeded.")
           PY
+
+  # ============================================================
+  # 8. API STACK
+  # ============================================================
 
   deploy_api:
     name: Deploy API Stack
@@ -515,22 +821,27 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: development
+
     permissions:
       contents: read
       id-token: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
       - name: Set up Python 3.12 for Lambda packaging
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
+
       - name: Build and validate API Lambda ZIP, upload with unique S3 key
         shell: bash
         env:
@@ -538,97 +849,186 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Build a minimal, conventional ZIP with app.py at the archive root.
           test -s src/api/app.py
           grep -q '^def lambda_handler(' src/api/app.py
+
           rm -rf src/api/__pycache__ /tmp/app-router-package
-          find src/api -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+
+          find src/api -type f \
+            \( -name '*.pyc' -o -name '*.pyo' \) -delete
+
           rm -f /tmp/app-router.zip /tmp/app-router-verified.zip
+
           mkdir -p /tmp/app-router-package
-          python -m pip install --disable-pip-version-check --no-compile --target /tmp/app-router-package -r src/api/requirements.txt
+
+          python -m pip install \
+            --disable-pip-version-check \
+            --no-compile \
+            --target /tmp/app-router-package \
+            -r src/api/requirements.txt
+
           cp src/api/app.py /tmp/app-router-package/app.py
 
-          # availability_rules.py is bundled when it exists next to app.py, or
-          # (if app.py imports it) from the materializer folder where it lives.
           RULES_SRC=""
+
           if [[ -f src/api/availability_rules.py ]]; then
             RULES_SRC="src/api/availability_rules.py"
-          elif [[ -f src/slots/materializer/availability_rules.py ]] && grep -q 'availability_rules' src/api/app.py; then
+          elif [[ -f src/slots/materializer/availability_rules.py ]] && \
+               grep -q 'availability_rules' src/api/app.py; then
             RULES_SRC="src/slots/materializer/availability_rules.py"
           fi
+
           if [[ -n "$RULES_SRC" ]]; then
             echo "Bundling $RULES_SRC"
             cp "$RULES_SRC" /tmp/app-router-package/availability_rules.py
           fi
-          (cd /tmp/app-router-package && zip -X -q -r /tmp/app-router.zip .)
 
-          # Validate the ZIP locally and ensure Lambda's handler module is at its root.
+          (
+            cd /tmp/app-router-package
+            zip -X -q -r /tmp/app-router.zip .
+          )
+
           unzip -tq /tmp/app-router.zip
           unzip -Z1 /tmp/app-router.zip | grep -qx 'app.py'
+
           if [[ -n "$RULES_SRC" ]]; then
             unzip -Z1 /tmp/app-router.zip | grep -qx 'availability_rules.py'
           fi
 
-          # Use a unique object key per workflow run so no stale artifact can be reused.
           ARTIFACT_KEY="medislot/api/${GITHUB_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/app-router.zip"
-          echo "Uploading API artifact to s3://${ARTIFACT_BUCKET}/${ARTIFACT_KEY}"
-          aws s3 cp /tmp/app-router.zip "s3://${ARTIFACT_BUCKET}/${ARTIFACT_KEY}" \
-            --region "$AWS_REGION" --content-type application/zip --only-show-errors
 
-          # Download the exact S3 object that CloudFormation will use, and test it again.
-          aws s3 cp "s3://${ARTIFACT_BUCKET}/${ARTIFACT_KEY}" /tmp/app-router-verified.zip \
-            --region "$AWS_REGION" --only-show-errors
+          echo "Uploading API artifact to s3://${ARTIFACT_BUCKET}/${ARTIFACT_KEY}"
+
+          aws s3 cp /tmp/app-router.zip \
+            "s3://${ARTIFACT_BUCKET}/${ARTIFACT_KEY}" \
+            --region "$AWS_REGION" \
+            --content-type application/zip \
+            --only-show-errors
+
+          aws s3 cp \
+            "s3://${ARTIFACT_BUCKET}/${ARTIFACT_KEY}" \
+            /tmp/app-router-verified.zip \
+            --region "$AWS_REGION" \
+            --only-show-errors
+
           unzip -tq /tmp/app-router-verified.zip
+
           unzip -Z1 /tmp/app-router-verified.zip | grep -qx 'app.py'
+
           if [[ -n "$RULES_SRC" ]]; then
             unzip -Z1 /tmp/app-router-verified.zip | grep -qx 'availability_rules.py'
           fi
+
           cmp /tmp/app-router.zip /tmp/app-router-verified.zip
 
-          # Give CloudFormation the exact verified S3 ZIP URI.
           export ARTIFACT_KEY
+
           python - <<'PYCODE'
           import os
           from pathlib import Path
 
           template_path = Path("cloudformation/api-stack.yaml")
           template = template_path.read_text(encoding="utf-8")
+
           expected = "      CodeUri: ../src/api/"
+
           if template.count(expected) != 1:
-              raise SystemExit("Expected exactly one AppRouterFunction CodeUri: ../src/api/ in api-stack.yaml")
+              raise SystemExit(
+                  "Expected exactly one AppRouterFunction CodeUri: ../src/api/ in api-stack.yaml"
+              )
+
           bucket = os.environ["ARTIFACT_BUCKET"]
           key = os.environ["ARTIFACT_KEY"]
-          template = template.replace(expected, f"      CodeUri: s3://{bucket}/{key}", 1)
-          Path("/tmp/api-packaged.yaml").write_text(template, encoding="utf-8")
-          print(f"Prepared /tmp/api-packaged.yaml with verified CodeUri s3://{bucket}/{key}")
+
+          template = template.replace(
+              expected,
+              f"      CodeUri: s3://{bucket}/{key}",
+              1
+          )
+
+          Path("/tmp/api-packaged.yaml").write_text(
+              template,
+              encoding="utf-8"
+          )
+
+          print(
+              f"Prepared /tmp/api-packaged.yaml with verified CodeUri s3://{bucket}/{key}"
+          )
           PYCODE
+
       - name: Deploy API stack using Change Set
         shell: bash
         run: |
           set -euo pipefail
+
           APP_STACK="medislot-api-${ENVIRONMENT}"
-          if aws cloudformation describe-stacks --stack-name "$APP_STACK" >/dev/null 2>&1; then change_type=UPDATE; else change_type=CREATE; fi
+
+          if aws cloudformation describe-stacks \
+            --stack-name "$APP_STACK" >/dev/null 2>&1; then
+            change_type=UPDATE
+          else
+            change_type=CREATE
+          fi
+
           change_set="${APP_STACK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
           aws cloudformation create-change-set \
-            --stack-name "$APP_STACK" --change-set-name "$change_set" --change-set-type "$change_type" \
+            --stack-name "$APP_STACK" \
+            --change-set-name "$change_set" \
+            --change-set-type "$change_type" \
             --template-body file:///tmp/api-packaged.yaml \
-            --parameters ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
+            --parameters \
+              ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
             --description "GitHub Actions run ${GITHUB_RUN_ID}"
-          if ! aws cloudformation wait change-set-create-complete --stack-name "$APP_STACK" --change-set-name "$change_set"; then
-            reason=$(aws cloudformation describe-change-set --stack-name "$APP_STACK" --change-set-name "$change_set" --query StatusReason --output text 2>/dev/null || true)
-            if [[ "$reason" == *"didn't contain changes"* ]] || [[ "$reason" == *"No updates are to be performed"* ]]; then
-              echo "API stack is already up to date. No deployment is required."
-              aws cloudformation delete-change-set --stack-name "$APP_STACK" --change-set-name "$change_set" || true
+
+          if ! aws cloudformation wait change-set-create-complete \
+            --stack-name "$APP_STACK" \
+            --change-set-name "$change_set"; then
+
+            reason=$(aws cloudformation describe-change-set \
+              --stack-name "$APP_STACK" \
+              --change-set-name "$change_set" \
+              --query StatusReason \
+              --output text 2>/dev/null || true)
+
+            if [[ "$reason" == *"didn't contain changes"* ]] || \
+               [[ "$reason" == *"No updates are to be performed"* ]]; then
+
+              echo "API stack is already up to date."
+
+              aws cloudformation delete-change-set \
+                --stack-name "$APP_STACK" \
+                --change-set-name "$change_set" || true
+
               exit 0
             fi
+
             echo "::error::API Change Set creation failed: $reason"
             exit 1
           fi
-          aws cloudformation describe-change-set --stack-name "$APP_STACK" --change-set-name "$change_set" --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' --output table
-          aws cloudformation execute-change-set --stack-name "$APP_STACK" --change-set-name "$change_set"
-          if [[ "$change_type" == CREATE ]]; then aws cloudformation wait stack-create-complete --stack-name "$APP_STACK"; else aws cloudformation wait stack-update-complete --stack-name "$APP_STACK"; fi
 
+          aws cloudformation describe-change-set \
+            --stack-name "$APP_STACK" \
+            --change-set-name "$change_set" \
+            --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' \
+            --output table
+
+          aws cloudformation execute-change-set \
+            --stack-name "$APP_STACK" \
+            --change-set-name "$change_set"
+
+          if [[ "$change_type" == CREATE ]]; then
+            aws cloudformation wait stack-create-complete \
+              --stack-name "$APP_STACK"
+          else
+            aws cloudformation wait stack-update-complete \
+              --stack-name "$APP_STACK"
+          fi
+
+  # ============================================================
+  # 9. DOCTOR DASHBOARD EC2
+  # ============================================================
 
   deploy_doctor_dashboard:
     name: Deploy Doctor Dashboard EC2
@@ -636,9 +1036,11 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: development
+
     permissions:
       contents: read
       id-token: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -654,9 +1056,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           aws cloudformation describe-stacks \
             --stack-name "$NETWORK_STACK" \
             --region "$AWS_REGION" >/dev/null
+
           aws cloudformation list-exports \
             --region "$AWS_REGION" \
             --query "Exports[?Name=='medislot-${ENVIRONMENT}-VpcId' || Name=='medislot-${ENVIRONMENT}-PublicSubnetA'].[Name,Value]" \
@@ -670,6 +1074,7 @@ jobs:
           set -euo pipefail
 
           APP_STACK="medislot-api-${ENVIRONMENT}"
+
           API_BASE_URL=$(aws cloudformation describe-stacks \
             --stack-name "$APP_STACK" \
             --region "$AWS_REGION" \
@@ -680,34 +1085,56 @@ jobs:
             echo "::error::ApplicationApiBaseUrl output was not found in $APP_STACK."
             exit 1
           fi
+
           if [[ -z "${ARTIFACT_BUCKET:-}" || "$ARTIFACT_BUCKET" == "None" ]]; then
             echo "::error::Deployment artifact bucket output is missing."
             exit 1
           fi
 
-          # Build the dashboard ZIP from the checked-in application folder.
+          # Verify the dashboard application files.
           test -s doctor-dashboard-app/app.py
           test -s doctor-dashboard-app/requirements.txt
           test -s doctor-dashboard-app/templates/login.html
           test -s doctor-dashboard-app/templates/doctor_dashboard.html
-          (cd doctor-dashboard-app && zip -qr ../doctor-dashboard-app.zip .)
+
+          # Build the dashboard ZIP.
+          rm -f doctor-dashboard-app.zip
+
+          (
+            cd doctor-dashboard-app
+            zip -qr ../doctor-dashboard-app.zip .
+          )
 
           ARTIFACT_PREFIX="medislot/doctor-dashboard/${GITHUB_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
           APP_KEY="${ARTIFACT_PREFIX}/doctor-dashboard-app.zip"
+
           TEMPLATE_KEY="medislot/cloudformation/doctor-dashboard/${GITHUB_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/doctor-dashboard-ec2.yaml"
 
-          aws s3 cp doctor-dashboard-app.zip "s3://${ARTIFACT_BUCKET}/${APP_KEY}" \
-            --region "$AWS_REGION" --content-type "application/zip" --only-show-errors
-          aws s3 cp cloudformation/doctor-dashboard-ec2.yaml "s3://${ARTIFACT_BUCKET}/${TEMPLATE_KEY}" \
-            --region "$AWS_REGION" --content-type "text/yaml" --only-show-errors
+          # Upload application package.
+          aws s3 cp doctor-dashboard-app.zip \
+            "s3://${ARTIFACT_BUCKET}/${APP_KEY}" \
+            --region "$AWS_REGION" \
+            --content-type "application/zip" \
+            --only-show-errors
+
+          # Upload CloudFormation template.
+          aws s3 cp cloudformation/doctor-dashboard-ec2.yaml \
+            "s3://${ARTIFACT_BUCKET}/${TEMPLATE_KEY}" \
+            --region "$AWS_REGION" \
+            --content-type "text/yaml" \
+            --only-show-errors
 
           TEMPLATE_URL="https://${ARTIFACT_BUCKET}.s3.${AWS_REGION}.amazonaws.com/${TEMPLATE_KEY}"
 
-          if aws cloudformation describe-stacks --stack-name "$DASHBOARD_STACK" --region "$AWS_REGION" >/dev/null 2>&1; then
+          if aws cloudformation describe-stacks \
+            --stack-name "$DASHBOARD_STACK" \
+            --region "$AWS_REGION" >/dev/null 2>&1; then
             change_type=UPDATE
           else
             change_type=CREATE
           fi
+
           change_set="${DASHBOARD_STACK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
           aws cloudformation create-change-set \
@@ -727,27 +1154,61 @@ jobs:
             --region "$AWS_REGION"
 
           if ! aws cloudformation wait change-set-create-complete \
-            --stack-name "$DASHBOARD_STACK" --change-set-name "$change_set" --region "$AWS_REGION"; then
-            reason=$(aws cloudformation describe-change-set --stack-name "$DASHBOARD_STACK" --change-set-name "$change_set" --query StatusReason --output text 2>/dev/null || true)
-            if [[ "$reason" == *"didn't contain changes"* ]] || [[ "$reason" == *"No updates are to be performed"* ]]; then
+            --stack-name "$DASHBOARD_STACK" \
+            --change-set-name "$change_set" \
+            --region "$AWS_REGION"; then
+
+            reason=$(aws cloudformation describe-change-set \
+              --stack-name "$DASHBOARD_STACK" \
+              --change-set-name "$change_set" \
+              --query StatusReason \
+              --output text 2>/dev/null || true)
+
+            if [[ "$reason" == *"didn't contain changes"* ]] || \
+               [[ "$reason" == *"No updates are to be performed"* ]]; then
+
               echo "Dashboard stack is already up to date."
-              aws cloudformation delete-change-set --stack-name "$DASHBOARD_STACK" --change-set-name "$change_set" --region "$AWS_REGION" || true
+
+              aws cloudformation delete-change-set \
+                --stack-name "$DASHBOARD_STACK" \
+                --change-set-name "$change_set" \
+                --region "$AWS_REGION" || true
+
               exit 0
             fi
+
             echo "::error::Dashboard Change Set creation failed: $reason"
             exit 1
           fi
 
-          aws cloudformation describe-change-set --stack-name "$DASHBOARD_STACK" --change-set-name "$change_set" --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' --output table
-          aws cloudformation execute-change-set --stack-name "$DASHBOARD_STACK" --change-set-name "$change_set" --region "$AWS_REGION"
+          aws cloudformation describe-change-set \
+            --stack-name "$DASHBOARD_STACK" \
+            --change-set-name "$change_set" \
+            --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' \
+            --output table
+
+          aws cloudformation execute-change-set \
+            --stack-name "$DASHBOARD_STACK" \
+            --change-set-name "$change_set" \
+            --region "$AWS_REGION"
+
           if [[ "$change_type" == CREATE ]]; then
-            aws cloudformation wait stack-create-complete --stack-name "$DASHBOARD_STACK" --region "$AWS_REGION"
+            aws cloudformation wait stack-create-complete \
+              --stack-name "$DASHBOARD_STACK" \
+              --region "$AWS_REGION"
           else
-            aws cloudformation wait stack-update-complete --stack-name "$DASHBOARD_STACK" --region "$AWS_REGION"
+            aws cloudformation wait stack-update-complete \
+              --stack-name "$DASHBOARD_STACK" \
+              --region "$AWS_REGION"
           fi
+
+  # ============================================================
+  # 10. SHOW STACK OUTPUTS
+  # ============================================================
 
   show_outputs:
     name: Show Deployed Stack Outputs
+
     needs:
       - deploy_network
       - deploy_data
@@ -755,12 +1216,16 @@ jobs:
       - deploy_auth
       - deploy_api
       - deploy_doctor_dashboard
+
     if: success() && github.event_name != 'pull_request'
+
     runs-on: ubuntu-latest
     environment: development
+
     permissions:
       contents: read
       id-token: write
+
     steps:
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -768,18 +1233,22 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
+
       - name: Show deployed stack outputs
         shell: bash
         run: |
           set -euo pipefail
+
           for stack in \
             "$NETWORK_STACK" \
             "$DATA_STACK" \
             "$IAM_STACK" \
-                        "$AUTH_STACK" \
+            "$AUTH_STACK" \
             "medislot-api-${ENVIRONMENT}" \
             "$DASHBOARD_STACK"; do
+
             echo "Outputs for $stack"
+
             aws cloudformation describe-stacks \
               --stack-name "$stack" \
               --query 'Stacks[0].Outputs[*].[OutputKey,OutputValue]' \
