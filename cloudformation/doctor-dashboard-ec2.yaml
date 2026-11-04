@@ -32,9 +32,13 @@ Parameters:
       Use HTTPS and authenticated application sessions before production use.
 
 Resources:
-  #checkov:skip=CKV_AWS_260: Public HTTP on port 80 is an explicit requirement for this dashboard deployment. Application authentication must be enforced by the dashboard; HTTPS should be added before production.
   DoctorDashboardSecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_260
+            comment: "Public HTTP on port 80 is an explicit requirement for this dashboard deployment. Application authentication must be enforced by the dashboard; HTTPS should be added before production."
     Properties:
       GroupDescription: Allow public HTTP access to the MediSlot Doctor Dashboard.
       VpcId:
@@ -87,9 +91,13 @@ Resources:
       Roles:
         - !Ref DoctorDashboardRole
 
-  #checkov:skip=CKV_AWS_88: A public IPv4 address is intentionally required because all doctors must reach this EC2-hosted dashboard directly over the internet. The instance is placed in the existing public subnet and exposes only HTTP port 80 through its security group; Gunicorn is bound to loopback.
   DoctorDashboardInstance:
     Type: AWS::EC2::Instance
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_88
+            comment: "A public IPv4 address is intentionally required because all doctors must reach this EC2-hosted dashboard directly over the internet. The instance sits in the existing public subnet and exposes only HTTP port 80 through its security group; Gunicorn is bound to loopback."
     Properties:
       ImageId: "{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id}}"
       InstanceType: !Ref InstanceType
