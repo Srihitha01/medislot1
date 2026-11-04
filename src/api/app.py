@@ -7,13 +7,7 @@ patient waitlists and related API operations.
 from __future__ import annotations
 
 import base64
-import json
-import logging
-import os
-import re
-import time
-
-import base64
+import hashlib
 import json
 import logging
 import os
@@ -203,6 +197,16 @@ def _path(event: dict[str, Any]) -> str:
     return path
 
 
+def _header(event: dict[str, Any], name: str):
+    """Read an HTTP header case-insensitively from API Gateway events."""
+    headers = event.get("headers") or {}
+    wanted = name.lower()
+    for key, value in headers.items():
+        if str(key).lower() == wanted and value is not None:
+            return str(value).strip()
+    return None
+
+
 def _query(event: dict[str, Any]):
     params = event.get("queryStringParameters") or {}
 
@@ -383,106 +387,59 @@ def _list_slots(event):
 
 def _create_slot(event, user_id, role):
     if role != "doctor":
-        return _response(
-            403,
-            {"message": "Only doctors can create slots"},
-        )
+        return _response(403, {"message": "Only doctors can create slots"})
 
     data = _body(event)
-
     try:
         start_utc = _iso_utc(data.get("startUtc"))
-
-        duration = data.get("durationMinutes", 15)
-        capacity = data.get("capacity", 1)
-
-        if (
-            isinstance(duration, bool)
-            or not isinstance(duration, int)
-            or not 5 <= duration <= 180
-        ):
-            raise ValueError(
-                "durationMinutes must be an integer between 5 and 180"
-            )
-
-        if (
-            isinstance(capacity, bool)
-            or not isinstance(capacity, int)
-            or not 1 <= capacity <= 50
-        ):
-            raise ValueError(
-                "capacity must be an integer between 1 and 50"
-            )
-
-        if not data.get("consultationTypeId"):
-            raise ValueError("consultationTypeId is required")
-
-        raw_id = str(data["consultationTypeId"]).strip()
-
-        consultation_id = (
-            "CUSTOM"
-            if raw_id.upper() == "CUSTOM"
-            else str(int(raw_id))
-        )
-
+        raw_id = data.get("consultationTypeId")
+        if isinstance(raw_id, bool) or raw_id is None:
+            raise ValueError("consultationTypeId must be a positive integer")
+        raw_id = str(raw_id).strip()
+        if not re.fullmatch(r"[1-9][0-9]{0,19}", raw_id):
+            raise ValueError("consultationTypeId must be a positive integer; CUSTOM is not supported")
+        consultation_id = int(raw_id)
     except (ValueError, TypeError) as exc:
         return _response(400, {"message": str(exc)})
 
-    if consultation_id != "CUSTOM":
-        conn = _db_connection()
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT duration_min, capacity
+                FROM consultation_types
+                WHERE consultation_type_id = %s
+                  AND doctor_user_id = %s
+                  AND is_active = 1
+                """,
+                (consultation_id, int(user_id)),
+            )
+            consultation = cur.fetchone()
+        if not consultation:
+            return _response(400, {
+                "message": "Consultation type does not belong to this doctor or is inactive"
+            })
+        duration = int(consultation["duration_min"])
+        capacity = int(consultation["capacity"])
+    finally:
+        conn.close()
 
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT duration_min, capacity
-                    FROM consultation_types
-                    WHERE consultation_type_id = %s
-                      AND doctor_user_id = %s
-                      AND is_active = 1
-                    """,
-                    (consultation_id, user_id),
-                )
-
-                consultation = cur.fetchone()
-
-            if not consultation:
-                return _response(
-                    400,
-                    {
-                        "message": (
-                            "Consultation type does not belong to "
-                            "this doctor or is inactive"
-                        )
-                    },
-                )
-
-            duration = int(consultation["duration_min"])
-            capacity = int(consultation["capacity"])
-
-        finally:
-            conn.close()
-
-    start_dt = datetime.fromisoformat(
-        start_utc.replace("Z", "+00:00")
-    )
-
-    end_utc = (
-        start_dt + timedelta(minutes=duration)
-    ).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-    slot_id = (
-        f"{user_id}#{consultation_id}#{start_utc}"
-    )
-
+    start_dt = datetime.fromisoformat(start_utc.replace("Z", "+00:00"))
+    end_dt = start_dt + timedelta(minutes=duration)
+    end_utc = end_dt.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    local_date = start_dt.astimezone(IST).date().isoformat()
+    slot_id = f"{user_id}#{consultation_id}#{start_utc}"
     now = int(datetime.now(timezone.utc).timestamp())
 
     item = {
         "slotId": slot_id,
         "doctorId": str(user_id),
-        "consultationTypeId": consultation_id,
+        "consultationTypeId": str(consultation_id),
         "startUtc": start_utc,
         "endUtc": end_utc,
+        "localDate": local_date,
+        "timezone": "Asia/Kolkata",
         "durationMinutes": duration,
         "capacity": capacity,
         "bookedCount": 0,
@@ -498,52 +455,14 @@ def _create_slot(event, user_id, role):
             Item=item,
             ConditionExpression=Attr("slotId").not_exists(),
         )
-
     except ClientError as exc:
-        if (
-            exc.response.get("Error", {}).get("Code")
-            == "ConditionalCheckFailedException"
-        ):
-            return _response(
-                409,
-                {
-                    "message": (
-                        "A slot already exists for this doctor, "
-                        "consultation type and start time"
-                    )
-                },
-            )
-
+        code = exc.response.get("Error", {}).get("Code")
+        if code == "ConditionalCheckFailedException":
+            return _response(409, {"message": "A slot already exists for this consultation type and start time"})
         logger.exception("Slot creation failed")
+        return _response(500, {"message": "Unable to create slot"})
 
-        return _response(
-            500,
-            {"message": "Unable to create slot"},
-        )
-
-    except BotoCoreError:
-        logger.exception("Slot creation failed")
-
-        return _response(
-            500,
-            {"message": "Unable to create slot"},
-        )
-
-    return _response(201, {"slot": item})
-
-
-def _get_slot(slot_id: str):
-    result = _table("SLOTS_TABLE").get_item(
-        Key={"slotId": slot_id},
-        ConsistentRead=True,
-    )
-
-    item = result.get("Item")
-
-    if not item:
-        return _response(404, {"message": "Slot not found"})
-
-    return _response(200, {"slot": item})
+    return _response(201, {"message": "Slot created successfully", "item": item})
 
 
 # ---------------------------------------------------------
@@ -2399,88 +2318,88 @@ def _doctor_appointments(user_id, event):
 # ---------------------------------------------------------
 
 def _book_appointment(event, user_id, role):
+    """Book a slot with DynamoDB capacity protection and request idempotency.
+
+    The idempotency table's partition key is `idemKey`; TTL is `expiresAt`.
+    A client must send the same Idempotency-Key when retrying the same request.
+    """
     if role != "patient":
-        return _response(
-            403,
-            {"message": "Only patients can book appointments"},
-        )
+        return _response(403, {"message": "Only patients can book appointments"})
 
     data = _body(event)
     slot_id = data.get("slotId")
-
     if not isinstance(slot_id, str) or not slot_id.strip():
-        return _response(
-            400,
-            {"message": "slotId is required"},
-        )
-
+        return _response(400, {"message": "slotId is required"})
     slot_id = slot_id.strip()
-    slots = _table("SLOTS_TABLE")
 
-    now = (
-        datetime.now(timezone.utc)
-        .isoformat(timespec="seconds")
-        .replace("+00:00", "Z")
-    )
+    client_key = _header(event, "Idempotency-Key")
+    if not client_key or len(client_key) > 200:
+        return _response(400, {"message": "A valid Idempotency-Key header (1-200 characters) is required"})
+
+    patient_id = str(user_id)
+    request_hash = hashlib.sha256(
+        json.dumps({"patientId": patient_id, "slotId": slot_id}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    idem_key = hashlib.sha256(f"{patient_id}:{client_key}".encode("utf-8")).hexdigest()
+    idem_table = _table("IDEMPOTENCY_TABLE")
+    now_epoch = int(datetime.now(timezone.utc).timestamp())
+    expires_at = now_epoch + 24 * 60 * 60
+
+    try:
+        idem_table.put_item(
+            Item={
+                "idemKey": idem_key,
+                "patientId": patient_id,
+                "requestHash": request_hash,
+                "status": "IN_PROGRESS",
+                "createdAt": now_epoch,
+                "expiresAt": expires_at,
+            },
+            ConditionExpression=Attr("idemKey").not_exists(),
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            logger.exception("Unable to create idempotency record")
+            return _response(500, {"message": "Unable to start booking request"})
+        try:
+            existing = idem_table.get_item(Key={"idemKey": idem_key}, ConsistentRead=True).get("Item")
+        except Exception:
+            logger.exception("Unable to read existing idempotency record")
+            return _response(500, {"message": "Unable to verify booking request"})
+        if not existing:
+            return _response(409, {"message": "Booking request is being processed; retry with the same Idempotency-Key"})
+        if existing.get("patientId") != patient_id or existing.get("requestHash") != request_hash:
+            return _response(409, {"message": "Idempotency-Key was already used for a different booking request"})
+        if existing.get("status") == "COMPLETED":
+            saved = existing.get("response") or {}
+            return _response(int(saved.get("statusCode", 201)), saved.get("body", {}))
+        return _response(409, {"message": "This booking request is still being processed; retry with the same Idempotency-Key"})
+
+    slots = _table("SLOTS_TABLE")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    reserved = False
+    committed = False
+    conn = None
 
     try:
         updated = slots.update_item(
             Key={"slotId": slot_id},
-            UpdateExpression=(
-                "SET bookedCount = bookedCount + :one, "
-                "updatedAt = :now"
-            ),
+            UpdateExpression="SET bookedCount = bookedCount + :one, updatedAt = :now",
             ConditionExpression=(
-                "attribute_exists(slotId) "
-                "AND #st = :open "
-                "AND bookedCount < capacity "
-                "AND startUtc > :now"
+                "attribute_exists(slotId) AND #st = :open "
+                "AND bookedCount < capacity AND startUtc > :now"
             ),
-            ExpressionAttributeNames={
-                "#st": "status",
-            },
-            ExpressionAttributeValues={
-                ":one": 1,
-                ":now": now,
-                ":open": "OPEN",
-            },
+            ExpressionAttributeNames={"#st": "status"},
+            ExpressionAttributeValues={":one": 1, ":now": now, ":open": "OPEN"},
             ReturnValues="ALL_NEW",
         )["Attributes"]
+        reserved = True
 
-    except ClientError as exc:
-        if (
-            exc.response.get("Error", {}).get("Code")
-            == "ConditionalCheckFailedException"
-        ):
-            return _response(
-                409,
-                {
-                    "message": (
-                        "Slot is unavailable, expired or fully booked"
-                    )
-                },
-            )
+        consultation_id = str(updated.get("consultationTypeId", ""))
+        if not re.fullmatch(r"[1-9][0-9]{0,19}", consultation_id):
+            raise ValueError("Slot contains an invalid numeric consultationTypeId")
 
-        logger.exception("Slot capacity update failed")
-
-        return _response(
-            500,
-            {"message": "Unable to reserve slot"},
-        )
-
-    except BotoCoreError:
-        logger.exception("Slot capacity update failed")
-
-        return _response(
-            500,
-            {"message": "Unable to reserve slot"},
-        )
-
-    conn = None
-
-    try:
         conn = _db_connection()
-
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -2490,114 +2409,128 @@ def _book_appointment(event, user_id, role):
                   AND doctor_user_id = %s
                   AND is_active = 1
                 """,
-                (
-                    int(updated["consultationTypeId"]),
-                    str(updated["doctorId"]),
-                ),
+                (int(consultation_id), int(updated["doctorId"])),
             )
-
             consultation = cur.fetchone()
-
             if not consultation:
-                raise ValueError(
-                    "Consultation type is no longer active"
-                )
+                raise ValueError("Consultation type is no longer active")
 
-            start = datetime.fromisoformat(
-                updated["startUtc"].replace("Z", "+00:00")
-            ).replace(tzinfo=None)
-
-            end = datetime.fromisoformat(
-                updated["endUtc"].replace("Z", "+00:00")
-            ).replace(tzinfo=None)
-
+            start = datetime.fromisoformat(updated["startUtc"].replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
+            end = datetime.fromisoformat(updated["endUtc"].replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
             cur.execute(
                 """
                 INSERT INTO appointments (
-                    patient_user_id,
-                    doctor_user_id,
-                    consultation_type_id,
-                    slot_id,
-                    slot_start_utc,
-                    slot_end_utc,
-                    status,
-                    active_flag,
-                    fee_amount
-                )
-                VALUES (
-                    %s, %s, %s, %s, %s, %s, 'booked', 1, %s
-                )
+                    patient_user_id, doctor_user_id, consultation_type_id,
+                    slot_id, slot_start_utc, slot_end_utc, status,
+                    active_flag, fee_amount
+                ) VALUES (%s, %s, %s, %s, %s, %s, 'booked', 1, %s)
                 """,
                 (
-                    int(user_id),
-                    int(updated["doctorId"]),
-                    int(updated["consultationTypeId"]),
-                    slot_id,
-                    start,
-                    end,
+                    int(patient_id), int(updated["doctorId"]),
+                    int(consultation_id), slot_id, start, end,
                     consultation["fee_amount"],
                 ),
             )
-
             appointment_id = int(cur.lastrowid)
-
         conn.commit()
+        committed = True
 
-        return _response(
-            201,
-            {
+        response_body = {
+            "message": "Appointment booked successfully",
+            "appointmentId": appointment_id,
+            "slotId": slot_id,
+        }
+        try:
+            idem_table.update_item(
+                Key={"idemKey": idem_key},
+                UpdateExpression="SET #s = :completed, #r = :response, completedAt = :completedAt",
+                ConditionExpression="#s = :inProgress",
+                ExpressionAttributeNames={"#s": "status", "#r": "response"},
+                ExpressionAttributeValues={
+                    ":completed": "COMPLETED",
+                    ":inProgress": "IN_PROGRESS",
+                    ":response": {"statusCode": 201, "body": response_body},
+                    ":completedAt": int(datetime.now(timezone.utc).timestamp()),
+                },
+            )
+        except Exception:
+            # SQL has committed: never undo a confirmed appointment because
+            # writing the idempotency response failed. Keep the claim in place
+            # to prevent a duplicate booking and log for reconciliation.
+            logger.exception("Appointment committed but idempotency completion update failed")
+        return _response(201, response_body)
+
+    except ClientError as exc:
+        if committed:
+            logger.exception("Appointment committed; post-commit operation failed")
+            return _response(201, {
                 "message": "Appointment booked successfully",
-                "appointmentId": appointment_id,
                 "slotId": slot_id,
-            },
-        )
-
-    except Exception:
+                "warning": "Booking succeeded; request replay status is being reconciled",
+            })
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException" and not reserved:
+            _delete_idempotency_record(idem_table, idem_key)
+            return _response(409, {"message": "Slot is unavailable, expired or fully booked"})
+        logger.exception("Booking operation failed")
         if conn:
             try:
                 conn.rollback()
             except Exception:
                 pass
-
-        # Release the reserved capacity if SQL persistence failed.
-        try:
-            slots.update_item(
-                Key={"slotId": slot_id},
-                UpdateExpression=(
-                    "SET bookedCount = bookedCount - :one, "
-                    "#st = :open, updatedAt = :now"
-                ),
-                ConditionExpression="bookedCount >= :one",
-                ExpressionAttributeNames={
-                    "#st": "status",
-                },
-                ExpressionAttributeValues={
-                    ":one": 1,
-                    ":now": now,
-                    ":open": "OPEN",
-                },
-            )
-
-        except Exception:
-            logger.exception(
-                "Booking compensation failed; reconcile slot capacity"
-            )
-
+        if reserved:
+            _release_slot_reservation(slots, slot_id, now)
+        _delete_idempotency_record(idem_table, idem_key)
+        return _response(500, {"message": "Appointment could not be confirmed; please retry with a new Idempotency-Key"})
+    except Exception:
+        if committed:
+            logger.exception("Appointment committed; post-commit operation failed")
+            return _response(201, {
+                "message": "Appointment booked successfully",
+                "slotId": slot_id,
+                "warning": "Booking succeeded; request replay status is being reconciled",
+            })
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        if reserved:
+            _release_slot_reservation(slots, slot_id, now)
+        _delete_idempotency_record(idem_table, idem_key)
         logger.exception("Appointment persistence failed")
-
-        return _response(
-            409,
-            {
-                "message": (
-                    "Appointment could not be confirmed; "
-                    "slot reservation was released when possible"
-                )
-            },
-        )
-
+        return _response(409, {"message": "Appointment could not be confirmed; slot reservation was released when possible"})
     finally:
         if conn:
             conn.close()
+
+
+def _release_slot_reservation(slots, slot_id, now):
+    """Best-effort compensation for a reserved slot after SQL failure."""
+    try:
+        slots.update_item(
+            Key={"slotId": slot_id},
+            UpdateExpression="SET bookedCount = bookedCount - :one, updatedAt = :now",
+            ConditionExpression="bookedCount >= :one",
+            ExpressionAttributeValues={":one": 1, ":now": now},
+        )
+    except Exception:
+        logger.exception("Booking compensation failed; reconcile slot capacity")
+
+
+def _delete_idempotency_record(table, idem_key):
+    """Remove an uncompleted idempotency claim so a failed request can retry."""
+    try:
+        table.delete_item(
+            Key={"idemKey": idem_key},
+            ConditionExpression="#s = :inProgress",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":inProgress": "IN_PROGRESS"},
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            logger.exception("Unable to remove failed idempotency record")
+    except Exception:
+        logger.exception("Unable to remove failed idempotency record")
 
 
 # ---------------------------------------------------------

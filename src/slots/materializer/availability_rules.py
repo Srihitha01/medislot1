@@ -59,30 +59,19 @@ def overlaps(a, b):
 
 
 def effective_windows(patterns, exceptions, blackouts, target_date):
-    """Resolve one consultation type for one local calendar date.
-
-    No exception => weekly windows.
-    ADD => append its windows to weekly windows (or OVERRIDE windows).
-    OVERRIDE => replace weekly windows; multiple OVERRIDE rows are all kept.
-    CLOSED => no windows and cannot be mixed with ADD/OVERRIDE.
-    A doctor blackout overrides every consultation type and exception.
-    """
+    """Resolve one consultation type for one local calendar date."""
     day = as_date(target_date)
     blackout_days = {as_date(item) for item in (blackouts or [])}
     if day in blackout_days:
         return []
 
-    rows = [
-        row for row in (exceptions or [])
-        if as_date(row["exception_date"]) == day
-    ]
+    rows = [row for row in (exceptions or []) if as_date(row["exception_date"]) == day]
     kinds = {str(row["exception_type"]).upper() for row in rows}
     unknown = kinds - VALID_TYPES
     if unknown:
         raise ValueError(f"unknown exception type: {sorted(unknown)}")
 
-    closed_rows = [row for row in rows
-                   if str(row["exception_type"]).upper() == "CLOSED"]
+    closed_rows = [row for row in rows if str(row["exception_type"]).upper() == "CLOSED"]
     if closed_rows:
         if len(rows) != 1:
             raise ValueError("CLOSED cannot be combined with other exceptions")
@@ -90,30 +79,18 @@ def effective_windows(patterns, exceptions, blackouts, target_date):
             raise ValueError("CLOSED must not contain times")
         return []
 
-    override_rows = [row for row in rows
-                     if str(row["exception_type"]).upper() == "OVERRIDE"]
-    add_rows = [row for row in rows
-                if str(row["exception_type"]).upper() == "ADD"]
-
+    override_rows = [row for row in rows if str(row["exception_type"]).upper() == "OVERRIDE"]
+    add_rows = [row for row in rows if str(row["exception_type"]).upper() == "ADD"]
     if override_rows:
         base = [(row["start_time"], row["end_time"]) for row in override_rows]
     else:
-        base = [
-            (row["start_time"], row["end_time"])
-            for row in (patterns or [])
-            if int(row["day_of_week"]) == day.isoweekday()
-        ]
-
+        base = [(row["start_time"], row["end_time"]) for row in (patterns or []) if int(row["day_of_week"]) == day.isoweekday()]
     additions = [(row["start_time"], row["end_time"]) for row in add_rows]
     return validate_windows(base + additions, "Effective schedule")
 
 
 def validate_doctor_day(schedules, target_date):
-    """Reject overlaps between different active consultation types for a doctor.
-
-    Each schedule has user_id, consultation_type_id, patterns, exceptions,
-    blackouts and optionally is_active.
-    """
+    """Reject any overlapping active windows for one doctor, including same-type overlaps."""
     day = as_date(target_date)
     intervals = []
     for schedule in schedules:
@@ -122,16 +99,14 @@ def validate_doctor_day(schedules, target_date):
         doctor_id = str(schedule["user_id"])
         consultation_id = int(schedule["consultation_type_id"])
         windows = effective_windows(
-            schedule.get("patterns", []),
-            schedule.get("exceptions", []),
-            schedule.get("blackouts", []),
-            day,
+            schedule.get("patterns", []), schedule.get("exceptions", []),
+            schedule.get("blackouts", []), day,
         )
         for start, end in windows:
             start, end = window(start, end)
             intervals.append((doctor_id, consultation_id, start, end))
 
-    intervals.sort(key=lambda item: (item[0], item[2], item[3]))
+    intervals.sort(key=lambda item: (item[0], item[2], item[3], item[1]))
     for index, current in enumerate(intervals):
         for other in intervals[index + 1:]:
             if other[0] != current[0]:
@@ -140,11 +115,9 @@ def validate_doctor_day(schedules, target_date):
                 continue
             if other[2] >= current[3]:
                 break
-            if current[1] != other[1]:
-                raise ValueError(
-                    f"Consultation types {current[1]} and {other[1]} "
-                    f"overlap on {day.isoformat()}"
-                )
+            raise ValueError(
+                f"Consultation types {current[1]} and {other[1]} overlap on {day.isoformat()}"
+            )
     return True
 
 
