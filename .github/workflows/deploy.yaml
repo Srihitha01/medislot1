@@ -204,10 +204,8 @@ jobs:
                 change_type=CREATE
                 ;;
               ROLLBACK_COMPLETE)
-                echo "Stack $stack is in ROLLBACK_COMPLETE; deleting it before recreating."
-                aws cloudformation delete-stack --stack-name "$stack"
-                aws cloudformation wait stack-delete-complete --stack-name "$stack"
-                change_type=CREATE
+                echo "::error::Stack $stack is in ROLLBACK_COMPLETE. Automatic deletion is disabled to protect existing resources and data. Inspect the stack events and recover it manually before rerunning."
+                exit 1
                 ;;
               *_IN_PROGRESS)
                 echo "::error::Stack $stack is busy ($status). Wait for it to finish and re-run."
@@ -411,10 +409,8 @@ jobs:
                 change_type=CREATE
                 ;;
               ROLLBACK_COMPLETE)
-                echo "Stack $stack is in ROLLBACK_COMPLETE; deleting it before recreating."
-                aws cloudformation delete-stack --stack-name "$stack"
-                aws cloudformation wait stack-delete-complete --stack-name "$stack"
-                change_type=CREATE
+                echo "::error::Stack $stack is in ROLLBACK_COMPLETE. Automatic deletion is disabled to protect existing resources and data. Inspect the stack events and recover it manually before rerunning."
+                exit 1
                 ;;
               *_IN_PROGRESS)
                 echo "::error::Stack $stack is busy ($status). Wait for it to finish and re-run."
@@ -689,10 +685,8 @@ jobs:
                 change_type=CREATE
                 ;;
               ROLLBACK_COMPLETE)
-                echo "Stack $stack is in ROLLBACK_COMPLETE; deleting it before recreating."
-                aws cloudformation delete-stack --stack-name "$stack"
-                aws cloudformation wait stack-delete-complete --stack-name "$stack"
-                change_type=CREATE
+                echo "::error::Stack $stack is in ROLLBACK_COMPLETE. Automatic deletion is disabled to protect existing resources and data. Inspect the stack events and recover it manually before rerunning."
+                exit 1
                 ;;
               *_IN_PROGRESS)
                 echo "::error::Stack $stack is busy ($status). Wait for it to finish and re-run."
@@ -1027,10 +1021,8 @@ jobs:
                 change_type=CREATE
                 ;;
               ROLLBACK_COMPLETE)
-                echo "Stack $stack is in ROLLBACK_COMPLETE; deleting it before recreating."
-                aws cloudformation delete-stack --stack-name "$stack"
-                aws cloudformation wait stack-delete-complete --stack-name "$stack"
-                change_type=CREATE
+                echo "::error::Stack $stack is in ROLLBACK_COMPLETE. Automatic deletion is disabled to protect existing resources and data. Inspect the stack events and recover it manually before rerunning."
+                exit 1
                 ;;
               *_IN_PROGRESS)
                 echo "::error::Stack $stack is busy ($status). Wait for it to finish and re-run."
@@ -1134,16 +1126,16 @@ jobs:
           for export_suffix in VpcId PublicSubnetA; do
             export_name="medislot-${ENVIRONMENT}-${export_suffix}"
 
-            value=$(aws cloudformation describe-stacks \
-              --stack-name "$NETWORK_STACK" \
-              --query "Stacks[0].Outputs[?ExportName=='${export_name}'].OutputValue | [0]" \
+            value=$(aws cloudformation list-exports \
+              --query "Exports[?Name=='${export_name}'].Value | [0]" \
               --output text)
 
             if [[ -z "$value" || "$value" == "None" ]]; then
-              echo "::warning::Export $export_name was not found in $NETWORK_STACK outputs."
-            else
-              echo "Found export $export_name = $value"
+              echo "::error::Required network export $export_name was not found. Verify that $NETWORK_STACK deployed successfully and exports this value."
+              exit 1
             fi
+
+            echo "Verified export $export_name = $value"
           done
 
       - name: Verify dashboard files and template parameters
@@ -1171,7 +1163,8 @@ jobs:
             ArtifactBucket \
             ArtifactKey \
             ApiBaseUrl \
-            LoginPath; do
+            LoginPath \
+            DashboardAccessCidr; do
 
             if ! grep -qE "^  ${parameter}:" cloudformation/doctor-dashboard-ec2.yaml; then
               echo "::error::cloudformation/doctor-dashboard-ec2.yaml does not declare parameter $parameter, but the workflow passes it."
@@ -1257,14 +1250,8 @@ jobs:
                 change_type=CREATE
                 ;;
               ROLLBACK_COMPLETE)
-                echo "Stack $stack is in ROLLBACK_COMPLETE; deleting it before recreating."
-                aws cloudformation delete-stack \
-                  --stack-name "$stack" \
-                  --region "$AWS_REGION"
-                aws cloudformation wait stack-delete-complete \
-                  --stack-name "$stack" \
-                  --region "$AWS_REGION"
-                change_type=CREATE
+                echo "::error::Stack $stack is in ROLLBACK_COMPLETE. Automatic deletion is disabled to protect existing resources and data. Inspect the stack events and recover it manually before rerunning."
+                exit 1
                 ;;
               *_IN_PROGRESS)
                 echo "::error::Stack $stack is busy ($status). Wait for it to finish and re-run."
@@ -1292,6 +1279,7 @@ jobs:
               ParameterKey=ArtifactKey,ParameterValue="$APP_KEY" \
               ParameterKey=ApiBaseUrl,ParameterValue="$API_BASE_URL" \
               ParameterKey=LoginPath,ParameterValue=/auth/login \
+              ParameterKey=DashboardAccessCidr,ParameterValue=0.0.0.0/0 \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --description "Doctor Dashboard deployment ${GITHUB_RUN_ID}" \
             --region "$AWS_REGION"
