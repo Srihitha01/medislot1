@@ -1,4 +1,3 @@
-
 AWSTemplateFormatVersion: "2010-09-09"
 Description: MediSlot network foundation with private SSM access
 
@@ -188,6 +187,37 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-ssm-endpoint-sg
+
+  LambdaEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTPS from MediSlot Lambda to the Lambda interface endpoint
+      VpcId: !Ref MediSlotVPC
+      SecurityGroupIngress:
+        - Description: Allow HTTPS from MediSlot Lambda security group
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-lambda-endpoint-sg
+
+  LambdaInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref MediSlotVPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.lambda
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref LambdaEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-lambda-endpoint
 
   ApiGatewayCloudWatchLogsRole:
     Type: AWS::IAM::Role

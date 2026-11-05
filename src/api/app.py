@@ -1176,9 +1176,16 @@ def _complete_photo_upload(user_id, event):
         finally:
             conn.close()
         return _response(200, {"message": "Photo saved"})
-    except Exception:
+    except Exception as exc:
         logger.exception("Doctor photo finalization failed")
-        return _response(500, {"message": "Could not save uploaded photo"})
+        code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+        return _response(
+            500,
+            {
+                "message": "Could not save uploaded photo",
+                "detail": code or type(exc).__name__,
+            },
+        )
 
 
 def _doctor_photo_url(user_id):
@@ -2195,19 +2202,36 @@ def _dispatch_materializer(
     date_from=None,
     date_to=None,
 ):
-    logger.info(
-        json.dumps(
-            {
-                "event": "materializer_dispatch_skipped",
-                "doctorId": (
-                    str(doctor_id) if doctor_id else None
-                ),
-                "reason": "scheduled_materialization_enabled",
-            }
-        )
+    """Asynchronously run the slot materializer for one doctor."""
+    function_name = os.environ.get("SLOT_MATERIALIZER_FUNCTION")
+
+    if not function_name or not doctor_id:
+        return False
+
+    from botocore.config import Config as _Cfg
+
+    payload = {"doctorId": str(doctor_id)}
+
+    if date_from:
+        payload["dateFrom"] = str(date_from)
+
+    if date_to:
+        payload["dateTo"] = str(date_to)
+
+    boto3.client(
+        "lambda",
+        config=_Cfg(
+            connect_timeout=3,
+            read_timeout=5,
+            retries={"max_attempts": 1},
+        ),
+    ).invoke(
+        FunctionName=function_name,
+        InvocationType="Event",
+        Payload=json.dumps(payload).encode("utf-8"),
     )
 
-    return False
+    return True
 
 
 def _materializer_trigger(user_id=None):
@@ -2215,10 +2239,21 @@ def _materializer_trigger(user_id=None):
         _dispatch_materializer(user_id)
 
     except Exception:
-        logger.exception(
-            "Could not enqueue materializer invocation"
-        )
-        raise
+        # Never fail the doctor's save; the daily schedule is the fallback.
+        logger.exception("Could not start materializer invocation")
+
+
+def _collection_and_materialize(
+    table_name, user_id, method, event, resource_id=None
+):
+    result = _doctor_collection(
+        table_name, user_id, method, event, resource_id
+    )
+
+    if method != "GET" and result.get("statusCode", 500) < 300:
+        _materializer_trigger(user_id)
+
+    return result
 
 
 # ---------------------------------------------------------
@@ -2680,7 +2715,7 @@ def lambda_handler(event, context):
 
         for route, table_name in routes:
             if path == route and role == "doctor":
-                return _doctor_collection(
+                return _collection_and_materialize(
                     table_name,
                     user_id,
                     method,
@@ -2693,7 +2728,7 @@ def lambda_handler(event, context):
             )
 
             if match and role == "doctor":
-                return _doctor_collection(
+                return _collection_and_materialize(
                     table_name,
                     user_id,
                     method,
