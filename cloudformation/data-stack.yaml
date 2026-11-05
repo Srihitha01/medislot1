@@ -400,10 +400,11 @@ Resources:
         Status: Enabled
       CorsConfiguration:
         CorsRules:
-          - AllowedMethods: [PUT, HEAD]
+          - AllowedMethods: [GET, PUT, HEAD]
             AllowedOrigins: ["*"]
             AllowedHeaders: ["*"]
-            MaxAge: 300
+            ExposedHeaders: [ETag, Content-Type, Content-Length]
+            MaxAge: 3000
       LoggingConfiguration:
         DestinationBucketName:
           Fn::ImportValue: !Sub medislot-${Environment}-AccessLogsBucketName
@@ -431,6 +432,16 @@ Resources:
             Condition:
               Bool:
                 aws:SecureTransport: false
+          - Sid: AllowAppRouterRoleToManageDoctorPhotos
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+            Resource: !Sub ${DoctorPhotosBucket.Arn}/doctors/*
+            Condition:
+              ArnEquals:
+                aws:PrincipalArn: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-app-router-role
 
   # Non-secret database connection values in SSM Parameter Store.
   DBHostParameter:
@@ -538,4 +549,3 @@ Outputs:
     Value: !Ref DispatchLogTable
     Export:
       Name: !Sub medislot-${Environment}-DispatchLogTableName
-
