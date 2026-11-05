@@ -263,15 +263,20 @@ def _put_slot(table, item):
         table.update_item(
             Key={"slotId": item["slotId"]},
             UpdateExpression=(
-                "SET #st=:target, capacity=:capacity, updatedAt=:now, "
-                "expiresAt=:expiry, localDate=:localDate, timezone=:timezone, "
-                "utcOffset=:offset, localStartTime=:localTime"
+                "SET #st=:target, #cap=:capacity, #upd=:now, "
+                "#exp=:expiry, #ld=:localDate, #tz=:timezone, "
+                "#off=:offset, #lst=:localTime"
             ),
             ConditionExpression=(
-                "bookedCount=:zero AND #src=:source AND #st <> :target "
+                "#bc=:zero AND #src=:source AND #st <> :target "
                 "AND #st IN (:open, :cancelled, :blackout)"
             ),
-            ExpressionAttributeNames={"#st": "status", "#src": "source"},
+            ExpressionAttributeNames={
+                "#st": "status", "#src": "source", "#cap": "capacity",
+                "#upd": "updatedAt", "#exp": "expiresAt", "#ld": "localDate",
+                "#tz": "timezone", "#off": "utcOffset",
+                "#lst": "localStartTime", "#bc": "bookedCount",
+            },
             ExpressionAttributeValues={
                 ":target": item["status"], ":capacity": item["capacity"],
                 ":now": int(time.time()), ":expiry": item["expiresAt"],
@@ -318,11 +323,14 @@ def _reconcile_window(table, doctor_id, date_from, date_to, expected_ids):
         try:
             table.update_item(
                 Key={"slotId": slot["slotId"]},
-                UpdateExpression="SET #st=:cancelled, updatedAt=:now",
+                UpdateExpression="SET #st=:cancelled, #upd=:now",
                 ConditionExpression=(
-                    "bookedCount=:zero AND #st IN (:open, :blackout) AND #src=:source"
+                    "#bc=:zero AND #st IN (:open, :blackout) AND #src=:source"
                 ),
-                ExpressionAttributeNames={"#st": "status", "#src": "source"},
+                ExpressionAttributeNames={
+                    "#st": "status", "#src": "source",
+                    "#upd": "updatedAt", "#bc": "bookedCount",
+                },
                 ExpressionAttributeValues={
                     ":cancelled": "CANCELLED", ":now": now_epoch,
                     ":zero": 0, ":open": "OPEN", ":blackout": "BLACKOUT",
