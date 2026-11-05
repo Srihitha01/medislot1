@@ -1071,6 +1071,18 @@ def _doctor_profile(user_id, method, event):
 # DOCTOR PHOTO UPLOAD AND RETRIEVAL
 # ---------------------------------------------------------
 
+def _s3_client():
+    """Regional SigV4 client so presigned URLs work from the browser (no 307 redirect)."""
+    from botocore.config import Config as _Cfg
+
+    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+    return boto3.client(
+        "s3",
+        region_name=region,
+        config=_Cfg(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+    )
+
+
 def _presign_photo(user_id, event):
     data = _body(event)
     content_type = data.get("contentType")
@@ -1105,7 +1117,7 @@ def _presign_photo(user_id, event):
         f"profile-{time.time_ns()}.{extensions[content_type]}"
     )
 
-    s3 = boto3.client("s3")
+    s3 = _s3_client()
 
     try:
         upload_url = s3.generate_presigned_url(
@@ -1148,7 +1160,7 @@ def _complete_photo_upload(user_id, event):
     if not bucket:
         return _response(500, {"message": "Photo storage is not configured"})
     try:
-        obj = boto3.client("s3").head_object(Bucket=bucket, Key=key)
+        obj = _s3_client().head_object(Bucket=bucket, Key=key)
         if obj.get("ContentLength", 0) > 5 * 1024 * 1024:
             return _response(400, {"message": "Photo exceeds 5 MB"})
         if obj.get("ContentType") not in {"image/jpeg", "image/png", "image/webp"}:
@@ -1208,7 +1220,7 @@ def _doctor_photo_url(user_id):
         return _response(200, {"photoUrl": None})
 
     try:
-        s3 = boto3.client("s3")
+        s3 = _s3_client()
 
         photo_url = s3.generate_presigned_url(
             "get_object",

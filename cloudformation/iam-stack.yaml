@@ -693,6 +693,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:PutObject
+                  - s3:GetObject
                 Resource:
                   - Fn::Sub:
                       - "${BucketArn}/doctors/*"

@@ -21,19 +21,18 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 # MediSlot API configuration
 # --------------------------------------------------
 
-API_BASE_URL = os.environ.get(
-    "MEDISLOT_API_BASE_URL",
-    "https://vmfftty8x3.execute-api.ap-south-1.amazonaws.com/Stage",
-).rstrip("/")
+API_BASE_URL = os.environ.get("MEDISLOT_API_BASE_URL", "").rstrip("/")
+if not API_BASE_URL:
+    raise RuntimeError("MEDISLOT_API_BASE_URL environment variable is required")
 
-LOGIN_PATH = os.environ.get("MEDISLOT_LOGIN_PATH", "/login")
+LOGIN_PATH = os.environ.get("MEDISLOT_LOGIN_PATH", "/auth/login")
 
 # Change these if your API Gateway register routes are different.
 REGISTER_DOCTOR_PATH = os.environ.get(
-    "MEDISLOT_REGISTER_DOCTOR_PATH", "/register/doctor"
+    "MEDISLOT_REGISTER_DOCTOR_PATH", "/auth/register"
 )
 REGISTER_PATIENT_PATH = os.environ.get(
-    "MEDISLOT_REGISTER_PATIENT_PATH", "/register/patient"
+    "MEDISLOT_REGISTER_PATIENT_PATH", "/auth/register"
 )
 
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -53,28 +52,10 @@ app.wsgi_app = ProxyFix(
     x_host=1,
 )
 
-SECRET_FILE = os.environ.get(
-    "FLASK_SECRET_FILE",
-    "/opt/medislot-dashboard/.flask_secret",
-)
-
-secret_directory = os.path.dirname(SECRET_FILE)
-os.makedirs(secret_directory, exist_ok=True)
-
-if os.path.exists(SECRET_FILE):
-    with open(SECRET_FILE, "r", encoding="utf-8") as file:
-        flask_secret = file.read().strip()
-else:
+flask_secret = os.environ.get("FLASK_SECRET_KEY", "").strip()
+if not flask_secret:
+    # Local development fallback only; EC2 provides FLASK_SECRET_KEY.
     flask_secret = secrets.token_urlsafe(48)
-
-    file_descriptor = os.open(
-        SECRET_FILE,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-        0o600,
-    )
-
-    with os.fdopen(file_descriptor, "w", encoding="utf-8") as file:
-        file.write(flask_secret)
 
 app.secret_key = flask_secret
 
