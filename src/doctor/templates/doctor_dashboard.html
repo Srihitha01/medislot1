@@ -387,6 +387,7 @@
         }
 
         .status-pending,
+        .status-blackout,
         .status-rescheduled {
             background: var(--warning-bg);
             color: var(--warning);
@@ -1356,7 +1357,7 @@
         const safeStatus = formatStatus(status);
         const className = `status-${safeStatus.replace(/[^a-z0-9_-]/g, "")}`;
 
-        return `<span class="status ${className}">${escapeHTML(safeStatus.replaceAll("_", " "))}</span>`;
+        return `<span class="status ${className}">${escapeHTML(safeStatus === "blackout" ? "unavailable (blackout)" : safeStatus.replaceAll("_", " "))}</span>`;
     }
 
     async function refreshAccessToken() {

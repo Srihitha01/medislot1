@@ -148,10 +148,20 @@ def _schedule_slots_for_day(schedule, target_day):
     if not schedule.get("is_active", True):
         return []
 
+    # Blackout days still generate slots, but they are marked BLACKOUT so they
+    # show as unavailable and can never be booked (booking requires OPEN).
+    is_blackout = any(
+        (item.date() if isinstance(item, datetime) else item) == target_day
+        if not isinstance(item, str)
+        else date.fromisoformat(item[:10]) == target_day
+        for item in (schedule.get("blackouts") or [])
+    )
+    slot_status = "BLACKOUT" if is_blackout else "OPEN"
+
     windows = effective_windows(
         schedule.get("patterns", []),
         schedule.get("exceptions", []),
-        schedule.get("blackouts", []),
+        [],
         target_day,
     )
     if not windows:
@@ -208,7 +218,7 @@ def _schedule_slots_for_day(schedule, target_day):
                         "durationMinutes": duration,
                         "capacity": capacity,
                         "bookedCount": 0,
-                        "status": "OPEN",
+                        "status": slot_status,
                         "source": "MATERIALIZED",
                         "expiresAt": expiry,
                         "createdAt": int(time.time()),
@@ -247,29 +257,33 @@ def _put_slot(table, item):
         if code != "ConditionalCheckFailedException":
             raise
 
-    # A previously cancelled deterministic slot may become valid again.
-    # Never overwrite booked/full/manual records.
+    # An existing unbooked generated slot may change between OPEN, BLACKOUT
+    # and CANCELLED. Never overwrite booked/full/manual records.
     try:
         table.update_item(
             Key={"slotId": item["slotId"]},
             UpdateExpression=(
-                "SET #st=:open, capacity=:capacity, updatedAt=:now, "
+                "SET #st=:target, capacity=:capacity, updatedAt=:now, "
                 "expiresAt=:expiry, localDate=:localDate, timezone=:timezone, "
                 "utcOffset=:offset, localStartTime=:localTime"
             ),
-            ConditionExpression="bookedCount=:zero AND #st=:cancelled AND #src=:source",
+            ConditionExpression=(
+                "bookedCount=:zero AND #src=:source AND #st <> :target "
+                "AND #st IN (:open, :cancelled, :blackout)"
+            ),
             ExpressionAttributeNames={"#st": "status", "#src": "source"},
             ExpressionAttributeValues={
-                ":open": "OPEN", ":capacity": item["capacity"],
+                ":target": item["status"], ":capacity": item["capacity"],
                 ":now": int(time.time()), ":expiry": item["expiresAt"],
                 ":localDate": item["localDate"], ":timezone": item["timezone"],
                 ":offset": item["utcOffset"], ":localTime": item["localStartTime"],
-                ":zero": 0, ":cancelled": "CANCELLED", ":source": "MATERIALIZED",
+                ":zero": 0, ":source": "MATERIALIZED",
+                ":open": "OPEN", ":cancelled": "CANCELLED", ":blackout": "BLACKOUT",
             },
         )
         return "reopened"
-    except ClientError as reopen_exc:
-        if reopen_exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+    except ClientError as update_exc:
+        if update_exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
             return "existing"
         raise
 
@@ -298,18 +312,21 @@ def _reconcile_window(table, doctor_id, date_from, date_to, expected_ids):
         if int(slot.get("bookedCount", 0)) > 0:
             preserved_booked += 1
             continue
-        if slot.get("status") != "OPEN":
+        if slot.get("status") not in ("OPEN", "BLACKOUT"):
             continue
 
         try:
             table.update_item(
                 Key={"slotId": slot["slotId"]},
                 UpdateExpression="SET #st=:cancelled, updatedAt=:now",
-                ConditionExpression="bookedCount=:zero AND #st=:open AND #src=:source",
+                ConditionExpression=(
+                    "bookedCount=:zero AND #st IN (:open, :blackout) AND #src=:source"
+                ),
                 ExpressionAttributeNames={"#st": "status", "#src": "source"},
                 ExpressionAttributeValues={
                     ":cancelled": "CANCELLED", ":now": now_epoch,
-                    ":zero": 0, ":open": "OPEN", ":source": "MATERIALIZED",
+                    ":zero": 0, ":open": "OPEN", ":blackout": "BLACKOUT",
+                    ":source": "MATERIALIZED",
                 },
             )
             cancelled += 1
