@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1360,7 +1359,23 @@
         return `<span class="status ${className}">${escapeHTML(safeStatus.replaceAll("_", " "))}</span>`;
     }
 
-    async function apiRequest(path, method = "GET", body = undefined) {
+    async function refreshAccessToken() {
+        try {
+            const r = await fetch("/session/refresh", {
+                method: "POST",
+                credentials: "same-origin"
+            });
+            if (!r.ok) return false;
+            const data = await r.json();
+            if (!data.accessToken) return false;
+            accessToken = data.accessToken;
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    async function apiRequest(path, method = "GET", body = undefined, isRetry = false) {
         if (!accessToken) {
             throw new Error("Your doctor session has expired. Please log in again.");
         }
@@ -1381,6 +1396,14 @@
         }
 
         const response = await fetch(`${API_BASE_URL}${path}`, options);
+
+        if (response.status === 401 && !isRetry) {
+            if (await refreshAccessToken()) {
+                return apiRequest(path, method, body, true);
+            }
+            window.location.href = "/logout";
+            throw new Error("Your session has expired. Please log in again.");
+        }
 
         let result = {};
         const responseText = await response.text();

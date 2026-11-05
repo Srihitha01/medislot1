@@ -8,6 +8,7 @@ import requests
 from flask import (
     Flask,
     flash,
+    jsonify,
     redirect,
     render_template,
     request,
@@ -278,6 +279,7 @@ def login():
             session.permanent = True
 
             session["access_token"] = access_token
+            session["refresh_token"] = result.get("refreshToken", "")
             session["role"] = result["role"]
             session["user_id"] = str(result.get("userId", ""))
             session["email"] = email
@@ -448,6 +450,36 @@ def dashboard():
 # --------------------------------------------------
 # Logout
 # --------------------------------------------------
+
+@app.post("/session/refresh")
+@doctor_required
+def session_refresh():
+    refresh_token = session.get("refresh_token")
+
+    if not refresh_token:
+        return jsonify({"message": "Session expired"}), 401
+
+    try:
+        api_response = requests.post(
+            f"{API_BASE_URL}/auth/refresh",
+            json={"refreshToken": refresh_token},
+            timeout=15,
+        )
+        result = api_response.json() if api_response.content else {}
+    except (requests.RequestException, ValueError):
+        app.logger.exception("MediSlot token refresh failed")
+        return jsonify({"message": "Could not refresh session"}), 502
+
+    new_access = result.get("accessToken")
+
+    if api_response.status_code >= 400 or not new_access:
+        return jsonify({"message": "Session expired"}), 401
+
+    session["access_token"] = new_access
+    session["refresh_token"] = result.get("refreshToken") or refresh_token
+
+    return jsonify({"accessToken": new_access})
+
 
 @app.route("/logout", methods=["GET", "POST"])
 def logout():
