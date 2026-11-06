@@ -1416,10 +1416,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          api_url=$(aws cloudformation describe-stacks \\
-            --stack-name "$API_STACK" \\
-            --query "Stacks[0].Outputs[?OutputKey=='ApplicationApiBaseUrl'].OutputValue | [0]" \\
-            --output text)
+          api_url=$(aws cloudformation describe-stacks --stack-name "$API_STACK" --query "Stacks[0].Outputs[?OutputKey=='ApplicationApiBaseUrl'].OutputValue | [0]" --output text)
           if [[ -z "$api_url" || "$api_url" == "None" ]]; then
             echo "::error::ApplicationApiBaseUrl missing from $API_STACK"
             exit 1
