@@ -410,18 +410,21 @@ def _migrate_blackout_dates(cursor, database):
             cursor.execute(statement)
             columns.add(column)
 
-    indexes = _blackout_schema_indexes(cursor, database)
-    if "uq_blackout_doctor_date" in indexes:
-        logger.info("Removing obsolete blackout date uniqueness constraint")
-        cursor.execute("ALTER TABLE blackout_dates DROP INDEX uq_blackout_doctor_date")
-
+    # Create the replacement index BEFORE dropping the old unique index.
+    # MySQL requires an index beginning with doctor_user_id to enforce
+    # fk_blackout_doctor. Dropping the only qualifying index raises 1553.
     indexes = _blackout_schema_indexes(cursor, database)
     if "idx_blackout_doctor_date" not in indexes:
-        logger.info("Adding blackout date lookup index")
+        logger.info("Adding blackout date lookup index before dropping uniqueness")
         cursor.execute(
             "ALTER TABLE blackout_dates "
             "ADD INDEX idx_blackout_doctor_date (doctor_user_id, blackout_date)"
         )
+
+    indexes = _blackout_schema_indexes(cursor, database)
+    if "uq_blackout_doctor_date" in indexes:
+        logger.info("Removing obsolete blackout date uniqueness constraint")
+        cursor.execute("ALTER TABLE blackout_dates DROP INDEX uq_blackout_doctor_date")
 
     logger.info("Timed blackout schema verified")
 
