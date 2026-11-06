@@ -1,13 +1,20 @@
 import importlib.util
-import json
-import os
-import unittest
-from unittest.mock import patch
+import sys
+from pathlib import Path
 
-spec = importlib.util.spec_from_file_location("medislot_api", os.path.join(os.path.dirname(__file__), "..", "app.py"))
+API_DIR = Path(__file__).resolve().parents[1]
+
+# Make sibling modules such as availability_rules importable.
+sys.path.insert(0, str(API_DIR))
+
+spec = importlib.util.spec_from_file_location(
+    "api_app",
+    API_DIR / "app.py"
+)
+
 api = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = api
 spec.loader.exec_module(api)
-
 class PatientAuthorizationTests(unittest.TestCase):
     def event(self, path, role, uid="11"):
         return {"httpMethod": "GET", "path": path, "requestContext": {"authorizer": {"userId": uid, "role": role}}}
