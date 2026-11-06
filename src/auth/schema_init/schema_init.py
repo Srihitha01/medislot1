@@ -348,6 +348,85 @@ def _create_schema(cursor):
 
 
 # ---------------------------------------------------------
+# NON-DESTRUCTIVE BLACKOUT SCHEMA MIGRATION
+# ---------------------------------------------------------
+
+def _blackout_schema_columns(cursor, database):
+    cursor.execute(
+        """
+        SELECT COLUMN_NAME
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'blackout_dates'
+        """,
+        (database,)
+    )
+    return {str(row["COLUMN_NAME"] if isinstance(row, dict) else row[0])
+            for row in cursor.fetchall()}
+
+
+def _blackout_schema_indexes(cursor, database):
+    cursor.execute(
+        """
+        SELECT INDEX_NAME, NON_UNIQUE
+        FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'blackout_dates'
+        """,
+        (database,)
+    )
+    result = {}
+    for row in cursor.fetchall():
+        if isinstance(row, dict):
+            name, non_unique = row["INDEX_NAME"], row["NON_UNIQUE"]
+        else:
+            name, non_unique = row[0], row[1]
+        result[str(name)] = int(non_unique)
+    return result
+
+
+def _migrate_blackout_dates(cursor, database):
+    """
+    Safely upgrade an existing date-only blackout_dates table.
+
+    Existing records remain full-day blackouts. Remove the old
+    doctor/date unique constraint to permit multiple timed windows.
+    Each DDL operation is guarded by information_schema checks,
+    so subsequent initialize invocations are safe.
+    """
+    columns = _blackout_schema_columns(cursor, database)
+    if not columns:
+        raise RuntimeError("blackout_dates table missing after schema creation")
+
+    additions = (
+        ("is_full_day", "ALTER TABLE blackout_dates "
+         "ADD COLUMN is_full_day TINYINT(1) NOT NULL DEFAULT 1 AFTER reason"),
+        ("start_time", "ALTER TABLE blackout_dates "
+         "ADD COLUMN start_time TIME NULL AFTER is_full_day"),
+        ("end_time", "ALTER TABLE blackout_dates "
+         "ADD COLUMN end_time TIME NULL AFTER start_time"),
+    )
+    for column, statement in additions:
+        if column not in columns:
+            logger.info("Adding blackout_dates.%s", column)
+            cursor.execute(statement)
+            columns.add(column)
+
+    indexes = _blackout_schema_indexes(cursor, database)
+    if "uq_blackout_doctor_date" in indexes:
+        logger.info("Removing obsolete blackout date uniqueness constraint")
+        cursor.execute("ALTER TABLE blackout_dates DROP INDEX uq_blackout_doctor_date")
+
+    indexes = _blackout_schema_indexes(cursor, database)
+    if "idx_blackout_doctor_date" not in indexes:
+        logger.info("Adding blackout date lookup index")
+        cursor.execute(
+            "ALTER TABLE blackout_dates "
+            "ADD INDEX idx_blackout_doctor_date (doctor_user_id, blackout_date)"
+        )
+
+    logger.info("Timed blackout schema verified")
+
+
+# ---------------------------------------------------------
 # MAIN LAMBDA HANDLER
 # ---------------------------------------------------------
 
@@ -435,6 +514,7 @@ def lambda_handler(event, context):
                 _ensure_app_user(cursor, database)
 
                 _create_schema(cursor)
+                _migrate_blackout_dates(cursor, database)
 
                 conn.commit()
 
