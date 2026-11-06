@@ -1,69 +1,42 @@
-# MediSlot
+# MediSlot — Doctor + Patient Portal Upgrade
 
-MediSlot is an AWS-backed medical appointment and doctor availability application.
+This archive extends the uploaded `medislot(7).zip`. It is **source code**, not a deployed AWS system.
 
-## Repository layout
+## Delivered
 
-```text
-medislot/
-├── .github/workflows/deploy.yaml   # Existing AWS CI/CD workflow
-├── cloudformation/                 # Network, data, IAM, auth, API and EC2 stacks
-├── database/schema.sql             # Database schema
-├── docs/                           # Architecture and implementation documentation
-├── scripts/check.py                # Local source and unit-test checks
-├── src/
-│   ├── api/                        # API Lambda/router
-│   ├── auth/                       # Authorizer, login, logout, refresh, register, schema
-│   ├── doctor/                     # Flask doctor dashboard and templates
-│   └── slots/materializer/         # Slot materializer, availability rules and tests
-└── templates/doctor/               # Existing standalone doctor template
-```
+- `src/api/app.py`: patient profile CRUD scoped to authorizer `userId`, public doctor search with optional combined name/hospital/specialisation/city filters and pagination, public doctor details/fees, and DynamoDB doctor slot availability.
+- `src/doctor/app.py`: doctor and patient logins on **the same Flask/Gunicorn process and EC2 instance**. `/dashboard` remains doctor-only; `/patient` is patient-only.
+- `src/doctor/templates/patient_dashboard.html`: responsive hospital-style patient portal with profile editor, search, doctor detail and slot browser.
+- `cloudformation/api-stack.yaml`: public API Gateway route definitions for doctor discovery; protected patient routes use the existing authorizer.
+- `database/search_indexes.sql`: optional additive indexes, with reasoning below.
+- `src/api/tests/test_patient_contract.py`: route authorization and pagination unit checks.
+- `scripts/integration_live.py`: **real HTTP integration tests**: register a patient, log in, search, read slots and reject cross-patient access.
+- `.github/workflows/deploy.yaml`: live tests run after API and dashboard deployment, requiring explicit test-account secrets.
 
-**Compatibility:** The existing `src/` and `cloudformation/` paths are intentionally retained because the CloudFormation templates and GitHub Actions workflow reference them. A purely cosmetic relocation would break packaging/deployment.
+## Setup / deployment
 
-## Setup
+1. Back up RDS, EC2 and CloudFormation stacks. Review `git diff` against your current deployed revision.
+2. Use the existing GitHub Actions workflow and AWS OIDC role; the workflow deploys the updated API Lambda and dashboard ZIP to the existing CloudFormation EC2 stack. **Do not launch a second dashboard EC2 stack.** Confirm the stack is the one currently serving your site.
+3. Set GitHub Actions secrets: `AWS_ROLE_ARN`, `MEDISLOT_API_BASE_URL`, `TEST_PATIENT_A_EMAIL`, `TEST_PATIENT_A_PASSWORD`, `TEST_PATIENT_B_EMAIL`, `TEST_PATIENT_B_PASSWORD`, `TEST_REGISTRATION_DOMAIN`, `TEST_REGISTRATION_PASSWORD`. Use isolated non-production test accounts and a controlled email domain. Each CI run creates a test patient account, so plan test-data cleanup.
+4. Review `database/search_indexes.sql`; run once from a host with database access and schema-change privileges, after backing up. Example on your DB-connected EC2: `mysql -h "$DB_HOST" -u "$DB_ADMIN_USER" -p medislot < database/search_indexes.sql`. Do **not** put passwords in scripts or logs. Existing indexes cover several queries; inspect `EXPLAIN` before applying additions.
+5. Check `https://<api-id>.execute-api.ap-south-1.amazonaws.com/dev/doctors/search?pageSize=10`, then log in to `/patient` as a patient. Existing doctors continue using `/dashboard`.
+6. CI live integration tests require the deployment to succeed and both test accounts to exist; they are not mocks. They have **not** been run in this environment.
 
-Use Python 3.12 (the CI version). Create a virtual environment and install dependencies:
+## API contracts
 
-```bash
-python -m venv .venv
-# Linux/macOS: source .venv/bin/activate
-# Windows: .venv\Scripts\activate
-python -m pip install -r src/auth/requirements.txt
-python -m pip install -r src/slots/materializer/requirements.txt
-python -m pip install -r src/api/requirements.txt
-python -m pip install -r src/doctor/requirements.txt
-```
+- `GET|POST|PUT|PATCH|DELETE /patients/me`: patient bearer token required. Delete removes patient profile details, **not** the account or historical bookings. No `/patients/{id}` access is supported.
+- `GET /doctors/search?name=&hospital=&specialisation=&city=&page=1&pageSize=10`: public, prefix matching, max 50/page.
+- `GET /doctors/{id}`: public, non-sensitive doctor details and active consultation types/fees.
+- `GET /doctors/{id}/slots?startFrom=<ISO UTC>&startTo=<ISO UTC>`: public, max 31 days, open slots with positive `freeSeats=capacity-bookedCount`.
 
-Run local checks:
+## Database index rationale
 
-```bash
-python scripts/check.py
-```
+The existing schema already has `idx_doctors_full_name`, `idx_doctors_specialisation_hospital`, `idx_hospitals_city`, and `idx_hospitals_status_city`. These support prefix doctor-name search, speciality/hospital joins and city filtering respectively. Optional `idx_hospitals_name_search` supports hospital-name prefix filtering; `idx_doctors_specialisation_name` may help speciality + doctor-name searches. Combined filters can use joins and index selection; use `EXPLAIN ANALYZE` with realistic data to verify, since the optimizer may choose other indexes. Search uses `LIKE 'term%'` rather than `'%term%'` so B-tree prefix indexes remain useful.
 
-Run the doctor dashboard locally after configuring the environment variables required by `src/doctor/app.py`:
+## Known limits / next hardening
 
-```bash
-python src/doctor/app.py
-```
-
-For AWS deployment follow `docs/IMPLEMENTATION_GUIDE.md` and `.github/workflows/deploy.yaml`. You must configure your own AWS account, database, secrets, and IAM deployment role. Local unit tests do not verify live AWS integration.
-
-## Cleanup and safety
-
-The uploaded archive contained `.git`, a Windows `.venv`, copied third-party libraries, generated deployment ZIPs, and temporary JSON outputs. These have been excluded from this clean source distribution. Recreate virtual environments and deployment bundles rather than committing them. Never commit actual credentials or tokens.
-
-
-## Doctor profile photo fix
-The browser uploads a photo directly to S3 with a short-lived presigned PUT URL.
-After the PUT succeeds it now calls `POST /doctors/me/photo-complete` with
-`{"photoKey": "..."}`. The API verifies that the object exists and only then
-updates `doctors.photo_key`. This prevents a failed upload from replacing the
-doctor's current photo. The dashboard also hides broken image elements and
-shows initials instead.
-
-For deployed installations, redeploy the API Lambda and dashboard template
-together. Verify `DOCTOR_PHOTOS_BUCKET`, the S3 bucket CORS rules, the
-Lambda's `s3:GetObject`/`s3:PutObject` permissions, and the `doctors.photo_key`
-database column. A successful local syntax check does not prove live S3,
-database, or browser integration.
+- **No live AWS verification has been performed here.** IAM policies, RDS indexes, EC2 deployment, photo upload, and browser behavior must be checked after deployment.
+- Earlier S3 photo-finalization logs reported `HeadObject` 403. The uploaded IAM template already contains `s3:GetObject` for `doctors/*`; confirm the deployed role policy, actual S3 key, bucket policy and KMS configuration before changing permissions. A missing object may also appear as 403 without `s3:ListBucket`.
+- The existing dashboard places the API access token in its Flask signed session and renders it into JavaScript. For production, migrate to server-side session storage and a backend-for-frontend proxy, enforce HTTPS and secure cookies, add CSRF protection to Flask forms, and audit CORS.
+- The existing `/slots` endpoint has a scan fallback; the new doctor-scoped slot endpoint uses the `gsi-doctor-time` index.
+- No appointment booking UI is included in this patient MVP; it provides the requested slot browser.

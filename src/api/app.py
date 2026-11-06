@@ -2586,6 +2586,165 @@ def _delete_idempotency_record(table, idem_key):
         logger.exception("Unable to remove failed idempotency record")
 
 
+
+# ---------------------------------------------------------
+# PATIENT API + PUBLIC DISCOVERY
+# ---------------------------------------------------------
+
+def _patient_me(user_id, method, event):
+    """Never accept a patient ID from request data or the URL."""
+    allowed = {
+        "fullName": "full_name", "dateOfBirth": "date_of_birth",
+        "gender": "gender", "phone": "phone", "city": "city",
+        "emergencyContactName": "emergency_contact_name",
+        "emergencyContactPhone": "emergency_contact_phone",
+        "notes": "notes",
+    }
+    data = _body(event) if method in {"POST", "PUT", "PATCH"} else {}
+    if method in {"POST", "PUT", "PATCH"}:
+        if not isinstance(data, dict) or set(data) - set(allowed):
+            return _response(400, {"message": "Unsupported patient profile fields"})
+        if any(isinstance(v, (dict, list)) for v in data.values()):
+            return _response(400, {"message": "Invalid profile field"})
+        if any(len(str(v)) > (2000 if k == "notes" else 150) for k,v in data.items() if v is not None):
+            return _response(400, {"message": "Profile field too long"})
+        if "dateOfBirth" in data and data["dateOfBirth"]:
+            date.fromisoformat(data["dateOfBirth"])
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT role FROM users WHERE user_id=%s AND status='active'", (user_id,))
+            user = cur.fetchone()
+            if not user or user["role"] != "patient":
+                return _response(403, {"message": "Patient access required"})
+            if method == "DELETE":
+                # Delete profile details, not the login account; no cross-user operation.
+                cur.execute("DELETE FROM patients WHERE user_id=%s", (user_id,))
+                conn.commit()
+                return _response(200, {"message": "Patient profile deleted"})
+            if method in {"POST", "PUT", "PATCH"} and data:
+                fields = [allowed[k] for k in data]
+                values = [data[k] for k in data]
+                cur.execute("INSERT IGNORE INTO patients (user_id, full_name) SELECT user_id, name FROM users WHERE user_id=%s", (user_id,))
+                assignments = ", ".join(f"`{field}`=%s" for field in fields)
+                cur.execute(f"UPDATE patients SET {assignments} WHERE user_id=%s", (*values, user_id))
+                if "fullName" in data and data["fullName"]:
+                    cur.execute("UPDATE users SET name=%s WHERE user_id=%s", (data["fullName"], user_id))
+                conn.commit()
+            cur.execute("""SELECT full_name AS fullName, date_of_birth AS dateOfBirth,
+                        gender, phone, city, emergency_contact_name AS emergencyContactName,
+                        emergency_contact_phone AS emergencyContactPhone, notes
+                        FROM patients WHERE user_id=%s""", (user_id,))
+            return _response(200, {"profile": cur.fetchone()})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _doctor_search(event):
+    params = _query(event)
+    try:
+        page = int(params.get("page", "1"))
+        size = int(params.get("pageSize", "10"))
+    except ValueError:
+        return _response(400, {"message": "Invalid pagination"})
+    if not 1 <= page <= 10000 or not 1 <= size <= 50:
+        return _response(400, {"message": "page must be >=1 and pageSize 1-50"})
+    conditions = ["u.status='active'"]
+    values = []
+    for key, col in [
+        ("name", "d.full_name"), ("hospital", "h.name"),
+        ("specialisation", "sp.name"), ("city", "h.city"),
+    ]:
+        value = params.get(key, "").strip()
+        if value:
+            if len(value) > 100:
+                return _response(400, {"message": "Search filter too long"})
+            conditions.append(f"{col} LIKE %s")
+            values.append(value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
+    where = " AND ".join(conditions)
+    joins = """FROM doctors d JOIN users u ON u.user_id=d.user_id
+        JOIN specialisations sp ON sp.specialisation_id=d.specialisation_id
+        LEFT JOIN hospitals h ON h.hospital_id=d.hospital_id"""
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) AS total {joins} WHERE {where}", values)
+            total = cur.fetchone()["total"]
+            cur.execute(f"""SELECT d.user_id AS doctorId, d.full_name AS name,
+                sp.name AS specialisation, h.name AS hospital, h.city AS city,
+                d.years_experience AS yearsExperience
+                {joins} WHERE {where}
+                ORDER BY d.full_name, d.user_id LIMIT %s OFFSET %s""",
+                (*values, size, (page-1)*size))
+            items = cur.fetchall()
+        return _response(200, {"items": items, "total": total, "page": page,
+                               "pageSize": size, "totalPages": (total+size-1)//size})
+    finally:
+        conn.close()
+
+
+def _public_doctor(doctor_id):
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT d.user_id AS doctorId, d.full_name AS name,
+                d.years_experience AS yearsExperience, d.qualifications, d.languages,
+                sp.name AS specialisation, h.name AS hospital, h.city AS city
+                FROM doctors d JOIN users u ON u.user_id=d.user_id
+                JOIN specialisations sp ON sp.specialisation_id=d.specialisation_id
+                LEFT JOIN hospitals h ON h.hospital_id=d.hospital_id
+                WHERE d.user_id=%s AND u.status='active'""", (doctor_id,))
+            doctor = cur.fetchone()
+            if not doctor:
+                return _response(404, {"message": "Doctor not found"})
+            cur.execute("""SELECT consultation_type_id AS consultationTypeId, name,
+                duration_min AS durationMinutes, fee_amount AS fee,
+                capacity FROM consultation_types
+                WHERE doctor_user_id=%s AND is_active=1
+                ORDER BY name""", (doctor_id,))
+            doctor["consultationTypes"] = cur.fetchall()
+        return _response(200, {"doctor": doctor})
+    finally:
+        conn.close()
+
+
+def _available_slots(doctor_id, event):
+    params = _query(event)
+    start = params.get("startFrom")
+    end = params.get("startTo")
+    if not start or not end:
+        return _response(400, {"message": "startFrom and startTo are required ISO timestamps"})
+    start = _iso_utc(start)
+    end = _iso_utc(end)
+    if start > end or datetime.fromisoformat(end.replace("Z","+00:00")) - datetime.fromisoformat(start.replace("Z","+00:00")) > timedelta(days=31):
+        return _response(400, {"message": "Date range must be 0-31 days"})
+    table = _table("SLOTS_TABLE")
+    query = dict(IndexName="gsi-doctor-time",
+        KeyConditionExpression=Key("doctorId").eq(str(doctor_id)) & Key("startUtc").between(start, end))
+    result = table.query(**query)
+    items = list(result.get("Items", []))
+    while result.get("LastEvaluatedKey"):
+        result = table.query(**query, ExclusiveStartKey=result["LastEvaluatedKey"])
+        items.extend(result.get("Items", []))
+    available = []
+    for item in items:
+        if str(item.get("status", "")).upper() != "OPEN":
+            continue
+        free = max(0, int(item.get("capacity", 0)) - int(item.get("bookedCount", 0)))
+        if free == 0:
+            continue
+        available.append({"slotId": item.get("slotId"), "doctorId": str(doctor_id),
+                          "startUtc": item.get("startUtc"), "endUtc": item.get("endUtc"),
+                          "capacity": int(item.get("capacity", 0)),
+                          "bookedCount": int(item.get("bookedCount", 0)),
+                          "freeSeats": free,
+                          "consultationTypeId": item.get("consultationTypeId")})
+    available.sort(key=lambda x: x["startUtc"] or "")
+    return _response(200, {"items": available, "count": len(available)})
+
 # ---------------------------------------------------------
 # MAIN LAMBDA HANDLER
 # ---------------------------------------------------------
@@ -2620,7 +2779,14 @@ def lambda_handler(event, context):
     if method == "OPTIONS":
         return _response(200, {"message": "OK"})
 
-    if path != "/health" and not user_id:
+    public_route = (
+        method == "GET" and (
+            path == "/health"
+            or path == "/doctors/search"
+            or re.fullmatch(r"/doctors/[1-9][0-9]*(?:/slots)?", path)
+        )
+    )
+    if not public_route and not user_id:
         return _response(
             401,
             {"message": "Unauthorized"},
@@ -2649,6 +2815,27 @@ def lambda_handler(event, context):
             and path == "/reference/hospitals"
         ):
             return _reference_data("hospitals")
+
+        # Patient identity is derived exclusively from the verified authorizer.
+        if path == "/patients/me" and method in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+            if role != "patient":
+                return _response(403, {"message": "Patient access required"})
+            return _patient_me(user_id, method, event)
+
+        if method == "GET" and path == "/doctors/search":
+            return _doctor_search(event)
+
+        match_public = re.fullmatch(r"/doctors/([1-9][0-9]*)", path)
+        if method == "GET" and match_public:
+            return _public_doctor(match_public.group(1))
+
+        match_availability = re.fullmatch(r"/doctors/([1-9][0-9]*)/slots", path)
+        if method == "GET" and match_availability:
+            return _available_slots(match_availability.group(1), event)
+
+        # Explicitly reject requests attempting another patient's ID.
+        if re.fullmatch(r"/patients/[0-9]+(?:/.*)?", path):
+            return _response(403, {"message": "Cross-patient access is forbidden"})
 
         # Authenticated account
         if method == "GET" and path == "/users/me":

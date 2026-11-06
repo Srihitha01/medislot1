@@ -169,6 +169,49 @@ Resources:
                     - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
                     - TargetArn: !GetAtt AppRouterFunction.Arn
 
+          /doctors/search:
+            get:
+              security: []
+              responses:
+                "200": {description: Doctor search}
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri:
+                  Fn::Sub:
+                    - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
+                    - TargetArn: !GetAtt AppRouterFunction.Arn
+
+          /doctors/{doctorId}:
+            get:
+              security: []
+              parameters:
+                - {name: doctorId, in: path, required: true, type: string}
+              responses:
+                "200": {description: Public doctor profile}
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri:
+                  Fn::Sub:
+                    - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
+                    - TargetArn: !GetAtt AppRouterFunction.Arn
+
+          /doctors/{doctorId}/slots:
+            get:
+              security: []
+              parameters:
+                - {name: doctorId, in: path, required: true, type: string}
+              responses:
+                "200": {description: Public doctor availability}
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri:
+                  Fn::Sub:
+                    - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
+                    - TargetArn: !GetAtt AppRouterFunction.Arn
+
           # Shared registration endpoint for doctors and patients
           /auth/register:
             post:

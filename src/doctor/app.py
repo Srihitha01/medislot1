@@ -213,11 +213,8 @@ def health():
 @app.route("/login", methods=["GET", "POST"])
 def login():
 
-    if (
-        session.get("access_token")
-        and session.get("role") == "doctor"
-    ):
-        return redirect(url_for("dashboard"))
+    if session.get("access_token"):
+        return redirect(url_for("patient_dashboard" if session.get("role") == "patient" else "dashboard"))
 
     if request.method == "POST":
 
@@ -259,11 +256,8 @@ def login():
                     else response.status_code,
                 )
 
-            if result.get("role") != "doctor":
-                flash(
-                    "This account is not registered as a doctor.",
-                    "error",
-                )
+            if result.get("role") not in ("doctor", "patient"):
+                flash("Unsupported account role.", "error")
                 return render_template("login.html"), 403
 
             access_token = result.get("accessToken")
@@ -284,7 +278,7 @@ def login():
             session["user_id"] = str(result.get("userId", ""))
             session["email"] = email
 
-            return redirect(url_for("dashboard"))
+            return redirect(url_for("patient_dashboard" if result["role"] == "patient" else "dashboard"))
 
         except requests.RequestException:
             app.logger.exception("MediSlot login API request failed")
@@ -447,12 +441,39 @@ def dashboard():
     )
 
 
+
+def patient_or_doctor_required(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        if not session.get("access_token") or session.get("role") not in ("doctor", "patient"):
+            return jsonify({"message": "Authentication required"}), 401
+        return function(*args, **kwargs)
+    return wrapped
+
+
+def patient_required(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        if not session.get("access_token"):
+            return redirect(url_for("login"))
+        if session.get("role") != "patient":
+            return redirect(url_for("dashboard"))
+        return function(*args, **kwargs)
+    return wrapped
+
+
+@app.get("/patient")
+@patient_required
+def patient_dashboard():
+    return render_template("patient_dashboard.html", api_base_url=API_BASE_URL,
+                           access_token=session["access_token"])
+
 # --------------------------------------------------
 # Logout
 # --------------------------------------------------
 
 @app.post("/session/refresh")
-@doctor_required
+@patient_or_doctor_required
 def session_refresh():
     refresh_token = session.get("refresh_token")
 

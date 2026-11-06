@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MediSlot | Patient Care Portal</title>
+<style>
+:root{font-family:Inter,ui-sans-serif,system-ui,Arial;color:#17314b;background:#f3f7fb}*{box-sizing:border-box}body{margin:0}
+header{background:#fff;border-bottom:1px solid #dce7f0;padding:18px max(24px,calc((100vw - 1160px)/2));display:flex;justify-content:space-between;align-items:center;gap:12px}
+.brand{font-size:25px;font-weight:850;color:#087b91}.brand b{color:#17314b}a{color:#087b91}header a{text-decoration:none;font-weight:600}
+.hero{background:linear-gradient(115deg,#0b5975,#0a8c98);color:#fff;padding:48px max(24px,calc((100vw - 1160px)/2))}
+.hero h1{font-size:clamp(26px,4vw,42px);margin:0 0 10px}.hero p{opacity:.88;margin:0;max-width:620px}
+main{max-width:1160px;margin:28px auto;padding:0 24px;display:grid;grid-template-columns:1fr 1.35fr;gap:22px}
+section{background:#fff;border:1px solid #e2ebf2;border-radius:18px;padding:24px;box-shadow:0 8px 30px #17405c0a}
+section h2{margin:0 0 8px;font-size:21px}small,.muted{color:#667c90}label{font-size:13px;font-weight:700;display:block;margin:14px 0 6px}
+input,select{width:100%;border:1px solid #d1e0ea;border-radius:9px;padding:11px;font:inherit;background:#fff}
+button{border:0;border-radius:9px;padding:12px 18px;background:#087e90;color:white;font:inherit;font-weight:700;cursor:pointer;margin-top:14px}
+button.secondary{background:#e7f5f6;color:#076477}.grid{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
+.card{padding:16px;border:1px solid #e1ebf2;border-radius:12px;margin:12px 0;background:#fbfdff}
+.card h3{margin:0 0 5px;font-size:17px}.card p{margin:5px 0;color:#61758a;font-size:14px}
+#status{padding:12px;margin:12px 0;border-radius:8px;display:none;background:#eaf5f8;color:#14576b}
+#status.error{background:#fff0ee;color:#a63232}#results{max-height:430px;overflow:auto}
+.full{grid-column:1/-1}.slot{display:flex;justify-content:space-between;align-items:center;gap:12px}
+@media(max-width:800px){main{grid-template-columns:1fr}.grid{grid-template-columns:1fr}header{padding:18px 24px}}
+</style></head><body>
+<header><div class="brand">Medi<b>Slot</b> <span class="muted" style="font-size:13px;font-weight:500">Patient Portal</span></div><a href="/logout">Sign out</a></header>
+<div class="hero"><h1>Your care, made simple.</h1><p>Manage your health profile, find a trusted specialist, and explore appointment availability in one place.</p></div>
+<main><div>
+<section><h2>My health profile</h2><p class="muted">Your information is private to your account.</p>
+<div id="status" role="status"></div>
+<form id="profile">
+<div class="grid"><div><label>Full name</label><input name="fullName" required maxlength="150"></div>
+<div><label>Phone</label><input name="phone" maxlength="30"></div>
+<div><label>City</label><input name="city" maxlength="100"></div>
+<div><label>Date of birth</label><input name="dateOfBirth" type="date"></div>
+<div><label>Gender</label><select name="gender"><option value="">Prefer not to say</option><option>Female</option><option>Male</option><option>Other</option></select></div>
+<div><label>Emergency contact</label><input name="emergencyContactName"></div>
+<div class="full"><label>Emergency phone</label><input name="emergencyContactPhone"></div></div>
+<button type="submit">Save profile</button> <button type="button" class="secondary" id="delete">Delete profile</button>
+</form></section></div>
+<div><section><h2>Find a doctor</h2><p class="muted">Search by name, hospital, speciality or city. Combine filters freely.</p>
+<form id="search"><div class="grid">
+<div><label>Doctor name</label><input name="name" placeholder="e.g. Sharma"></div>
+<div><label>Specialisation</label><input name="specialisation" placeholder="e.g. Cardiology"></div>
+<div><label>Hospital</label><input name="hospital" placeholder="e.g. MediSlot"></div>
+<div><label>City</label><input name="city" placeholder="e.g. Hyderabad"></div>
+</div><button>Search doctors</button></form><div id="results" aria-live="polite"></div><div id="paging"></div></section>
+<section style="margin-top:22px"><h2>Doctor profile & available slots</h2><p class="muted">Select a doctor above to see consultation fees and open seats.</p>
+<div id="details"></div><div id="slots"></div></section></div></main>
+<script>
+const BASE={{ api_base_url|tojson }},TOKEN={{ access_token|tojson }};
+const statusBox=document.querySelector('#status');
+function notice(msg,error=false){statusBox.style.display='block';statusBox.className=error?'error':'';statusBox.textContent=msg;}
+async function api(path,opts={}){const r=await fetch(BASE+path,{...opts,headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json',...(opts.headers||{})}});let data={};try{data=await r.json()}catch{}if(!r.ok)throw Error(data.message||'Request failed ('+r.status+')');return data;}
+function node(tag,text,cls){const e=document.createElement(tag);e.textContent=text??'';if(cls)e.className=cls;return e;}
+async function profile(){try{const d=await api('/patients/me');const p=d.profile||{};for(const el of document.querySelector('#profile').elements){if(el.name)el.value=p[el.name]||''}}catch(e){notice(e.message,true)}}
+document.querySelector('#profile').onsubmit=async e=>{e.preventDefault();const data=Object.fromEntries(new FormData(e.target));for(const k of Object.keys(data))if(data[k]==='')data[k]=null;try{await api('/patients/me',{method:'PATCH',body:JSON.stringify(data)});notice('Profile saved successfully.')}catch(err){notice(err.message,true)}};
+document.querySelector('#delete').onclick=async()=>{if(!confirm('Delete your profile details? Your login account remains active.'))return;try{await api('/patients/me',{method:'DELETE'});notice('Profile deleted.');await profile()}catch(e){notice(e.message,true)}};
+let currentPage=1;
+async function search(page=1){currentPage=page;const q=new URLSearchParams(new FormData(document.querySelector('#search')));q.set('page',page);q.set('pageSize',10);const out=document.querySelector('#results');out.replaceChildren();try{const d=await api('/doctors/search?'+q);if(!d.items.length)out.append(node('p','No matching doctors found.','muted'));for(const doc of d.items){const card=node('div','','card');card.append(node('h3',doc.name),node('p',[doc.specialisation,doc.hospital,doc.city].filter(Boolean).join(' · ')));const b=node('button','View profile & slots','secondary');b.onclick=()=>doctor(doc.doctorId);card.append(b);out.append(card)}const paging=document.querySelector('#paging');paging.replaceChildren(node('small',`Page ${d.page} of ${Math.max(1,d.totalPages)} · ${d.total} doctors `));if(page>1){const b=node('button','Previous','secondary');b.onclick=()=>search(page-1);paging.append(b)}if(page<d.totalPages){const b=node('button','Next','secondary');b.onclick=()=>search(page+1);paging.append(b)}}catch(e){out.append(node('p',e.message,'muted'))}}
+document.querySelector('#search').onsubmit=e=>{e.preventDefault();search(1)};
+async function doctor(id){const details=document.querySelector('#details'),slots=document.querySelector('#slots');details.replaceChildren();slots.replaceChildren();try{const d=(await api('/doctors/'+id)).doctor;details.append(node('h3',d.name),node('p',[d.specialisation,d.hospital,d.city].filter(Boolean).join(' · ')));for(const t of d.consultationTypes)details.append(node('p',`${t.name} · ${t.durationMinutes} min · ₹${t.fee}`));const start=new Date(),end=new Date(start.getTime()+14*86400000);const params=new URLSearchParams({startFrom:start.toISOString(),startTo:end.toISOString()});const data=await api('/doctors/'+id+'/slots?'+params);slots.append(node('h3','Open appointments (next 14 days)'));if(!data.items.length)slots.append(node('p','No open slots in this period.','muted'));for(const s of data.items){const row=node('div','','card slot');row.append(node('span',new Date(s.startUtc).toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'})),node('strong',s.freeSeats+' seats left'));slots.append(row)}}catch(e){slots.append(node('p',e.message,'muted'))}}
+profile();search();
+</script></body></html>

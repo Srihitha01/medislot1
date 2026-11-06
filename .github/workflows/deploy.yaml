@@ -1387,3 +1387,34 @@ jobs:
               --query 'Stacks[0].Outputs[*].[OutputKey,OutputValue]' \
               --output table
           done
+  integration_live:
+    name: Verify deployed MediSlot with real patient accounts
+    needs: [deploy_api, deploy_doctor_dashboard]
+    if: success() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: development
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install requests
+      - name: Run live integration tests (no mocks)
+        env:
+          MEDISLOT_API_BASE_URL: ${{ secrets.MEDISLOT_API_BASE_URL }}
+          TEST_REGISTRATION_DOMAIN: ${{ secrets.TEST_REGISTRATION_DOMAIN }}
+          TEST_REGISTRATION_PASSWORD: ${{ secrets.TEST_REGISTRATION_PASSWORD }}
+          TEST_PATIENT_A_EMAIL: ${{ secrets.TEST_PATIENT_A_EMAIL }}
+          TEST_PATIENT_A_PASSWORD: ${{ secrets.TEST_PATIENT_A_PASSWORD }}
+          TEST_PATIENT_B_EMAIL: ${{ secrets.TEST_PATIENT_B_EMAIL }}
+          TEST_PATIENT_B_PASSWORD: ${{ secrets.TEST_PATIENT_B_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${MEDISLOT_API_BASE_URL:?Configure live API base URL secret}"
+          : "${TEST_REGISTRATION_DOMAIN:?Configure a controlled test email domain}"
+          : "${TEST_REGISTRATION_PASSWORD:?Configure test registration password}"
+          : "${TEST_PATIENT_A_EMAIL:?Configure patient A email secret}"
+          : "${TEST_PATIENT_A_PASSWORD:?Configure patient A password secret}"
+          : "${TEST_PATIENT_B_EMAIL:?Configure patient B email secret}"
+          : "${TEST_PATIENT_B_PASSWORD:?Configure patient B password secret}"
+          python scripts/integration_live.py
