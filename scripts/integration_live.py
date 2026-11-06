@@ -1,4 +1,4 @@
-"""Live tests against deployed API; no mocks. Requires two real patient test accounts."""
+"""Live tests against deployed API; no mocks. Creates isolated test patients by default."""
 import os
 import uuid
 import requests
@@ -15,19 +15,40 @@ def login(email, password):
     assert data["role"]=="patient", "Test user must be a patient"
     return data["accessToken"],str(data["userId"])
 def main():
-    # Register a unique test patient through the deployed registration Lambda.
-    email = "medislot-ci-" + uuid.uuid4().hex[:12] + "@" + os.environ["TEST_REGISTRATION_DOMAIN"]
+    domain = os.environ["TEST_REGISTRATION_DOMAIN"].strip()
     password = os.environ["TEST_REGISTRATION_PASSWORD"]
-    created = call("POST", "/auth/register", json={
-        "role": "patient", "name": "MediSlot Integration Test",
-        "email": email, "password": password, "phone": "9999999999",
-        "city": "Hyderabad"
-    })
-    assert created.status_code in (200, 201), created.text
-    registered_token, _ = login(email, password)
-    assert call("GET", "/patients/me", registered_token).status_code == 200
-    a, aid=login(os.environ["TEST_PATIENT_A_EMAIL"],os.environ["TEST_PATIENT_A_PASSWORD"])
-    b, bid=login(os.environ["TEST_PATIENT_B_EMAIL"],os.environ["TEST_PATIENT_B_PASSWORD"])
+    if not domain or "@" in domain or "." not in domain:
+        raise ValueError("TEST_REGISTRATION_DOMAIN must be a controlled email domain")
+    if len(password) < 8:
+        raise ValueError("TEST_REGISTRATION_PASSWORD must have at least 8 characters")
+
+    def create_patient(label):
+        email = "medislot-ci-" + uuid.uuid4().hex[:16] + "@" + domain
+        created = call("POST", "/auth/register", json={
+            "role": "patient", "name": "MediSlot CI " + label,
+            "email": email, "password": password, "phone": "9999999999",
+            "city": "Hyderabad"
+        })
+        assert created.status_code in (200, 201), (
+            "Test registration failed: " + str(created.status_code) + " " + created.text
+        )
+        return login(email, password)
+
+    # Optionally reuse two dedicated test accounts if all four secrets exist.
+    existing = [os.environ.get(k) for k in (
+        "TEST_PATIENT_A_EMAIL", "TEST_PATIENT_A_PASSWORD",
+        "TEST_PATIENT_B_EMAIL", "TEST_PATIENT_B_PASSWORD"
+    )]
+    if all(existing):
+        a, aid = login(existing[0], existing[1])
+        b, bid = login(existing[2], existing[3])
+    elif any(existing):
+        raise ValueError("Provide all four existing patient credentials or none")
+    else:
+        a, aid = create_patient("A")
+        b, bid = create_patient("B")
+
+    assert call("GET", "/patients/me", a).status_code == 200
     assert aid!=bid
     mine=call("GET","/patients/me",a)
     assert mine.status_code==200, mine.text

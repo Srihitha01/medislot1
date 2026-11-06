@@ -209,9 +209,18 @@ def health():
 # Login
 # --------------------------------------------------
 
-@app.route("/", methods=["GET", "POST"])
+@app.get("/")
+def welcome():
+    return render_template("welcome.html")
+
+
 @app.route("/login", methods=["GET", "POST"])
+@app.route("/doctor/login", methods=["GET", "POST"])
+@app.route("/patient/login", methods=["GET", "POST"])
 def login():
+    requested_role = "patient" if request.path.startswith("/patient/") else (
+        "doctor" if request.path.startswith("/doctor/") else None
+    )
 
     if session.get("access_token"):
         return redirect(url_for("patient_dashboard" if session.get("role") == "patient" else "dashboard"))
@@ -223,7 +232,7 @@ def login():
 
         if not email or not password:
             flash("Please enter your email and password.", "error")
-            return render_template("login.html"), 400
+            return render_template("login.html", requested_role=requested_role), 400
 
         try:
             response = requests.post(
@@ -251,14 +260,17 @@ def login():
                 flash(message, "error")
 
                 return (
-                    render_template("login.html"),
+                    render_template("login.html", requested_role=requested_role),
                     502 if response.status_code >= 500
                     else response.status_code,
                 )
 
             if result.get("role") not in ("doctor", "patient"):
                 flash("Unsupported account role.", "error")
-                return render_template("login.html"), 403
+                return render_template("login.html", requested_role=requested_role), 403
+            if requested_role and result["role"] != requested_role:
+                flash(f"This is not a {requested_role} account. Choose the correct login.", "error")
+                return render_template("login.html", requested_role=requested_role), 403
 
             access_token = result.get("accessToken")
 
@@ -267,7 +279,7 @@ def login():
                     "Login service did not return an access token.",
                     "error",
                 )
-                return render_template("login.html"), 502
+                return render_template("login.html", requested_role=requested_role), 502
 
             session.clear()
             session.permanent = True
@@ -288,9 +300,9 @@ def login():
                 "error",
             )
 
-            return render_template("login.html"), 502
+            return render_template("login.html", requested_role=requested_role), 502
 
-    return render_template("login.html")
+    return render_template("login.html", requested_role=requested_role)
 
 
 # --------------------------------------------------
@@ -419,10 +431,7 @@ def register_patient():
         flash(message, "error")
         return render(400)
 
-    flash(
-        f"{message} Patients use the MediSlot patient app to book appointments.",
-        "success",
-    )
+    flash(message, "success")
     return redirect(url_for("login"))
 
 

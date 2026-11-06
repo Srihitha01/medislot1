@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MediSlot | Doctor Login</title>
+    <title>MediSlot | Login</title>
 
     <style>
         * {
@@ -119,10 +119,10 @@
             Medi<span>Slot</span>
         </div>
 
-        <h1>Doctor Login</h1>
+        <h1>{{ (requested_role or "MediSlot")|capitalize }} Login</h1>
 
         <p class="subtitle">
-            Sign in to manage your appointments and availability.
+            Sign in securely to access your MediSlot dashboard.
         </p>
 
         {% with messages = get_flashed_messages(with_categories=true) %}
@@ -133,7 +133,7 @@
             {% endfor %}
         {% endwith %}
 
-        <form method="POST" action="{{ url_for('login') }}">
+        <form method="POST" action="{{ request.path }}">
 
             <label for="email">Email Address</label>
 
@@ -162,12 +162,12 @@
             </button>
 
         </form>
-        <p>New to MediSlot?
+        <p><a href="{{ url_for('welcome') }}">← Back to welcome</a></p><p>New to MediSlot?
     <a href="/register/doctor">Register as a doctor</a> ·
     <a href="/register/patient">Register as a patient</a>
 </p>
 
-        <small>Secure MediSlot Doctor Workspace</small>
+        <small>Secure MediSlot Workspace</small>
 
     </main>
 
