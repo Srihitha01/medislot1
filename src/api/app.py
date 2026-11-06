@@ -1803,7 +1803,6 @@ def _doctor_collection(
                     full_day = bool(data.get("fullDay", True))
                     start = end = None
                     if not full_day:
-                        from datetime import time as dt_time
                         start = dt_time.fromisoformat(str(data.get("startTime", "")))
                         end = dt_time.fromisoformat(str(data.get("endTime", "")))
                         if start >= end:
