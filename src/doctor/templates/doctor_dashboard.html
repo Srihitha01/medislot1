@@ -1360,84 +1360,92 @@
         return `<span class="status ${className}">${escapeHTML(safeStatus === "blackout" ? "unavailable (blackout)" : safeStatus.replaceAll("_", " "))}</span>`;
     }
 
-    // Single-flight refresh: when several API calls get a 401 at the same
-    // time, they all share ONE /session/refresh request instead of each
-    // starting their own (which can invalidate each other's tokens).
+    // Share one refresh request among concurrent API calls.
     let refreshPromise = null;
 
     function refreshAccessToken() {
-        if (!refreshPromise) {
-            refreshPromise = (async () => {
-                try {
-                    const r = await fetch("/session/refresh", {
-                        method: "POST",
-                        credentials: "same-origin"
-                    });
-                    if (!r.ok) return false;
-                    const data = await r.json();
-                    if (!data.accessToken) return false;
-                    accessToken = data.accessToken;
-                    return true;
-                } catch {
-                    return false;
-                } finally {
-                    // Allow a new refresh only after this one has settled.
-                    setTimeout(() => { refreshPromise = null; }, 0);
-                }
-            })();
-        }
+        if (refreshPromise) return refreshPromise;
+
+        refreshPromise = (async () => {
+            const response = await fetch("/session/refresh", {
+                method: "POST",
+                credentials: "same-origin",
+                cache: "no-store"
+            });
+
+            if (!response.ok) {
+                throw new Error(`Session refresh failed (${response.status}).`);
+            }
+
+            const data = await response.json();
+            if (!data.accessToken) {
+                throw new Error("Refresh endpoint returned no access token.");
+            }
+
+            accessToken = data.accessToken;
+            return accessToken;
+        })();
+
+        // Clear only after the promise settles; concurrent callers share it.
+        refreshPromise.finally(() => {
+            refreshPromise = null;
+        }).catch(() => {});
+
         return refreshPromise;
     }
 
-    async function apiRequest(path, method = "GET", body = undefined, isRetry = false) {
+    async function apiRequest(path, method = "GET", body = undefined) {
         if (!accessToken) {
             throw new Error("Your doctor session has expired. Please log in again.");
         }
 
-        const headers = {
-            "Authorization": `Bearer ${accessToken}`,
-            "Accept": "application/json"
-        };
-
-        const options = {
-            method,
-            headers
-        };
-
-        if (body !== undefined) {
-            headers["Content-Type"] = "application/json";
-            options.body = JSON.stringify(body);
-        }
-
-        const response = await fetch(`${API_BASE_URL}${path}`, options);
-
-        if (response.status === 401 && !isRetry) {
-            if (await refreshAccessToken()) {
-                return apiRequest(path, method, body, true);
+        async function send(token) {
+            const headers = {
+                "Authorization": `Bearer ${token}`,
+                "Accept": "application/json"
+            };
+            const options = { method, headers, cache: "no-store" };
+            if (body !== undefined) {
+                headers["Content-Type"] = "application/json";
+                options.body = JSON.stringify(body);
             }
-            window.location.href = "/logout";
-            throw new Error("Your session has expired. Please log in again.");
+            return fetch(`${API_BASE_URL}${path}`, options);
         }
 
-        let result = {};
-        const responseText = await response.text();
+        const originalToken = accessToken;
+        let response = await send(originalToken);
 
+        if (response.status === 401) {
+            // A different request may already have refreshed the token.
+            if (accessToken === originalToken) {
+                try {
+                    await refreshAccessToken();
+                } catch (error) {
+                    throw new Error(
+                        `Authentication expired for ${path}. Please log in again.`
+                    );
+                }
+            }
+
+            // Retry once using the most recent token.
+            response = await send(accessToken);
+        }
+
+        const responseText = await response.text();
+        let result = {};
         if (responseText) {
             try {
                 result = JSON.parse(responseText);
             } catch {
-                throw new Error(`The API returned an invalid response (${response.status}).`);
+                throw new Error(`The API returned invalid JSON (${response.status}) for ${path}.`);
             }
         }
 
         if (!response.ok) {
             throw new Error(
-                result.message ||
-                result.error ||
-                `Request failed with status ${response.status}`
+                `${path}: ${result.message || result.error || `HTTP ${response.status}`}`
             );
         }
-
         return result;
     }
 
@@ -2098,29 +2106,42 @@
 
         try {
             await loadReferenceData();
-
-            await Promise.all([
-                loadProfile(),
-                loadConsultations(),
-                loadAvailability(),
-                loadBlackouts(),
-                loadSchedule(),
-                loadAppointments()
-            ]);
-
-            // Load the active section if the page was opened with a hash.
-            const requestedSection = window.location.hash.replace("#", "");
-            const allowedSections = [
-                "overview", "profile", "consultation", "schedule",
-                "availability", "blackouts", "slots", "patients",
-                "appointments", "settings"
-            ];
-
-            if (allowedSections.includes(requestedSection)) {
-                showSection(requestedSection);
-            }
         } catch (error) {
-            handleError(error);
+            console.warn("Reference data failed:", error);
+        }
+
+        const tasks = [
+            ["profile", loadProfile],
+            ["consultations", loadConsultations],
+            ["availability", loadAvailability],
+            ["blackouts", loadBlackouts],
+            ["schedule", loadSchedule],
+            ["appointments", loadAppointments]
+        ];
+        const outcomes = await Promise.allSettled(
+            tasks.map(async ([name, loader]) => {
+                await loader();
+                return name;
+            })
+        );
+        outcomes.forEach((outcome, index) => {
+            if (outcome.status === "rejected") {
+                console.error(`Failed ${tasks[index][0]}:`, outcome.reason);
+                if (tasks[index][0] === "profile") {
+                    $("headerSpecialisation").textContent = "Profile unavailable";
+                    showMessage(`Doctor profile: ${outcome.reason.message}`);
+                }
+            }
+        });
+
+        const requestedSection = window.location.hash.replace("#", "");
+        const allowedSections = [
+            "overview", "profile", "consultation", "schedule",
+            "availability", "blackouts", "slots", "patients",
+            "appointments", "settings"
+        ];
+        if (allowedSections.includes(requestedSection)) {
+            showSection(requestedSection);
         }
     }
 
