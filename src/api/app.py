@@ -2650,13 +2650,27 @@ def _patient_profile(user_id, method, event):
 
             updates = [(column, data[api]) for api, column in supported.items() if api in data]
             if updates and not patient:
-                cur.execute("INSERT INTO patients (user_id) VALUES (%s)", (user_id,))
-            if updates:
-                assignments = ", ".join(f"`{column}`=%s" for column, _ in updates)
+                # Existing patient schemas may require full_name on INSERT.
+                profile_name = (data.get("fullName") or account["name"]).strip()
                 cur.execute(
-                    f"UPDATE patients SET {assignments} WHERE user_id=%s",
-                    tuple(value for _, value in updates) + (user_id,),
+                    "INSERT INTO patients (user_id, full_name) VALUES (%s, %s)",
+                    (user_id, profile_name),
                 )
+            if "fullName" in data and "full_name" in available and (patient or updates):
+                cur.execute(
+                    "UPDATE patients SET full_name=%s WHERE user_id=%s",
+                    (data["fullName"].strip(), user_id),
+                )
+            update_statements = {
+                "phone": "UPDATE patients SET phone=%s WHERE user_id=%s",
+                "city": "UPDATE patients SET city=%s WHERE user_id=%s",
+                "date_of_birth": "UPDATE patients SET date_of_birth=%s WHERE user_id=%s",
+                "gender": "UPDATE patients SET gender=%s WHERE user_id=%s",
+                "emergency_contact_name": "UPDATE patients SET emergency_contact_name=%s WHERE user_id=%s",
+                "emergency_contact_phone": "UPDATE patients SET emergency_contact_phone=%s WHERE user_id=%s",
+            }
+            for column, value in updates:
+                cur.execute(update_statements[column], (value, user_id))
             conn.commit()
             return _response(200, {"message": "Patient profile saved"})
     except Exception:
