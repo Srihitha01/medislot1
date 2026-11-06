@@ -1360,20 +1360,33 @@
         return `<span class="status ${className}">${escapeHTML(safeStatus === "blackout" ? "unavailable (blackout)" : safeStatus.replaceAll("_", " "))}</span>`;
     }
 
-    async function refreshAccessToken() {
-        try {
-            const r = await fetch("/session/refresh", {
-                method: "POST",
-                credentials: "same-origin"
-            });
-            if (!r.ok) return false;
-            const data = await r.json();
-            if (!data.accessToken) return false;
-            accessToken = data.accessToken;
-            return true;
-        } catch {
-            return false;
+    // Single-flight refresh: when several API calls get a 401 at the same
+    // time, they all share ONE /session/refresh request instead of each
+    // starting their own (which can invalidate each other's tokens).
+    let refreshPromise = null;
+
+    function refreshAccessToken() {
+        if (!refreshPromise) {
+            refreshPromise = (async () => {
+                try {
+                    const r = await fetch("/session/refresh", {
+                        method: "POST",
+                        credentials: "same-origin"
+                    });
+                    if (!r.ok) return false;
+                    const data = await r.json();
+                    if (!data.accessToken) return false;
+                    accessToken = data.accessToken;
+                    return true;
+                } catch {
+                    return false;
+                } finally {
+                    // Allow a new refresh only after this one has settled.
+                    setTimeout(() => { refreshPromise = null; }, 0);
+                }
+            })();
         }
+        return refreshPromise;
     }
 
     async function apiRequest(path, method = "GET", body = undefined, isRetry = false) {
