@@ -1,7 +1,3 @@
-
-#deploy
-
-
 name: MediSlot CI/CD
 
 on:
@@ -1350,8 +1346,8 @@ jobs:
           set -euo pipefail
           APP_KEY="medislot/doctor-dashboard/${GITHUB_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/doctor-dashboard-app.zip"
           MANIFEST_KEY="medislot/doctor-dashboard/latest-${ENVIRONMENT}.txt"
-          printf '%s\\n' "$APP_KEY" > /tmp/medislot-dashboard-latest.txt
-          aws s3 cp /tmp/medislot-dashboard-latest.txt "s3://${ARTIFACT_BUCKET}/${MANIFEST_KEY}" \\
+          printf '%s\n' "$APP_KEY" > /tmp/medislot-dashboard-latest.txt
+          aws s3 cp /tmp/medislot-dashboard-latest.txt "s3://${ARTIFACT_BUCKET}/${MANIFEST_KEY}" \
             --region "$AWS_REGION" --content-type text/plain --only-show-errors
           echo "Published $APP_KEY; EC2 checks S3 about every 60 seconds."
           echo "No SSH keys or SSM Agent are required for application updates."
