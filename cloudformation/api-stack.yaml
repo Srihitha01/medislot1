@@ -182,6 +182,23 @@ Resources:
                     - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
                     - TargetArn: !GetAtt AppRouterFunction.Arn
 
+          # Authenticated doctor self-profile; must not match the public doctorId route.
+          /doctors/me:
+            get:
+              security:
+                - MediSlotAuthorizer: []
+              responses:
+                "200": {description: Authenticated doctor profile}
+                "401": {description: Unauthorized}
+                "403": {description: Forbidden}
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri:
+                  Fn::Sub:
+                    - "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TargetArn}/invocations"
+                    - TargetArn: !GetAtt AppRouterFunction.Arn
+
           /doctors/{doctorId}:
             get:
               security: []
