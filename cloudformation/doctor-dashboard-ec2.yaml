@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: "2010-09-09"
  
 Description: >
   MediSlot Doctor Dashboard EC2 infrastructure.
-  Ubuntu 24.04 with Flask, Gunicorn, Nginx and AWS Systems Manager access.
+  Ubuntu 24.04 with Flask, Gunicorn, Nginx and automated S3 release polling.
   Public EC2 access is intentionally enabled for dashboard access from anywhere.
   A fixed Elastic IP keeps the dashboard URL stable across redeployments.
  
@@ -142,9 +142,9 @@ Resources:
     Type: AWS::EC2::EIPAssociation
     Properties:
       AllocationId: !GetAtt DoctorDashboardEip.AllocationId
-      InstanceId: !Ref DoctorDashboardInstance
+      InstanceId: !Ref DoctorDashboardInstanceV2
  
-  DoctorDashboardInstance:
+  DoctorDashboardInstanceV2:
     Type: AWS::EC2::Instance
     Metadata:
       checkov:
@@ -267,6 +267,74 @@ Resources:
           systemctl restart medislot-dashboard
           systemctl restart nginx
 
+          # Self-managed in-place releases; no SSH or SSM Run Command required.
+          cat > /usr/local/sbin/medislot-dashboard-pull <<'PULLSCRIPT'
+          #!/bin/bash
+          set -euo pipefail
+          export AWS_DEFAULT_REGION="__REGION__"
+          BUCKET="__BUCKET__"
+          PREFIX="medislot/doctor-dashboard"
+          MANIFEST="s3://$BUCKET/$PREFIX/latest-__ENV__.txt"
+          APP_DIR="/opt/medislot-dashboard"
+          exec 9>/run/medislot-dashboard-pull.lock
+          flock -n 9 || exit 0
+          KEY=$(aws s3 cp "$MANIFEST" - --region "$AWS_DEFAULT_REGION" 2>/dev/null | tr -d '\\r\\n') || exit 0
+          [[ "$KEY" == "$PREFIX/"*"/doctor-dashboard-app.zip" ]] || exit 1
+          [[ "$KEY" != *".."* && "$KEY" != *" "* ]] || exit 1
+          [[ -n "$KEY" ]] || exit 0
+          CURRENT=$(cat /var/lib/medislot-dashboard/deployed-key 2>/dev/null || true)
+          [[ "$CURRENT" != "$KEY" ]] || exit 0
+          WORK=$(mktemp -d)
+          trap 'rm -rf "$WORK"' EXIT
+          aws s3 cp "s3://$BUCKET/$KEY" "$WORK/release.zip" --region "$AWS_DEFAULT_REGION" --only-show-errors
+          unzip -tq "$WORK/release.zip"
+          mkdir -p "$WORK/new" "$WORK/old"
+          unzip -oq "$WORK/release.zip" -d "$WORK/new"
+          test -s "$WORK/new/app.py"
+          test -s "$WORK/new/requirements.txt"
+          # Preserve venv and runtime files; restore application files on failure.
+          cp -a "$APP_DIR/." "$WORK/old/"
+          cp -a "$WORK/new/." "$APP_DIR/"
+          chown -R ubuntu:ubuntu "$APP_DIR"
+          if ! sudo -u ubuntu "$APP_DIR/venv/bin/pip" install --disable-pip-version-check -r "$APP_DIR/requirements.txt" || ! systemctl restart medislot-dashboard || ! curl -fsS --retry 12 --retry-delay 5 --retry-connrefused http://127.0.0.1:8000/health; then
+            cp -a "$WORK/old/." "$APP_DIR/"
+            chown -R ubuntu:ubuntu "$APP_DIR"
+            systemctl restart medislot-dashboard || true
+            exit 1
+          fi
+          install -d /var/lib/medislot-dashboard
+          printf '%s\\n' "$KEY" > /var/lib/medislot-dashboard/deployed-key
+          PULLSCRIPT
+          sed -i "s|__REGION__|${AWS::Region}|g; s|__BUCKET__|${ArtifactBucket}|g; s|__ENV__|${Environment}|g" /usr/local/sbin/medislot-dashboard-pull
+          chmod 700 /usr/local/sbin/medislot-dashboard-pull
+
+          cat > /etc/systemd/system/medislot-dashboard-pull.service <<'PULLSERVICE'
+          [Unit]
+          Description=Pull MediSlot dashboard releases from S3
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/medislot-dashboard-pull
+          PULLSERVICE
+
+          cat > /etc/systemd/system/medislot-dashboard-pull.timer <<'PULLTIMER'
+          [Unit]
+          Description=Check MediSlot dashboard releases every minute
+
+          [Timer]
+          OnBootSec=90s
+          OnUnitInactiveSec=60s
+          Unit=medislot-dashboard-pull.service
+
+          [Install]
+          WantedBy=timers.target
+          PULLTIMER
+
+          systemctl daemon-reload
+          systemctl enable --now medislot-dashboard-pull.timer
+
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8000/health; then echo; echo "Dashboard is up."; exit 0; fi
             sleep 2
@@ -288,7 +356,7 @@ Outputs:
  
   InstanceId:
     Description: Doctor Dashboard EC2 instance ID.
-    Value: !Ref DoctorDashboardInstance
+    Value: !Ref DoctorDashboardInstanceV2
  
   PublicIp:
     Description: Doctor Dashboard fixed Elastic IP address.

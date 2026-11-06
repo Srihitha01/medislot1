@@ -1303,7 +1303,7 @@ def _validate_doctor_schedule(cursor, user_id):
             """
             SELECT blackout_date
             FROM blackout_dates
-            WHERE doctor_user_id = %s
+            WHERE doctor_user_id = %s AND is_full_day = 1
             """,
             (user_id,),
         )
@@ -1784,117 +1784,89 @@ def _doctor_collection(
                     )
 
             # BLACKOUT DATES
-            elif table_name == "blackout_dates":
+            if table_name == "blackout_dates":
 
                 if method == "GET":
                     cur.execute(
                         """
-                        SELECT *
-                        FROM blackout_dates
+                        SELECT * FROM blackout_dates
                         WHERE doctor_user_id = %s
-                        ORDER BY blackout_date
-                        """,
-                        (user_id,),
+                        ORDER BY blackout_date, start_time
+                        """, (user_id,)
                     )
+                    return _response(200, {"items": cur.fetchall(), "timezone": "Asia/Kolkata"})
 
-                    return _response(
-                        200,
-                        {
-                            "items": cur.fetchall(),
-                            "timezone": "Asia/Kolkata",
-                        },
-                    )
-
-                if method == "POST":
+                if method in {"POST", "PUT", "PATCH"}:
                     day = date.fromisoformat(str(data["date"]))
-
                     if day < datetime.now(IST).date():
-                        raise ValueError(
-                            "Blackout date cannot be in the past"
-                        )
-
+                        raise ValueError("Blackout date cannot be in the past")
+                    full_day = bool(data.get("fullDay", True))
+                    start = end = None
+                    if not full_day:
+                        from datetime import time as dt_time
+                        start = dt_time.fromisoformat(str(data.get("startTime", "")))
+                        end = dt_time.fromisoformat(str(data.get("endTime", "")))
+                        if start >= end:
+                            raise ValueError("End time must be later than start time")
+                    reason = str(data.get("reason") or "").strip()[:200]
+                    # Prevent overlapping blocks and full-day/timed conflicts.
                     cur.execute(
                         """
-                        INSERT INTO blackout_dates (
-                            doctor_user_id,
-                            blackout_date,
-                            reason
-                        )
-                        VALUES (%s, %s, %s)
-                        """,
-                        (user_id, day, data.get("reason")),
+                        SELECT blackout_id, is_full_day, start_time, end_time
+                        FROM blackout_dates
+                        WHERE doctor_user_id = %s AND blackout_date = %s
+                        """, (user_id, day)
                     )
-
-                    new_id = int(cur.lastrowid)
+                    for existing in cur.fetchall():
+                        if resource_id and int(existing["blackout_id"]) == resource_id:
+                            continue
+                        if full_day or bool(existing["is_full_day"]):
+                            raise ValueError("A full-day blackout conflicts with another block on this date")
+                        def to_time(value):
+                            if hasattr(value, "total_seconds"):
+                                from datetime import datetime as dt
+                                return (dt.min + value).time()
+                            return value
+                        if start < to_time(existing["end_time"]) and to_time(existing["start_time"]) < end:
+                            raise ValueError("Timed blackout overlaps an existing block")
+                    if method == "POST":
+                        cur.execute(
+                            """
+                            INSERT INTO blackout_dates
+                              (doctor_user_id, blackout_date, reason, is_full_day, start_time, end_time)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            """, (user_id, day, reason, int(full_day), start, end)
+                        )
+                        new_id = int(cur.lastrowid)
+                    else:
+                        if not resource_id:
+                            raise ValueError("Blackout ID required")
+                        cur.execute(
+                            """
+                            UPDATE blackout_dates
+                            SET blackout_date=%s, reason=%s, is_full_day=%s,
+                                start_time=%s, end_time=%s
+                            WHERE blackout_id=%s AND doctor_user_id=%s
+                            """, (day, reason, int(full_day), start, end, resource_id, user_id)
+                        )
+                        if not cur.rowcount:
+                            return _response(404, {"message": "Blackout not found"})
+                        new_id = resource_id
                     conn.commit()
-
-                    return _response(
-                        201,
-                        {
-                            "blackoutId": new_id,
-                            "date": day.isoformat(),
-                        },
-                    )
-
-                if method in {"PUT", "PATCH"} and resource_id:
-                    day = date.fromisoformat(str(data["date"]))
-
-                    if day < datetime.now(IST).date():
-                        raise ValueError(
-                            "Blackout date cannot be in the past"
-                        )
-
-                    cur.execute(
-                        """
-                        UPDATE blackout_dates
-                        SET blackout_date = %s,
-                            reason = %s
-                        WHERE blackout_id = %s
-                          AND doctor_user_id = %s
-                        """,
-                        (
-                            day,
-                            data.get("reason"),
-                            resource_id,
-                            user_id,
-                        ),
-                    )
-
-                    if not cur.rowcount:
-                        return _response(
-                            404,
-                            {"message": "Blackout date not found"},
-                        )
-
-                    conn.commit()
-
-                    return _response(
-                        200,
-                        {"message": "Blackout date updated"},
-                    )
+                    return _response(201 if method == "POST" else 200, {
+                        "blackoutId": new_id, "date": day.isoformat(),
+                        "fullDay": full_day
+                    })
 
                 if method == "DELETE" and resource_id:
                     cur.execute(
-                        """
-                        DELETE FROM blackout_dates
-                        WHERE blackout_id = %s
-                          AND doctor_user_id = %s
-                        """,
-                        (resource_id, user_id),
+                        "DELETE FROM blackout_dates WHERE blackout_id=%s AND doctor_user_id=%s",
+                        (resource_id, user_id)
                     )
-
                     if not cur.rowcount:
-                        return _response(
-                            404,
-                            {"message": "Blackout date not found"},
-                        )
-
+                        return _response(404, {"message": "Blackout not found"})
                     conn.commit()
-
-                    return _response(
-                        200,
-                        {"message": "Blackout date deleted"},
-                    )
+                    return _response(200, {"message": "Blackout deleted"})
 
             # DATE-SPECIFIC AVAILABILITY EXCEPTIONS
             elif table_name == "availability_exceptions":
@@ -2586,179 +2558,6 @@ def _delete_idempotency_record(table, idem_key):
         logger.exception("Unable to remove failed idempotency record")
 
 
-
-# ---------------------------------------------------------
-# PATIENT API + PUBLIC DISCOVERY
-# ---------------------------------------------------------
-
-def _patient_me(user_id, method, event):
-    """Never accept a patient ID from request data or the URL."""
-    allowed = {
-        "fullName": "full_name", "dateOfBirth": "date_of_birth",
-        "gender": "gender", "phone": "phone", "city": "city",
-        "emergencyContactName": "emergency_contact_name",
-        "emergencyContactPhone": "emergency_contact_phone",
-        "notes": "notes",
-    }
-    data = _body(event) if method in {"POST", "PUT", "PATCH"} else {}
-    if method in {"POST", "PUT", "PATCH"}:
-        if not isinstance(data, dict) or set(data) - set(allowed):
-            return _response(400, {"message": "Unsupported patient profile fields"})
-        if any(isinstance(v, (dict, list)) for v in data.values()):
-            return _response(400, {"message": "Invalid profile field"})
-        if any(len(str(v)) > (2000 if k == "notes" else 150) for k,v in data.items() if v is not None):
-            return _response(400, {"message": "Profile field too long"})
-        if "dateOfBirth" in data and data["dateOfBirth"]:
-            date.fromisoformat(data["dateOfBirth"])
-    conn = _db_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT role FROM users WHERE user_id=%s AND status='active'", (user_id,))
-            user = cur.fetchone()
-            if not user or user["role"] != "patient":
-                return _response(403, {"message": "Patient access required"})
-            if method == "DELETE":
-                # Delete profile details, not the login account; no cross-user operation.
-                cur.execute("DELETE FROM patients WHERE user_id=%s", (user_id,))
-                conn.commit()
-                return _response(200, {"message": "Patient profile deleted"})
-            if method in {"POST", "PUT", "PATCH"} and data:
-                # Use fixed SQL statements: request data never becomes SQL syntax.
-                # The patient ID always comes from the authenticated principal.
-                update_statements = {
-                    "fullName": "UPDATE patients SET full_name=%s WHERE user_id=%s",
-                    "dateOfBirth": "UPDATE patients SET date_of_birth=%s WHERE user_id=%s",
-                    "gender": "UPDATE patients SET gender=%s WHERE user_id=%s",
-                    "phone": "UPDATE patients SET phone=%s WHERE user_id=%s",
-                    "city": "UPDATE patients SET city=%s WHERE user_id=%s",
-                    "emergencyContactName": "UPDATE patients SET emergency_contact_name=%s WHERE user_id=%s",
-                    "emergencyContactPhone": "UPDATE patients SET emergency_contact_phone=%s WHERE user_id=%s",
-                    "notes": "UPDATE patients SET notes=%s WHERE user_id=%s",
-                }
-                cur.execute(
-                    "INSERT IGNORE INTO patients (user_id, full_name) "
-                    "SELECT user_id, name FROM users WHERE user_id=%s",
-                    (user_id,),
-                )
-                for field_name, value in data.items():
-                    cur.execute(update_statements[field_name], (value, user_id))
-                if "fullName" in data and data["fullName"]:
-                    cur.execute("UPDATE users SET name=%s WHERE user_id=%s", (data["fullName"], user_id))
-                conn.commit()
-            cur.execute("""SELECT full_name AS fullName, date_of_birth AS dateOfBirth,
-                        gender, phone, city, emergency_contact_name AS emergencyContactName,
-                        emergency_contact_phone AS emergencyContactPhone, notes
-                        FROM patients WHERE user_id=%s""", (user_id,))
-            return _response(200, {"profile": cur.fetchone()})
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def _doctor_search(event):
-    params = _query(event)
-    try:
-        page = int(params.get("page", "1"))
-        size = int(params.get("pageSize", "10"))
-    except ValueError:
-        return _response(400, {"message": "Invalid pagination"})
-    if not 1 <= page <= 10000 or not 1 <= size <= 50:
-        return _response(400, {"message": "page must be >=1 and pageSize 1-50"})
-    conditions = ["u.status='active'"]
-    values = []
-    for key, col in [
-        ("name", "d.full_name"), ("hospital", "h.name"),
-        ("specialisation", "sp.name"), ("city", "h.city"),
-    ]:
-        value = params.get(key, "").strip()
-        if value:
-            if len(value) > 100:
-                return _response(400, {"message": "Search filter too long"})
-            conditions.append(f"{col} LIKE %s")
-            values.append(value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
-    where = " AND ".join(conditions)
-    joins = """FROM doctors d JOIN users u ON u.user_id=d.user_id
-        JOIN specialisations sp ON sp.specialisation_id=d.specialisation_id
-        LEFT JOIN hospitals h ON h.hospital_id=d.hospital_id"""
-    conn = _db_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(f"SELECT COUNT(*) AS total {joins} WHERE {where}", values)
-            total = cur.fetchone()["total"]
-            cur.execute(f"""SELECT d.user_id AS doctorId, d.full_name AS name,
-                sp.name AS specialisation, h.name AS hospital, h.city AS city,
-                d.years_experience AS yearsExperience
-                {joins} WHERE {where}
-                ORDER BY d.full_name, d.user_id LIMIT %s OFFSET %s""",
-                (*values, size, (page-1)*size))
-            items = cur.fetchall()
-        return _response(200, {"items": items, "total": total, "page": page,
-                               "pageSize": size, "totalPages": (total+size-1)//size})
-    finally:
-        conn.close()
-
-
-def _public_doctor(doctor_id):
-    conn = _db_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""SELECT d.user_id AS doctorId, d.full_name AS name,
-                d.years_experience AS yearsExperience, d.qualifications, d.languages,
-                sp.name AS specialisation, h.name AS hospital, h.city AS city
-                FROM doctors d JOIN users u ON u.user_id=d.user_id
-                JOIN specialisations sp ON sp.specialisation_id=d.specialisation_id
-                LEFT JOIN hospitals h ON h.hospital_id=d.hospital_id
-                WHERE d.user_id=%s AND u.status='active'""", (doctor_id,))
-            doctor = cur.fetchone()
-            if not doctor:
-                return _response(404, {"message": "Doctor not found"})
-            cur.execute("""SELECT consultation_type_id AS consultationTypeId, name,
-                duration_min AS durationMinutes, fee_amount AS fee,
-                capacity FROM consultation_types
-                WHERE doctor_user_id=%s AND is_active=1
-                ORDER BY name""", (doctor_id,))
-            doctor["consultationTypes"] = cur.fetchall()
-        return _response(200, {"doctor": doctor})
-    finally:
-        conn.close()
-
-
-def _available_slots(doctor_id, event):
-    params = _query(event)
-    start = params.get("startFrom")
-    end = params.get("startTo")
-    if not start or not end:
-        return _response(400, {"message": "startFrom and startTo are required ISO timestamps"})
-    start = _iso_utc(start)
-    end = _iso_utc(end)
-    if start > end or datetime.fromisoformat(end.replace("Z","+00:00")) - datetime.fromisoformat(start.replace("Z","+00:00")) > timedelta(days=31):
-        return _response(400, {"message": "Date range must be 0-31 days"})
-    table = _table("SLOTS_TABLE")
-    query = dict(IndexName="gsi-doctor-time",
-        KeyConditionExpression=Key("doctorId").eq(str(doctor_id)) & Key("startUtc").between(start, end))
-    result = table.query(**query)
-    items = list(result.get("Items", []))
-    while result.get("LastEvaluatedKey"):
-        result = table.query(**query, ExclusiveStartKey=result["LastEvaluatedKey"])
-        items.extend(result.get("Items", []))
-    available = []
-    for item in items:
-        if str(item.get("status", "")).upper() != "OPEN":
-            continue
-        free = max(0, int(item.get("capacity", 0)) - int(item.get("bookedCount", 0)))
-        if free == 0:
-            continue
-        available.append({"slotId": item.get("slotId"), "doctorId": str(doctor_id),
-                          "startUtc": item.get("startUtc"), "endUtc": item.get("endUtc"),
-                          "capacity": int(item.get("capacity", 0)),
-                          "bookedCount": int(item.get("bookedCount", 0)),
-                          "freeSeats": free,
-                          "consultationTypeId": item.get("consultationTypeId")})
-    available.sort(key=lambda x: x["startUtc"] or "")
-    return _response(200, {"items": available, "count": len(available)})
-
 # ---------------------------------------------------------
 # MAIN LAMBDA HANDLER
 # ---------------------------------------------------------
@@ -2793,14 +2592,7 @@ def lambda_handler(event, context):
     if method == "OPTIONS":
         return _response(200, {"message": "OK"})
 
-    public_route = (
-        method == "GET" and (
-            path == "/health"
-            or path == "/doctors/search"
-            or re.fullmatch(r"/doctors/[1-9][0-9]*(?:/slots)?", path)
-        )
-    )
-    if not public_route and not user_id:
+    if path != "/health" and not user_id:
         return _response(
             401,
             {"message": "Unauthorized"},
@@ -2829,27 +2621,6 @@ def lambda_handler(event, context):
             and path == "/reference/hospitals"
         ):
             return _reference_data("hospitals")
-
-        # Patient identity is derived exclusively from the verified authorizer.
-        if path == "/patients/me" and method in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
-            if role != "patient":
-                return _response(403, {"message": "Patient access required"})
-            return _patient_me(user_id, method, event)
-
-        if method == "GET" and path == "/doctors/search":
-            return _doctor_search(event)
-
-        match_public = re.fullmatch(r"/doctors/([1-9][0-9]*)", path)
-        if method == "GET" and match_public:
-            return _public_doctor(match_public.group(1))
-
-        match_availability = re.fullmatch(r"/doctors/([1-9][0-9]*)/slots", path)
-        if method == "GET" and match_availability:
-            return _available_slots(match_availability.group(1), event)
-
-        # Explicitly reject requests attempting another patient's ID.
-        if re.fullmatch(r"/patients/[0-9]+(?:/.*)?", path):
-            return _response(403, {"message": "Cross-patient access is forbidden"})
 
         # Authenticated account
         if method == "GET" and path == "/users/me":

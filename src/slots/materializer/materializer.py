@@ -127,10 +127,10 @@ def fetch_data(doctor_id=None):
 
                 if did not in doctor_blackouts:
                     cur.execute(
-                        "SELECT blackout_date FROM blackout_dates WHERE doctor_user_id=%s",
+                        "SELECT blackout_date, is_full_day, start_time, end_time FROM blackout_dates WHERE doctor_user_id=%s",
                         (did,),
                     )
-                    doctor_blackouts[did] = [row["blackout_date"] for row in cur.fetchall()]
+                    doctor_blackouts[did] = cur.fetchall()
 
                 result.append({
                     **item,
@@ -150,13 +150,19 @@ def _schedule_slots_for_day(schedule, target_day):
 
     # Blackout days still generate slots, but they are marked BLACKOUT so they
     # show as unavailable and can never be booked (booking requires OPEN).
-    is_blackout = any(
-        (item.date() if isinstance(item, datetime) else item) == target_day
-        if not isinstance(item, str)
-        else date.fromisoformat(item[:10]) == target_day
-        for item in (schedule.get("blackouts") or [])
+    def blackout_matches(item):
+        raw_date = item["blackout_date"] if isinstance(item, dict) else item
+        day = raw_date.date() if isinstance(raw_date, datetime) else (
+            date.fromisoformat(raw_date[:10]) if isinstance(raw_date, str) else raw_date
+        )
+        return day == target_day
+
+    day_blackouts = [item for item in (schedule.get("blackouts") or []) if blackout_matches(item)]
+    full_day_blackout = any(
+        not isinstance(item, dict) or bool(item.get("is_full_day", 1))
+        for item in day_blackouts
     )
-    slot_status = "BLACKOUT" if is_blackout else "OPEN"
+    slot_status = "BLACKOUT" if full_day_blackout else "OPEN"
 
     windows = effective_windows(
         schedule.get("patterns", []),
@@ -205,6 +211,15 @@ def _schedule_slots_for_day(schedule, target_day):
                         target_day + timedelta(days=90), dt_time.min,
                         tzinfo=timezone.utc
                     ).timestamp())
+                    # A timed blackout disables any slot overlapping its interval.
+                    slot_end_local = cursor + timedelta(minutes=duration)
+                    timed_blocked = any(
+                        isinstance(block, dict)
+                        and not bool(block.get("is_full_day", 1))
+                        and cursor.time() < mysql_time(block["end_time"])
+                        and mysql_time(block["start_time"]) < slot_end_local.time()
+                        for block in day_blackouts
+                    )
                     slots.append({
                         "slotId": slot_id,
                         "doctorId": doctor_id,
@@ -218,7 +233,7 @@ def _schedule_slots_for_day(schedule, target_day):
                         "durationMinutes": duration,
                         "capacity": capacity,
                         "bookedCount": 0,
-                        "status": slot_status,
+                        "status": "BLACKOUT" if timed_blocked else slot_status,
                         "source": "MATERIALIZED",
                         "expiresAt": expiry,
                         "createdAt": int(time.time()),

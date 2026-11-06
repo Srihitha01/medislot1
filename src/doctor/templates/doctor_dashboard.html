@@ -653,6 +653,36 @@
             }
         }
         [hidden] { display: none !important; }
+
+/* MediSlot 2026 · consultation and time-off redesign */
+.ms-hero{display:flex;justify-content:space-between;align-items:center;gap:20px;background:linear-gradient(115deg,#112b49,#174c69 70%,#167a83);color:white;padding:32px 36px;border-radius:22px;margin-bottom:24px;box-shadow:0 14px 36px rgba(17,43,73,.12)}
+.ms-eyebrow{font-size:11px;font-weight:800;letter-spacing:2px;color:#9de6dc}.ms-hero h2{font-size:29px;letter-spacing:-1px;margin:8px 0}.ms-hero p{color:#d6e9f2;font-size:14px;line-height:1.7}.ms-hero-symbol{font-size:64px;opacity:.32}
+.ms-consult-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
+.ms-consult-card{background:#fff;border:1px solid #e1eaf1;border-radius:20px;padding:24px;box-shadow:0 8px 28px rgba(23,47,70,.045);transition:transform .2s,box-shadow .2s,border-color .2s;min-width:0}
+.ms-consult-card:hover{transform:translateY(-4px);box-shadow:0 16px 38px rgba(23,47,70,.12);border-color:#9acbd1}
+.ms-consult-card.inactive{background:#f9fbfc;opacity:.75}.ms-card-top{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.ms-type-icon{height:46px;width:46px;border-radius:14px;display:grid;place-items:center;background:#e8f7f5;color:#087c7c;font-size:22px}
+.ms-duration{background:#f0f6fa;color:#547086;font-size:12px;font-weight:700;border-radius:30px;padding:7px 10px}
+.ms-consult-card h3{font-size:20px;margin:22px 0 6px;color:#142d47}.ms-consult-card .ms-card-sub{font-size:13px;color:#6e8498;min-height:35px}
+.ms-checkbox-line{display:flex;gap:12px;align-items:center;padding:16px;margin:18px 0;background:#f5f9fc;border:1px solid #e2ecf2;border-radius:13px;cursor:pointer}
+.ms-checkbox-line input{width:19px;height:19px;accent-color:#087f80;flex:none}.ms-checkbox-line strong{display:block;font-size:13px;color:#19344b}.ms-checkbox-line small{display:block;color:#71879a;font-size:12px;margin-top:4px}
+.ms-fee-label{font-size:12px;font-weight:700;color:#395369;display:block;margin:16px 0 8px}
+.ms-fee-wrap{display:flex;align-items:center;gap:10px;border:1px solid #d7e4ed;border-radius:12px;padding:0 13px;background:#fff}
+.ms-fee-wrap span{font-size:18px;font-weight:800;color:#087f80}.ms-fee-wrap input{border:0!important;outline:0;width:100%;height:48px;min-width:0;background:transparent;font-size:17px;font-weight:700;color:#16304a}
+.ms-primary-action{display:block;width:100%;background:linear-gradient(100deg,#12304e,#087f80);color:#fff;border:0;border-radius:12px;padding:14px 16px;margin-top:18px;font-weight:750;transition:filter .2s,transform .2s}
+.ms-primary-action:hover{filter:brightness(1.13);transform:translateY(-1px)}.ms-primary-action:disabled{opacity:.55;cursor:wait}
+.ms-note{display:flex;gap:12px;align-items:flex-start;margin-top:20px;padding:18px 22px;border-radius:15px;background:#edf7f7;color:#16465a}.ms-note>span{font-size:22px}.ms-note strong{font-size:13px}.ms-note p{font-size:12px;margin-top:4px;color:#5c7b86}
+.ms-blackout-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:22px}
+.ms-panel{background:white;border:1px solid #e1eaf1;border-radius:20px;padding:26px;box-shadow:0 8px 28px rgba(23,47,70,.04)}
+.ms-panel-heading{display:flex;gap:14px;align-items:center;margin-bottom:25px}.ms-panel-icon{width:45px;height:45px;display:grid;place-items:center;background:#e8f7f5;border-radius:13px;color:#087f80;font-size:22px}
+.ms-panel-heading h3{font-size:17px;color:#142d47}.ms-panel-heading p{font-size:12px;color:#7b8fa0;margin-top:5px}
+.ms-time-fields{display:grid;grid-template-columns:1fr 1fr;gap:14px}.ms-time-fields[hidden]{display:none}
+.ms-optional{font-weight:400;color:#8da1b0}.ms-blackout-item{border:1px solid #e2ebf0;border-radius:14px;padding:16px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.ms-blackout-item strong{color:#19344b;font-size:14px}.ms-blackout-item p{font-size:12px;color:#70859a;margin-top:6px}.ms-block-pill{display:inline-block;background:#fff2df;color:#a76312;border-radius:20px;font-size:11px;font-weight:800;padding:5px 9px;margin-top:8px}
+.ms-remove{border:1px solid #f2d7d7;background:#fff6f6;color:#b64040;border-radius:9px;padding:9px 12px;font-weight:700;font-size:12px}
+@media(max-width:1050px){.ms-consult-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ms-blackout-layout{grid-template-columns:1fr}}
+@media(max-width:650px){.ms-consult-grid{grid-template-columns:1fr}.ms-hero{padding:24px}.ms-hero-symbol{display:none}.ms-panel{padding:18px}.ms-time-fields{grid-template-columns:1fr}}
+
 </style>
 </head>
 
@@ -914,55 +944,9 @@
 
     <!-- CONSULTATION -->
     <section class="section" id="section-consultation">
-        <div class="panel">
-            <div class="panel-header">
-                <div>
-                    <h3>Consultation Types</h3>
-                    <p>Configure the consultation services you offer.</p>
-                </div>
-            </div>
-
-            <div class="consultation-list" id="consultationList">
-                <div class="empty">Loading consultation types...</div>
-            </div>
-        </div>
-
-        <div class="panel">
-            <div class="panel-header">
-                <div>
-                    <h3>Add Consultation Type</h3>
-                    <p>Define the consultation name, duration, fee and capacity.</p>
-                </div>
-            </div>
-
-            <form id="consultationForm">
-                <div class="editor-grid">
-                    <div class="field">
-                        <label for="consultationName">Consultation name</label>
-                        <input id="consultationName" maxlength="40" placeholder="video / in_clinic / phone" required>
-                    </div>
-
-                    <div class="field">
-                        <label for="consultationDuration">Duration (minutes)</label>
-                        <input id="consultationDuration" type="number" min="5" max="180" value="30" required>
-                    </div>
-
-                    <div class="field">
-                        <label for="consultationFee">Fee (INR)</label>
-                        <input id="consultationFee" type="number" min="0" step="0.01" value="0" required>
-                    </div>
-
-                    <div class="field">
-                        <label for="consultationCapacity">Capacity</label>
-                        <input id="consultationCapacity" type="number" min="1" max="50" value="1" required>
-                    </div>
-                </div>
-
-                <div class="form-actions">
-                    <button class="btn" type="submit">Add Consultation Type</button>
-                </div>
-            </form>
-        </div>
+      <div class="ms-hero"><div><span class="ms-eyebrow">YOUR PRACTICE · SERVICES</span><h2>Consultation types</h2><p>Three simple appointment formats. Choose what you offer and set a fee for each.</p></div><div class="ms-hero-symbol">✦</div></div>
+      <div class="ms-consult-grid" id="consultationList"><div class="empty">Loading consultation types…</div></div>
+      <div class="ms-note"><span>✧</span><div><strong>Flexible pricing</strong><p>Changes are saved per consultation. Existing appointments are not automatically repriced.</p></div></div>
     </section>
 
     <!-- SCHEDULE -->
@@ -1075,44 +1059,26 @@
 
     <!-- BLACKOUT DATES -->
     <section class="section" id="section-blackouts">
-        <div class="panel">
-            <div class="panel-header">
-                <div>
-                    <h3>Blackout Dates</h3>
-                    <p>Mark dates when you are unavailable for new appointments.</p>
-                </div>
+      <div class="ms-hero"><div><span class="ms-eyebrow">YOUR PRACTICE · TIME OFF</span><h2>Time off &amp; blackouts</h2><p>Block a full day or just the hours you cannot accept appointments.</p></div><div class="ms-hero-symbol">◷</div></div>
+      <div class="ms-blackout-layout">
+        <div class="ms-panel">
+          <div class="ms-panel-heading"><div class="ms-panel-icon">▦</div><div><h3>Add unavailable time</h3><p>Times use Asia/Kolkata (IST).</p></div></div>
+          <form id="blackoutForm">
+            <div class="field"><label for="blackoutDate">Blackout date</label><input id="blackoutDate" type="date" required></div>
+            <label class="ms-checkbox-line" for="blackoutFullDay"><input id="blackoutFullDay" type="checkbox" checked><span><strong>Entire day unavailable</strong><small>Disable all consultations for this date</small></span></label>
+            <div class="ms-time-fields" id="blackoutTimeFields" hidden>
+              <div class="field"><label for="blackoutStart">Unavailable from</label><input id="blackoutStart" type="time" value="13:00"></div>
+              <div class="field"><label for="blackoutEnd">Unavailable until</label><input id="blackoutEnd" type="time" value="15:00"></div>
             </div>
-
-            <form id="blackoutForm">
-                <div class="editor-grid">
-                    <div class="field">
-                        <label for="blackoutDate">Date</label>
-                        <input id="blackoutDate" type="date" required>
-                    </div>
-
-                    <div class="field">
-                        <label for="blackoutReason">Reason</label>
-                        <input id="blackoutReason" maxlength="200" placeholder="Optional reason">
-                    </div>
-                </div>
-
-                <div class="form-actions">
-                    <button class="btn" type="submit">Add Blackout Date</button>
-                </div>
-            </form>
+            <div class="field"><label for="blackoutReason">Reason <span class="ms-optional">(optional)</span></label><input id="blackoutReason" maxlength="200" placeholder="e.g. Personal appointment, conference"></div>
+            <button class="ms-primary-action" type="submit">＋ Save blackout</button>
+          </form>
         </div>
-
-        <div class="panel">
-            <div class="panel-header">
-                <div>
-                    <h3>Configured Blackout Dates</h3>
-                    <p>Remove a blackout date if your availability changes.</p>
-                </div>
-            </div>
-            <div class="blackout-list" id="blackoutList">
-                <div class="empty">Loading blackout dates...</div>
-            </div>
+        <div class="ms-panel">
+          <div class="ms-panel-heading"><div class="ms-panel-icon">☷</div><div><h3>Scheduled blackouts</h3><p>Remove a block when your availability changes.</p></div></div>
+          <div class="blackout-list" id="blackoutList"><div class="empty">Loading blackouts…</div></div>
         </div>
+      </div>
     </section>
 
     <!-- APPOINTMENT SLOTS -->
@@ -1360,92 +1326,71 @@
         return `<span class="status ${className}">${escapeHTML(safeStatus === "blackout" ? "unavailable (blackout)" : safeStatus.replaceAll("_", " "))}</span>`;
     }
 
-    // Share one refresh request among concurrent API calls.
-    let refreshPromise = null;
-
-    function refreshAccessToken() {
-        if (refreshPromise) return refreshPromise;
-
-        refreshPromise = (async () => {
-            const response = await fetch("/session/refresh", {
+    async function refreshAccessToken() {
+        try {
+            const r = await fetch("/session/refresh", {
                 method: "POST",
-                credentials: "same-origin",
-                cache: "no-store"
+                credentials: "same-origin"
             });
-
-            if (!response.ok) {
-                throw new Error(`Session refresh failed (${response.status}).`);
-            }
-
-            const data = await response.json();
-            if (!data.accessToken) {
-                throw new Error("Refresh endpoint returned no access token.");
-            }
-
+            if (!r.ok) return false;
+            const data = await r.json();
+            if (!data.accessToken) return false;
             accessToken = data.accessToken;
-            return accessToken;
-        })();
-
-        // Clear only after the promise settles; concurrent callers share it.
-        refreshPromise.finally(() => {
-            refreshPromise = null;
-        }).catch(() => {});
-
-        return refreshPromise;
+            return true;
+        } catch {
+            return false;
+        }
     }
 
-    async function apiRequest(path, method = "GET", body = undefined) {
+    async function apiRequest(path, method = "GET", body = undefined, isRetry = false) {
         if (!accessToken) {
             throw new Error("Your doctor session has expired. Please log in again.");
         }
 
-        async function send(token) {
-            const headers = {
-                "Authorization": `Bearer ${token}`,
-                "Accept": "application/json"
-            };
-            const options = { method, headers, cache: "no-store" };
-            if (body !== undefined) {
-                headers["Content-Type"] = "application/json";
-                options.body = JSON.stringify(body);
-            }
-            return fetch(`${API_BASE_URL}${path}`, options);
+        const headers = {
+            "Authorization": `Bearer ${accessToken}`,
+            "Accept": "application/json"
+        };
+
+        const options = {
+            method,
+            headers
+        };
+
+        if (body !== undefined) {
+            headers["Content-Type"] = "application/json";
+            options.body = JSON.stringify(body);
         }
 
-        const originalToken = accessToken;
-        let response = await send(originalToken);
+        const response = await fetch(`${API_BASE_URL}${path}`, options);
 
-        if (response.status === 401) {
-            // A different request may already have refreshed the token.
-            if (accessToken === originalToken) {
-                try {
-                    await refreshAccessToken();
-                } catch (error) {
-                    throw new Error(
-                        `Authentication expired for ${path}. Please log in again.`
-                    );
-                }
+        if (response.status === 401 && !isRetry) {
+            if (await refreshAccessToken()) {
+                return apiRequest(path, method, body, true);
             }
-
-            // Retry once using the most recent token.
-            response = await send(accessToken);
+            window.location.href = "/logout";
+            throw new Error("Your session has expired. Please log in again.");
         }
 
-        const responseText = await response.text();
         let result = {};
+        const responseText = await response.text();
+
         if (responseText) {
             try {
                 result = JSON.parse(responseText);
             } catch {
-                throw new Error(`The API returned invalid JSON (${response.status}) for ${path}.`);
+                throw new Error(`The API returned an invalid response (${response.status}).`);
             }
         }
 
         if (!response.ok) {
             throw new Error(
-                `${path}: ${result.message || result.error || `HTTP ${response.status}`}`
+                result.message ||
+                result.error ||
+                `Request failed with status ${response.status}`
             );
         }
+
         return result;
     }
 
@@ -1680,43 +1625,72 @@
         `).join("");
     }
 
+    const CONSULT_PRESETS = [
+        {name:"quick", title:"Quick Consult", duration:15, icon:"⚡", subtitle:"Focused follow-up or a quick question."},
+        {name:"standard", title:"Standard Consult", duration:30, icon:"✚", subtitle:"Everyday consultations and care planning."},
+        {name:"detailed", title:"Detailed Consult", duration:60, icon:"◈", subtitle:"Comprehensive evaluation and discussion."}
+    ];
+
+    async function saveConsultationPreset(index) {
+        const preset = CONSULT_PRESETS[index];
+        const feeInput = document.getElementById(`ms-fee-${index}`);
+        const activeInput = document.getElementById(`ms-active-${index}`);
+        const fee = Number(feeInput.value);
+        if (!Number.isFinite(fee) || fee < 0) {
+            showMessage("Enter a valid consultation fee."); return;
+        }
+        const existing = consultationItems.find(item =>
+            String(item.name).toLowerCase() === preset.name ||
+            (String(item.name).toLowerCase() === preset.title.toLowerCase()));
+        try {
+            if (existing) {
+                await apiRequest(`/doctors/me/consultation-types/${encodeURIComponent(existing.consultation_type_id)}`, "PATCH", {
+                    feeAmount: fee, isActive: activeInput.checked, durationMin: preset.duration
+                });
+            } else {
+                await apiRequest("/doctors/me/consultation-types", "POST", {
+                    name: preset.name, durationMin: preset.duration, feeAmount: fee, capacity: 1
+                });
+                if (!activeInput.checked) {
+                    const latest = await apiRequest("/doctors/me/consultation-types");
+                    const created = (latest.items || []).find(item => String(item.name).toLowerCase() === preset.name);
+                    if (created) await apiRequest(`/doctors/me/consultation-types/${created.consultation_type_id}`, "PATCH", {isActive:false});
+                }
+            }
+            await loadConsultations();
+            showMessage(`${preset.title} saved successfully.`, "success");
+        } catch(error) { handleError(error); }
+    }
+
     async function loadConsultations() {
         const result = await apiRequest("/doctors/me/consultation-types");
         consultationItems = result.items || [];
-
         $("consultationCount").textContent = consultationItems.length;
+        const activeItems = consultationItems.filter(item => Number(item.is_active ?? 1) === 1);
+        $("availabilityConsultationType").innerHTML = `<option value="">Select consultation type</option>` +
+            activeItems.map(item => `<option value="${escapeHTML(item.consultation_type_id)}">${escapeHTML(item.name)}</option>`).join("");
 
-        const activeItems = consultationItems.filter(item => {
-            return Number(item.is_active ?? 1) === 1;
+        $("consultationList").innerHTML = CONSULT_PRESETS.map((preset,index) => {
+            const existing = consultationItems.find(item =>
+                String(item.name).toLowerCase() === preset.name ||
+                String(item.name).toLowerCase() === preset.title.toLowerCase());
+            const active = existing ? Number(existing.is_active ?? 1) === 1 : false;
+            const fee = existing ? Number(existing.fee_amount) : "";
+            return `<article class="ms-consult-card ${active ? "" : "inactive"}">
+              <div class="ms-card-top"><span class="ms-type-icon">${preset.icon}</span><span class="ms-duration">◷ ${preset.duration} min</span></div>
+              <h3>${preset.title}</h3><p class="ms-card-sub">${preset.subtitle}</p>
+              <label class="ms-checkbox-line" for="ms-active-${index}"><input type="checkbox" id="ms-active-${index}" ${active ? "checked" : ""}><span><strong>I offer this consultation</strong><small>${active ? "Available for booking" : "Currently not offered"}</small></span></label>
+              <label class="ms-fee-label" for="ms-fee-${index}">Your fee (INR)</label>
+              <div class="ms-fee-wrap"><span>₹</span><input id="ms-fee-${index}" type="number" min="0" step="0.01" placeholder="Enter fee" value="${Number.isFinite(fee) ? fee.toFixed(2) : ""}"></div>
+              <button class="ms-primary-action" type="button" data-save-consult="${index}">Save consultation</button>
+            </article>`;
+        }).join("");
+        document.querySelectorAll("[data-save-consult]").forEach(button => {
+            button.addEventListener("click", () => saveConsultationPreset(Number(button.dataset.saveConsult)));
         });
-
-        $("availabilityConsultationType").innerHTML =
-            `<option value="">Select consultation type</option>` +
-            activeItems.map(item => `
-                <option value="${escapeHTML(item.consultation_type_id)}">
-                    ${escapeHTML(item.name)}
-                </option>
-            `).join("");
-
-        if (!consultationItems.length) {
-            $("consultationList").innerHTML =
-                `<div class="empty">No consultation types configured.</div>`;
-            return;
-        }
-
-        $("consultationList").innerHTML = consultationItems.map(item => `
-            <div class="list-item">
-                <div>
-                    <h4>${escapeHTML(item.name)}</h4>
-                    <p>
-                        ${escapeHTML(item.duration_min)} minutes
-                        · Capacity: ${escapeHTML(item.capacity)}
-                        · ${Number(item.is_active ?? 1) === 1 ? "Active" : "Inactive"}
-                    </p>
-                </div>
-                <div class="fee">₹${escapeHTML(item.fee_amount)}</div>
-            </div>
-        `).join("");
+        document.querySelectorAll("[id^='ms-active-']").forEach(input => {
+            input.addEventListener("change", () => input.closest(".ms-consult-card").classList.toggle("inactive", !input.checked));
+        });
     }
 
     async function loadAvailability() {
@@ -1744,43 +1718,28 @@
     async function loadBlackouts() {
         const result = await apiRequest("/doctors/me/blackout-dates");
         const items = result.items || [];
-
         if (!items.length) {
-            $("blackoutList").innerHTML =
-                `<div class="empty">No blackout dates configured.</div>`;
+            $("blackoutList").innerHTML = `<div class="empty">No blackouts yet. Your calendar is open.</div>`;
             return;
         }
-
-        $("blackoutList").innerHTML = items.map(item => `
-            <div class="list-item">
-                <div>
-                    <h4>${escapeHTML(item.blackout_date)}</h4>
-                    <p>${escapeHTML(item.reason || "Unavailable")}</p>
-                </div>
-                <button
-                    type="button"
-                    class="btn btn-danger delete-blackout"
-                    data-id="${escapeHTML(item.blackout_id)}">
-                    Remove
-                </button>
-            </div>
-        `).join("");
-
+        $("blackoutList").innerHTML = items.map(item => {
+            const fullDay = Number(item.is_full_day ?? 1) === 1;
+            const formatTime = value => String(value || "").slice(0,5);
+            return `<div class="ms-blackout-item">
+              <div><strong>▦ ${escapeHTML(String(item.blackout_date).slice(0,10))}</strong>
+                <div><span class="ms-block-pill">${fullDay ? "Entire day" : escapeHTML(formatTime(item.start_time)) + " – " + escapeHTML(formatTime(item.end_time)) + " IST"}</span></div>
+                <p>${escapeHTML(item.reason || "Unavailable")}</p></div>
+              <button type="button" class="ms-remove delete-blackout" data-id="${escapeHTML(item.blackout_id)}">Remove</button>
+            </div>`;
+        }).join("");
         document.querySelectorAll(".delete-blackout").forEach(button => {
             button.addEventListener("click", async () => {
-                if (!confirm("Remove this blackout date?")) return;
-
+                if (!confirm("Remove this blackout?")) return;
                 try {
-                    await apiRequest(
-                        `/doctors/me/blackout-dates/${encodeURIComponent(button.dataset.id)}`,
-                        "DELETE"
-                    );
-
+                    await apiRequest(`/doctors/me/blackout-dates/${encodeURIComponent(button.dataset.id)}`, "DELETE");
                     await loadBlackouts();
-                    showMessage("Blackout date removed.", "success");
-                } catch (error) {
-                    handleError(error);
-                }
+                    showMessage("Blackout removed.", "success");
+                } catch(error) { handleError(error); }
             });
         });
     }
@@ -1924,30 +1883,6 @@
         }
     });
 
-    // Add consultation type.
-    $("consultationForm").addEventListener("submit", async event => {
-        event.preventDefault();
-
-        try {
-            await apiRequest("/doctors/me/consultation-types", "POST", {
-                name: $("consultationName").value.trim().toLowerCase(),
-                durationMin: Number($("consultationDuration").value),
-                feeAmount: Number($("consultationFee").value),
-                capacity: Number($("consultationCapacity").value)
-            });
-
-            $("consultationForm").reset();
-            $("consultationDuration").value = 30;
-            $("consultationFee").value = 0;
-            $("consultationCapacity").value = 1;
-
-            await loadConsultations();
-            showMessage("Consultation type added successfully.", "success");
-        } catch (error) {
-            handleError(error);
-        }
-    });
-
     // Add weekly availability.
     $("availabilityForm").addEventListener("submit", async event => {
         event.preventDefault();
@@ -1970,26 +1905,30 @@
         }
     });
 
-    // Add blackout date.
+    // Full-day and timed blackouts.
+    $("blackoutFullDay").addEventListener("change", () => {
+        $("blackoutTimeFields").hidden = $("blackoutFullDay").checked;
+    });
     $("blackoutForm").addEventListener("submit", async event => {
         event.preventDefault();
-
+        const fullDay = $("blackoutFullDay").checked;
+        const startTime = $("blackoutStart").value;
+        const endTime = $("blackoutEnd").value;
+        if (!fullDay && (!startTime || !endTime || startTime >= endTime)) {
+            showMessage("Choose an end time later than the start time."); return;
+        }
         try {
             await apiRequest("/doctors/me/blackout-dates", "POST", {
                 date: $("blackoutDate").value,
-                reason: $("blackoutReason").value.trim()
+                reason: $("blackoutReason").value.trim(),
+                fullDay, startTime: fullDay ? null : startTime,
+                endTime: fullDay ? null : endTime
             });
-
             $("blackoutForm").reset();
+            $("blackoutTimeFields").hidden = true;
             await loadBlackouts();
-
-            showMessage(
-                "Blackout date added. Existing booked appointments are preserved.",
-                "success"
-            );
-        } catch (error) {
-            handleError(error);
-        }
+            showMessage("Blackout saved. Existing booked appointments remain unchanged.", "success");
+        } catch(error) { handleError(error); }
     });
 
     // Upload / replace doctor photo using the presigned S3 URL.
@@ -2106,42 +2045,29 @@
 
         try {
             await loadReferenceData();
-        } catch (error) {
-            console.warn("Reference data failed:", error);
-        }
 
-        const tasks = [
-            ["profile", loadProfile],
-            ["consultations", loadConsultations],
-            ["availability", loadAvailability],
-            ["blackouts", loadBlackouts],
-            ["schedule", loadSchedule],
-            ["appointments", loadAppointments]
-        ];
-        const outcomes = await Promise.allSettled(
-            tasks.map(async ([name, loader]) => {
-                await loader();
-                return name;
-            })
-        );
-        outcomes.forEach((outcome, index) => {
-            if (outcome.status === "rejected") {
-                console.error(`Failed ${tasks[index][0]}:`, outcome.reason);
-                if (tasks[index][0] === "profile") {
-                    $("headerSpecialisation").textContent = "Profile unavailable";
-                    showMessage(`Doctor profile: ${outcome.reason.message}`);
-                }
+            await Promise.all([
+                loadProfile(),
+                loadConsultations(),
+                loadAvailability(),
+                loadBlackouts(),
+                loadSchedule(),
+                loadAppointments()
+            ]);
+
+            // Load the active section if the page was opened with a hash.
+            const requestedSection = window.location.hash.replace("#", "");
+            const allowedSections = [
+                "overview", "profile", "consultation", "schedule",
+                "availability", "blackouts", "slots", "patients",
+                "appointments", "settings"
+            ];
+
+            if (allowedSections.includes(requestedSection)) {
+                showSection(requestedSection);
             }
-        });
-
-        const requestedSection = window.location.hash.replace("#", "");
-        const allowedSections = [
-            "overview", "profile", "consultation", "schedule",
-            "availability", "blackouts", "slots", "patients",
-            "appointments", "settings"
-        ];
-        if (allowedSections.includes(requestedSection)) {
-            showSection(requestedSection);
+        } catch (error) {
+            handleError(error);
         }
     }
 

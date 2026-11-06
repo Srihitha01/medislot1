@@ -114,9 +114,12 @@ CREATE TABLE IF NOT EXISTS blackout_dates (
     doctor_user_id BIGINT UNSIGNED NOT NULL,
     blackout_date DATE NOT NULL,
     reason VARCHAR(200) NULL,
+    is_full_day TINYINT(1) NOT NULL DEFAULT 1,
+    start_time TIME NULL,
+    end_time TIME NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     PRIMARY KEY (blackout_id),
-    UNIQUE KEY uq_blackout_doctor_date (doctor_user_id, blackout_date),
+    KEY idx_blackout_doctor_date (doctor_user_id, blackout_date),
     CONSTRAINT fk_blackout_doctor FOREIGN KEY (doctor_user_id) REFERENCES doctors(user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
