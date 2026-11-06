@@ -2623,11 +2623,25 @@ def _patient_me(user_id, method, event):
                 conn.commit()
                 return _response(200, {"message": "Patient profile deleted"})
             if method in {"POST", "PUT", "PATCH"} and data:
-                fields = [allowed[k] for k in data]
-                values = [data[k] for k in data]
-                cur.execute("INSERT IGNORE INTO patients (user_id, full_name) SELECT user_id, name FROM users WHERE user_id=%s", (user_id,))
-                assignments = ", ".join(f"`{field}`=%s" for field in fields)
-                cur.execute(f"UPDATE patients SET {assignments} WHERE user_id=%s", (*values, user_id))
+                # Use fixed SQL statements: request data never becomes SQL syntax.
+                # The patient ID always comes from the authenticated principal.
+                update_statements = {
+                    "fullName": "UPDATE patients SET full_name=%s WHERE user_id=%s",
+                    "dateOfBirth": "UPDATE patients SET date_of_birth=%s WHERE user_id=%s",
+                    "gender": "UPDATE patients SET gender=%s WHERE user_id=%s",
+                    "phone": "UPDATE patients SET phone=%s WHERE user_id=%s",
+                    "city": "UPDATE patients SET city=%s WHERE user_id=%s",
+                    "emergencyContactName": "UPDATE patients SET emergency_contact_name=%s WHERE user_id=%s",
+                    "emergencyContactPhone": "UPDATE patients SET emergency_contact_phone=%s WHERE user_id=%s",
+                    "notes": "UPDATE patients SET notes=%s WHERE user_id=%s",
+                }
+                cur.execute(
+                    "INSERT IGNORE INTO patients (user_id, full_name) "
+                    "SELECT user_id, name FROM users WHERE user_id=%s",
+                    (user_id,),
+                )
+                for field_name, value in data.items():
+                    cur.execute(update_statements[field_name], (value, user_id))
                 if "fullName" in data and data["fullName"]:
                     cur.execute("UPDATE users SET name=%s WHERE user_id=%s", (data["fullName"], user_id))
                 conn.commit()
