@@ -513,11 +513,9 @@ def session_refresh():
 
 @app.route("/logout", methods=["GET", "POST"])
 def logout():
-
     session.clear()
     flash("You have been logged out.", "success")
-
-    return redirect(url_for("login"))
+    return redirect(url_for("welcome"))
 
 
 # --------------------------------------------------

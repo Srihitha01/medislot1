@@ -1215,6 +1215,29 @@ jobs:
             --content-type "text/yaml" \
             --only-show-errors
 
+          # Preserve the original bootstrap artifact on stack updates.
+          # Changing ArtifactKey would change EC2 UserData, which can restart
+          # or replace the instance. SSM installs the new ZIP in-place instead.
+          STACK_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$DASHBOARD_STACK" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || echo NONE)
+
+          BOOTSTRAP_KEY="$APP_KEY"
+          if [[ "$STACK_STATUS" != "NONE" ]]; then
+            PREVIOUS_KEY=$(aws cloudformation describe-stacks \
+              --stack-name "$DASHBOARD_STACK" \
+              --region "$AWS_REGION" \
+              --query "Stacks[0].Parameters[?ParameterKey=='ArtifactKey'].ParameterValue | [0]" \
+              --output text)
+            if [[ -z "$PREVIOUS_KEY" || "$PREVIOUS_KEY" == "None" ]]; then
+              echo "::error::Existing dashboard stack has no ArtifactKey."
+              exit 1
+            fi
+            BOOTSTRAP_KEY="$PREVIOUS_KEY"
+          fi
+
           TEMPLATE_URL="https://${ARTIFACT_BUCKET}.s3.${AWS_REGION}.amazonaws.com/${TEMPLATE_KEY}"
 
           resolve_change_type() {
@@ -1256,7 +1279,7 @@ jobs:
               ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
               ParameterKey=InstanceType,ParameterValue=t3.small \
               ParameterKey=ArtifactBucket,ParameterValue="$ARTIFACT_BUCKET" \
-              ParameterKey=ArtifactKey,ParameterValue="$APP_KEY" \
+              ParameterKey=ArtifactKey,ParameterValue="$BOOTSTRAP_KEY" \
               ParameterKey=ApiBaseUrl,ParameterValue="$API_BASE_URL" \
               ParameterKey=LoginPath,ParameterValue=/auth/login \
               ParameterKey=DashboardAccessCidr,ParameterValue=0.0.0.0/0 \
@@ -1314,6 +1337,93 @@ jobs:
               --stack-name "$DASHBOARD_STACK" \
               --region "$AWS_REGION"
           fi
+
+      - name: Deploy dashboard ZIP to the existing EC2 instance using SSM
+        shell: bash
+        env:
+          ARTIFACT_BUCKET: ${{ needs.deploy_network.outputs.artifact_bucket }}
+        run: |
+          set -euo pipefail
+
+          INSTANCE_ID=$(aws cloudformation describe-stacks \
+            --stack-name "$DASHBOARD_STACK" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue | [0]" \
+            --output text)
+
+          if [[ -z "$INSTANCE_ID" || "$INSTANCE_ID" == "None" ]]; then
+            echo "::error::Dashboard instance ID not found."
+            exit 1
+          fi
+
+          ARTIFACT_KEY="medislot/doctor-dashboard/${GITHUB_SHA}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/doctor-dashboard-app.zip"
+          export ARTIFACT_BUCKET ARTIFACT_KEY INSTANCE_ID
+
+          python - <<'PYSSM'
+          import json
+          import os
+          import shlex
+
+          s3_uri = f"s3://{os.environ['ARTIFACT_BUCKET']}/{os.environ['ARTIFACT_KEY']}"
+          region = os.environ["AWS_REGION"]
+          commands = [
+              "set -euo pipefail",
+              f"aws s3 cp {shlex.quote(s3_uri)} /tmp/medislot-dashboard-release.zip --region {shlex.quote(region)}",
+              "unzip -tq /tmp/medislot-dashboard-release.zip",
+              "unzip -oq /tmp/medislot-dashboard-release.zip -d /opt/medislot-dashboard",
+              "chown -R ubuntu:ubuntu /opt/medislot-dashboard",
+              "sudo -u ubuntu /opt/medislot-dashboard/venv/bin/pip install --disable-pip-version-check -r /opt/medislot-dashboard/requirements.txt",
+              "systemctl restart medislot-dashboard",
+              "systemctl is-active --quiet medislot-dashboard",
+              "curl -fsS --retry 12 --retry-delay 5 --retry-connrefused http://127.0.0.1:8000/health",
+          ]
+          with open("/tmp/medislot-ssm-commands.json", "w", encoding="utf-8") as handle:
+              json.dump({"commands": commands}, handle)
+          PYSSM
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "Deploy MediSlot dashboard without EC2 replacement" \
+            --parameters file:///tmp/medislot-ssm-commands.json \
+            --timeout-seconds 900 \
+            --region "$AWS_REGION" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "SSM command $COMMAND_ID sent to $INSTANCE_ID"
+
+          for attempt in $(seq 1 90); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --region "$AWS_REGION" \
+              --query Status --output text 2>/dev/null || echo Pending)
+
+            case "$STATUS" in
+              Success)
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --region "$AWS_REGION" \
+                  --query '{Status:Status,Output:StandardOutputContent}' \
+                  --output json
+                exit 0
+                ;;
+              Failed|Cancelled|TimedOut|Cancelling)
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --region "$AWS_REGION" \
+                  --output json
+                exit 1
+                ;;
+            esac
+            sleep 10
+          done
+
+          echo "::error::SSM deployment did not complete within 15 minutes."
+          exit 1
 
   # ============================================================
   # 10. SHOW STACK OUTPUTS

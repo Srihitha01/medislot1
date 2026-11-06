@@ -109,7 +109,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:GetObject
-                Resource: !Sub arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ArtifactKey}
+                Resource: !Sub arn:${AWS::Partition}:s3:::${ArtifactBucket}/medislot/doctor-dashboard/*
  
       Tags:
         - Key: Project
