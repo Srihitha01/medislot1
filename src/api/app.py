@@ -2558,6 +2558,229 @@ def _delete_idempotency_record(table, idem_key):
         logger.exception("Unable to remove failed idempotency record")
 
 
+
+# ---------------------------------------------------------
+# PATIENT PORTAL: PROFILE AND PUBLIC DOCTOR DISCOVERY
+# ---------------------------------------------------------
+
+_PATIENT_FIELDS = {
+    "phone": "phone",
+    "city": "city",
+    "dateOfBirth": "date_of_birth",
+    "gender": "gender",
+    "emergencyContactName": "emergency_contact_name",
+    "emergencyContactPhone": "emergency_contact_phone",
+}
+
+
+def _patient_profile(user_id, method, event):
+    """Patient profile data is owned by the authenticated patient only."""
+    if method not in {"GET", "PATCH", "PUT", "DELETE"}:
+        return _response(405, {"message": "Method not supported"})
+
+    data = _body(event) if method in {"PATCH", "PUT"} else {}
+    if set(data) - (set(_PATIENT_FIELDS) | {"fullName"}):
+        return _response(400, {"message": "Unsupported patient profile fields"})
+
+    if method in {"PATCH", "PUT"}:
+        for key, value in data.items():
+            if value is not None and not isinstance(value, str):
+                return _response(400, {"message": f"{key} must be a string or null"})
+            if isinstance(value, str):
+                if len(value) > (150 if key == "fullName" else 255):
+                    return _response(400, {"message": f"{key} is too long"})
+                if key == "dateOfBirth" and value:
+                    try:
+                        birth = date.fromisoformat(value)
+                    except ValueError:
+                        return _response(400, {"message": "dateOfBirth must be YYYY-MM-DD"})
+                    if birth > date.today():
+                        return _response(400, {"message": "dateOfBirth cannot be in the future"})
+        if "fullName" in data and (not data["fullName"] or not data["fullName"].strip()):
+            return _response(400, {"message": "fullName cannot be empty"})
+
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT user_id, name FROM users WHERE user_id=%s AND role='patient'",
+                (user_id,),
+            )
+            account = cur.fetchone()
+            if not account:
+                return _response(404, {"message": "Patient account not found"})
+
+            # Discover optional profile columns, keeping the endpoint compatible
+            # with existing RDS installations that have older patient schemas.
+            cur.execute("SHOW COLUMNS FROM patients")
+            available = {row["Field"] for row in cur.fetchall()}
+            supported = {
+                api: column for api, column in _PATIENT_FIELDS.items()
+                if column in available
+            }
+            cur.execute("SELECT * FROM patients WHERE user_id=%s", (user_id,))
+            patient = cur.fetchone()
+
+            if method == "GET":
+                profile = {"fullName": account["name"]}
+                for api_name, column in _PATIENT_FIELDS.items():
+                    profile[api_name] = (
+                        patient.get(column) if patient and column in available else None
+                    )
+                return _response(200, {"profile": profile})
+
+            if method == "DELETE":
+                if patient:
+                    cur.execute("DELETE FROM patients WHERE user_id=%s", (user_id,))
+                conn.commit()
+                return _response(200, {"message": "Patient profile deleted"})
+
+            unsupported = set(data).intersection(_PATIENT_FIELDS) - set(supported)
+            if unsupported:
+                return _response(400, {
+                    "message": "Profile fields are not supported by the deployed database schema",
+                    "fields": sorted(unsupported),
+                })
+
+            if "fullName" in data:
+                cur.execute(
+                    "UPDATE users SET name=%s WHERE user_id=%s AND role='patient'",
+                    (data["fullName"].strip(), user_id),
+                )
+
+            updates = [(column, data[api]) for api, column in supported.items() if api in data]
+            if updates and not patient:
+                cur.execute("INSERT INTO patients (user_id) VALUES (%s)", (user_id,))
+            if updates:
+                assignments = ", ".join(f"`{column}`=%s" for column, _ in updates)
+                cur.execute(
+                    f"UPDATE patients SET {assignments} WHERE user_id=%s",
+                    tuple(value for _, value in updates) + (user_id,),
+                )
+            conn.commit()
+            return _response(200, {"message": "Patient profile saved"})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _pagination(params):
+    try:
+        page = int(params.get("page", "1"))
+        page_size = int(params.get("pageSize", "10"))
+    except ValueError as exc:
+        raise ValueError("page and pageSize must be integers") from exc
+    if page < 1 or not 1 <= page_size <= 50:
+        raise ValueError("page must be positive and pageSize must be 1-50")
+    return page, page_size
+
+
+def _doctor_search(event):
+    params = _query(event)
+    page, page_size = _pagination(params)
+    conditions = ["u.role = 'doctor'", "u.status = 'active'"]
+    values = []
+    for key, expression in (
+        ("name", "u.name"),
+        ("specialisation", "sp.name"),
+        ("hospital", "h.name"),
+        ("city", "h.city"),
+    ):
+        value = params.get(key, "").strip()
+        if value:
+            if len(value) > 150:
+                raise ValueError(f"{key} filter is too long")
+            conditions.append(f"{expression} LIKE %s")
+            values.append("%" + value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
+    where = " AND ".join(conditions)
+    joins = """
+        FROM doctors d
+        JOIN users u ON u.user_id = d.user_id
+        LEFT JOIN specialisations sp ON sp.specialisation_id = d.specialisation_id
+        LEFT JOIN hospitals h ON h.hospital_id = d.hospital_id
+    """
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) AS total {joins} WHERE {where}", tuple(values))
+            total = int(cur.fetchone()["total"])
+            cur.execute(
+                f"""SELECT d.user_id AS doctorId, u.name AS name,
+                    sp.name AS specialisation, h.name AS hospital, h.city AS city
+                    {joins} WHERE {where}
+                    ORDER BY u.name, d.user_id LIMIT %s OFFSET %s""",
+                tuple(values) + (page_size, (page - 1) * page_size),
+            )
+            items = cur.fetchall()
+        return _response(200, {
+            "items": items, "page": page, "pageSize": page_size,
+            "total": total, "totalPages": (total + page_size - 1) // page_size,
+        })
+    finally:
+        conn.close()
+
+
+def _public_doctor(doctor_id):
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT d.user_id AS doctorId, u.name AS name,
+                    sp.name AS specialisation, h.name AS hospital, h.city AS city
+                    FROM doctors d JOIN users u ON u.user_id=d.user_id
+                    LEFT JOIN specialisations sp ON sp.specialisation_id=d.specialisation_id
+                    LEFT JOIN hospitals h ON h.hospital_id=d.hospital_id
+                    WHERE d.user_id=%s AND u.role='doctor' AND u.status='active'""",
+                (doctor_id,),
+            )
+            doctor = cur.fetchone()
+            if not doctor:
+                return _response(404, {"message": "Doctor not found"})
+            cur.execute(
+                """SELECT consultation_type_id AS consultationTypeId,
+                    name, duration_min AS durationMinutes, fee_amount AS fee
+                    FROM consultation_types
+                    WHERE doctor_user_id=%s AND is_active=1
+                    ORDER BY name""",
+                (doctor_id,),
+            )
+            doctor["consultationTypes"] = cur.fetchall()
+        return _response(200, {"doctor": doctor})
+    finally:
+        conn.close()
+
+
+def _public_doctor_slots(doctor_id, event):
+    params = _query(event)
+    # Reuse the existing DynamoDB query and response shape.
+    copied = dict(event)
+    query = dict(params)
+    query["doctorId"] = str(doctor_id)
+    copied["queryStringParameters"] = query
+    result = _list_slots(copied)
+    payload = json.loads(result["body"])
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    payload["items"] = [
+        item for item in payload["items"]
+        if item.get("startUtc", "") > now
+        and int(item.get("capacity", 0)) > int(item.get("bookedCount", 0))
+    ]
+    for item in payload["items"]:
+        item["freeSeats"] = int(item["capacity"]) - int(item.get("bookedCount", 0))
+    payload["count"] = len(payload["items"])
+    return _response(200, payload)
+
+
+def _get_slot(slot_id):
+    result = _table("SLOTS_TABLE").get_item(Key={"slotId": slot_id})
+    slot = result.get("Item")
+    if not slot:
+        return _response(404, {"message": "Slot not found"})
+    return _response(200, {"item": slot})
+
+
 # ---------------------------------------------------------
 # MAIN LAMBDA HANDLER
 # ---------------------------------------------------------
@@ -2592,7 +2815,15 @@ def lambda_handler(event, context):
     if method == "OPTIONS":
         return _response(200, {"message": "OK"})
 
-    if path != "/health" and not user_id:
+    public_get = (
+        path in {
+            "/health", "/reference/specialisations",
+            "/reference/hospitals", "/doctors/search", "/slots",
+        }
+        or re.fullmatch(r"/doctors/[1-9][0-9]*(?:/slots)?", path)
+        or re.fullmatch(r"/slots/[^/]+", path)
+    )
+    if not user_id and not (method == "GET" and public_get):
         return _response(
             401,
             {"message": "Unauthorized"},
@@ -2621,6 +2852,23 @@ def lambda_handler(event, context):
             and path == "/reference/hospitals"
         ):
             return _reference_data("hospitals")
+
+        # Patient portal
+        if path == "/patients/me":
+            if role != "patient":
+                return _response(403, {"message": "Only patients can manage patient profiles"})
+            return _patient_profile(user_id, method, event)
+
+        # Public doctor discovery (before the /doctors/me routes)
+        if method == "GET" and path == "/doctors/search":
+            return _doctor_search(event)
+
+        public_match = re.fullmatch(r"/doctors/([1-9][0-9]*)(/slots)?", path)
+        if method == "GET" and public_match:
+            doctor_id = int(public_match.group(1))
+            if public_match.group(2):
+                return _public_doctor_slots(doctor_id, event)
+            return _public_doctor(doctor_id)
 
         # Authenticated account
         if method == "GET" and path == "/users/me":
