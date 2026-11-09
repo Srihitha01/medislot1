@@ -16,7 +16,8 @@ def as_date(value):
     try:
         return date.fromisoformat(str(value)[:10])
     except (TypeError, ValueError) as exc:
-        raise ValueError("date must be YYYY-MM-DD") from exc
+        # Include the offending value so bad data is easy to find in the logs.
+        raise ValueError(f"date must be YYYY-MM-DD, got {value!r}") from exc
 
 
 def as_time(value):
@@ -58,10 +59,31 @@ def overlaps(a, b):
     return a0 < b1 and b0 < a1
 
 
+def _full_day_blackout_date(item):
+    """Return the date of a full-day blackout, or None for a timed blackout.
+
+    Blackouts arrive from the materializer as DB row dicts, e.g.
+    {"blackout_date": date(2026, 11, 10), "is_full_day": 1,
+     "start_time": None, "end_time": None}
+    but plain dates / ISO strings are also accepted.
+
+    Timed (partial-day) blackouts do not close the whole day, so they are
+    ignored here; the materializer blocks the overlapping slots itself.
+    """
+    if isinstance(item, dict):
+        if not item.get("is_full_day", 1):
+            return None
+        item = item.get("blackout_date")
+    return as_date(item)
+
+
 def effective_windows(patterns, exceptions, blackouts, target_date):
     """Resolve one consultation type for one local calendar date."""
     day = as_date(target_date)
-    blackout_days = {as_date(item) for item in (blackouts or [])}
+    blackout_days = {
+        d for d in (_full_day_blackout_date(item) for item in (blackouts or []))
+        if d is not None
+    }
     if day in blackout_days:
         return []
 
