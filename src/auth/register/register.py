@@ -172,8 +172,10 @@ def validate_registration(data):
     last_name = last_name.strip()
     name = f"{first_name} {last_name}".strip()
 
-    if len(name) > 150:
-        raise ValueError("Name must not exceed 150 characters")
+    # The currently deployed RDS users.name column is VARCHAR(120).
+    # Keep validation aligned with that schema; doctor.full_name accepts 150.
+    if len(name) > 120:
+        raise ValueError("Name must not exceed 120 characters")
 
     if isinstance(first_name, str) and len(first_name.strip()) > 75:
         raise ValueError("First name must not exceed 75 characters")
@@ -188,8 +190,8 @@ def validate_registration(data):
     if not EMAIL_RE.fullmatch(email):
         raise ValueError("Invalid email address")
 
-    if len(email) > 255:
-        raise ValueError("Email must not exceed 255 characters")
+    if len(email) > 254:
+        raise ValueError("Email must not exceed 254 characters")
 
     if not isinstance(password, str):
         raise ValueError("Password is required")
@@ -210,8 +212,6 @@ def validate_registration(data):
 
     return {
         "name": name,
-        "first_name": first_name,
-        "last_name": last_name,
         "email": email,
         "password": password,
         "role": role
@@ -252,8 +252,6 @@ def register_user(data):
     validated = validate_registration(data)
 
     name = validated["name"]
-    first_name = validated["first_name"]
-    last_name = validated["last_name"]
     email = validated["email"]
     password = validated["password"]
     role = validated["role"]
@@ -293,18 +291,14 @@ def register_user(data):
                 """
                 INSERT INTO users (
                     name,
-                    first_name,
-                    last_name,
                     email,
                     password_hash,
                     role
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s)
                 """,
                 (
                     name,
-                    first_name,
-                    last_name,
                     email,
                     password_hash,
                     role
