@@ -140,18 +140,45 @@ def validate_registration(data):
     if not isinstance(data, dict):
         raise ValueError("Invalid request body")
 
-    name = data.get("name")
+    first_name = data.get("firstName", data.get("first_name"))
+    last_name = data.get("lastName", data.get("last_name"))
+    # Backward compatibility for existing clients that still send `name`.
+    legacy_name = data.get("name")
+    if isinstance(first_name, str) and isinstance(last_name, str):
+        first_name = first_name.strip()
+        last_name = last_name.strip()
+        name = f"{first_name} {last_name}".strip()
+    else:
+        # Legacy clients may still send a single `name` field.
+        name = legacy_name
+        if isinstance(name, str):
+            parts = name.strip().split(None, 1)
+            first_name = parts[0] if parts else ""
+            last_name = parts[1] if len(parts) > 1 else ""
     email = data.get("email")
     password = data.get("password")
     role = data.get("role")
 
+    if not isinstance(first_name, str) or not first_name.strip():
+        raise ValueError("First name is required")
+    if not isinstance(last_name, str):
+        raise ValueError("Last name is required")
+    if not last_name.strip() and not isinstance(legacy_name, str):
+        raise ValueError("Last name is required")
     if not isinstance(name, str) or not name.strip():
         raise ValueError("Name is required")
 
-    name = name.strip()
+    first_name = first_name.strip()
+    last_name = last_name.strip()
+    name = f"{first_name} {last_name}".strip()
 
     if len(name) > 150:
         raise ValueError("Name must not exceed 150 characters")
+
+    if isinstance(first_name, str) and len(first_name.strip()) > 75:
+        raise ValueError("First name must not exceed 75 characters")
+    if isinstance(last_name, str) and len(last_name.strip()) > 75:
+        raise ValueError("Last name must not exceed 75 characters")
 
     if not isinstance(email, str):
         raise ValueError("Email is required")
@@ -183,6 +210,8 @@ def validate_registration(data):
 
     return {
         "name": name,
+        "first_name": first_name,
+        "last_name": last_name,
         "email": email,
         "password": password,
         "role": role
@@ -223,6 +252,8 @@ def register_user(data):
     validated = validate_registration(data)
 
     name = validated["name"]
+    first_name = validated["first_name"]
+    last_name = validated["last_name"]
     email = validated["email"]
     password = validated["password"]
     role = validated["role"]
@@ -262,14 +293,18 @@ def register_user(data):
                 """
                 INSERT INTO users (
                     name,
+                    first_name,
+                    last_name,
                     email,
                     password_hash,
                     role
                 )
-                VALUES (%s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 (
                     name,
+                    first_name,
+                    last_name,
                     email,
                     password_hash,
                     role
@@ -295,7 +330,7 @@ def register_user(data):
                     """,
                     (
                         user_id,
-                        data.get("name", "").strip(),
+                        name,
                         data.get("dateOfBirth") or None,
                         data.get("gender") or None,
                         data.get("phone") or None,
@@ -327,7 +362,7 @@ def register_user(data):
                     """,
                     (
                         user_id,
-                        data.get("name", "").strip(),
+                        name,
                         str(data["licenseNumber"]).strip(),
                         int(data["specialisationId"]),
                         data.get("hospitalId") or None,

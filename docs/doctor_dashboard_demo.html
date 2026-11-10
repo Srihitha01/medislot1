@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MediSlot | Doctor Dashboard Preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#182230;--muted:#718096;--line:#e8edf2;--bg:#f5f8fa;--white:#fff;--teal:#087f8c;--teal2:#e8f6f6;--navy:#153047;--green:#16845b;--amber:#b7791f;--red:#c05252;--shadow:0 12px 35px rgba(26,48,66,.06)}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px 'DM Sans',sans-serif}button,input,select{font:inherit}button{cursor:pointer;border:0}.shell{display:flex;min-height:100vh}.sidebar{width:248px;background:#fff;border-right:1px solid var(--line);padding:25px 17px;display:flex;flex-direction:column;position:fixed;inset:0 auto 0 0;z-index:5}.brand{display:flex;align-items:center;gap:10px;padding:0 10px 34px;font:800 22px Manrope;color:var(--navy)}.brandmark{width:34px;height:34px;border-radius:11px;background:var(--teal);display:grid;place-items:center;color:#fff;font-size:20px}.brand span:last-child{color:var(--teal)}.nav-caption{font-size:10px;font-weight:700;letter-spacing:1.3px;color:#9aa6b2;padding:0 12px;margin:14px 0 9px}.nav a{display:flex;align-items:center;gap:13px;padding:11px 13px;border-radius:10px;text-decoration:none;color:#637283;margin:3px 0;font-weight:600}.nav a.active,.nav a:hover{background:var(--teal2);color:var(--teal)}.nav .ico{width:18px;text-align:center;font-size:16px}.side-bottom{margin-top:auto}.profile-mini{border-top:1px solid var(--line);padding:18px 8px 0;display:flex;gap:10px;align-items:center}.avatar{width:38px;height:38px;border-radius:50%;background:#d9eeee;color:#176c74;display:grid;place-items:center;font-weight:700}.profile-mini strong{display:block;font-size:12px}.profile-mini small{color:var(--muted);font-size:11px}.main{margin-left:248px;width:calc(100% - 248px);padding:28px 34px 40px;max-width:1600px}.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:27px}.eyebrow{color:var(--teal);font-weight:700;font-size:11px;letter-spacing:1.2px;text-transform:uppercase}.heading{font:800 27px Manrope;margin:5px 0 4px}.sub{color:var(--muted)}.top-actions{display:flex;align-items:center;gap:12px}.icon-btn{width:40px;height:40px;border:1px solid var(--line);border-radius:12px;background:#fff;color:#607080}.today{background:#fff;border:1px solid var(--line);border-radius:11px;padding:10px 14px;color:#536273;font-weight:600}.welcome{background:linear-gradient(110deg,#15394a,#087f8c);color:#fff;border-radius:18px;padding:25px 28px;display:flex;justify-content:space-between;align-items:center;box-shadow:var(--shadow);overflow:hidden;position:relative}.welcome:after{content:"";position:absolute;width:250px;height:250px;border:1px solid #ffffff22;border-radius:50%;right:110px;top:-130px;box-shadow:0 0 0 30px #ffffff0a,0 0 0 65px #ffffff08}.welcome h2{font:700 21px Manrope;margin:0 0 8px}.welcome p{margin:0;color:#d3e9eb}.welcome .date-pill{background:#ffffff1b;border:1px solid #ffffff30;padding:9px 13px;border-radius:10px;white-space:nowrap;z-index:1}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:15px;margin:20px 0}.stat{background:#fff;border:1px solid var(--line);border-radius:15px;padding:17px 18px;box-shadow:var(--shadow)}.stat-top{display:flex;justify-content:space-between;align-items:center;color:var(--muted);font-weight:600;font-size:12px}.stat-icon{width:34px;height:34px;border-radius:10px;background:var(--teal2);display:grid;place-items:center;color:var(--teal);font-size:17px}.stat strong{display:block;font:800 27px Manrope;margin:12px 0 3px}.trend{font-size:11px;color:var(--green)}.grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(280px,.85fr);gap:17px}.panel{background:#fff;border:1px solid var(--line);border-radius:15px;padding:19px;box-shadow:var(--shadow);margin-bottom:17px}.panel-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}.panel h3{font:700 15px Manrope;margin:0}.muted{color:var(--muted)}.link{color:var(--teal);font-weight:700;text-decoration:none;font-size:12px}.appt{display:grid;grid-template-columns:70px 1fr auto;gap:13px;align-items:center;padding:13px 0;border-top:1px solid #f0f3f5}.appt:first-of-type{border-top:0}.time{font-weight:700;color:#536273;font-size:12px}.patient{display:flex;align-items:center;gap:10px}.patient .avatar{width:37px;height:37px;font-size:12px}.patient strong{display:block;font-size:12px}.patient small{color:var(--muted);font-size:11px}.tag{padding:6px 9px;border-radius:20px;font-size:10px;font-weight:700;white-space:nowrap}.confirmed{background:#e7f6ee;color:#16845b}.pending{background:#fff5df;color:#a36c12}.cancelled{background:#fceaea;color:#b54c4c}.type{font-size:10px;color:var(--teal);font-weight:700;background:var(--teal2);padding:5px 8px;border-radius:7px;margin-left:5px}.schedule{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;text-align:center}.day{padding:9px 3px;border-radius:9px;background:#f7f9fa;color:var(--muted);font-size:10px}.day b{display:block;font-size:13px;color:var(--ink);margin-top:5px}.day.selected{background:var(--teal);color:#d6f1f1}.day.selected b{color:#fff}.slot-list{margin-top:14px;display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.slot{padding:10px;border:1px solid var(--line);border-radius:9px;font-size:11px;display:flex;justify-content:space-between}.slot em{font-style:normal;color:var(--green);font-weight:700}.consult-row{display:flex;align-items:center;justify-content:space-between;padding:11px 0;border-top:1px solid #f0f3f5}.consult-row:first-of-type{border:0}.consult-row strong{font-size:12px}.consult-row small{display:block;color:var(--muted);font-size:11px;margin-top:3px}.duration{font-weight:700;color:var(--teal);font-size:12px}.availability{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-top:1px solid #f0f3f5}.availability:first-of-type{border:0}.availability strong{font-size:12px}.availability small{display:block;color:var(--muted);font-size:11px;margin-top:3px}.switch{width:34px;height:19px;background:#d7e0e5;border-radius:20px;position:relative}.switch:after{content:"";position:absolute;width:13px;height:13px;background:#fff;border-radius:50%;top:3px;left:3px;transition:.2s}.switch.on{background:var(--teal)}.switch.on:after{left:18px}.btn{padding:9px 13px;border-radius:9px;background:var(--teal);color:#fff;font-weight:700;font-size:11px}.btn.light{background:var(--teal2);color:var(--teal)}.activity{display:flex;gap:10px;padding:10px 0;border-top:1px solid #f0f3f5}.activity:first-of-type{border:0}.dot{width:8px;height:8px;border-radius:50%;background:var(--teal);margin-top:5px}.activity p{margin:0;font-size:11px;line-height:1.5}.activity small{color:var(--muted);display:block;margin-top:3px}.footer-note{font-size:10px;color:#9aa6b2;text-align:center;margin-top:10px}.toast{position:fixed;right:24px;bottom:24px;background:#15394a;color:white;padding:12px 16px;border-radius:10px;box-shadow:var(--shadow);opacity:0;transform:translateY(10px);transition:.25s;pointer-events:none}.toast.show{opacity:1;transform:translateY(0)}@media(max-width:1050px){.stats{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}}@media(max-width:720px){.sidebar{width:68px;padding:18px 8px}.brand{padding:0 8px 28px}.brand .brandname,.nav-caption,.nav a .navtext,.profile-mini div:not(.avatar){display:none}.nav a{justify-content:center;padding:12px 4px}.nav .ico{font-size:18px}.profile-mini{justify-content:center;padding:15px 0 0}.main{margin-left:68px;width:calc(100% - 68px);padding:20px 14px}.topbar{align-items:flex-start}.heading{font-size:22px}.today{display:none}.welcome{padding:20px;align-items:flex-start;gap:10px;flex-direction:column}.stats{gap:9px}.stat{padding:13px}.stat strong{font-size:23px}.appt{grid-template-columns:55px 1fr;gap:8px}.appt>.tag{grid-column:2;justify-self:start}.panel{padding:15px}.slot-list{grid-template-columns:1fr}.top-actions{gap:6px}} 
+</style>
+</head>
+<body>
+<div class="shell">
+<aside class="sidebar">
+  <div class="brand"><span class="brandmark">✚</span><span class="brandname">Medi<span>Slot</span></span></div>
+  <div class="nav-caption">WORKSPACE</div>
+  <nav class="nav">
+    <a class="active" href="#overview"><span class="ico">▦</span><span class="navtext">Overview</span></a>
+    <a href="#appointments"><span class="ico">▣</span><span class="navtext">Appointments</span></a>
+    <a href="#availability"><span class="ico">◷</span><span class="navtext">Availability</span></a>
+    <a href="#consultations"><span class="ico">⚕</span><span class="navtext">Consultation types</span></a>
+    <a href="#profile"><span class="ico">♙</span><span class="navtext">My profile</span></a>
+  </nav>
+  <div class="side-bottom">
+    <div class="nav-caption">ACCOUNT</div>
+    <nav class="nav"><a href="#settings"><span class="ico">⚙</span><span class="navtext">Settings</span></a><a href="#help"><span class="ico">?</span><span class="navtext">Help centre</span></a></nav>
+    <div class="profile-mini"><div class="avatar">AS</div><div><strong>Dr. Ananya Sharma</strong><small>Cardiologist</small></div></div>
+  </div>
+</aside>
+<main class="main" id="overview">
+  <header class="topbar">
+    <div><div class="eyebrow">Tuesday, 10 November 2026</div><h1 class="heading">Good morning, Dr. Ananya 👋</h1><div class="sub">Here’s what’s happening at your clinic today.</div></div>
+    <div class="top-actions"><button class="icon-btn" title="Notifications" onclick="notify('You are all caught up!')">♧</button><div class="today">📅 Today · 10 Nov</div></div>
+  </header>
+  <section class="welcome">
+    <div><h2>Your practice, at a glance</h2><p>Stay on top of your appointments and keep your schedule running smoothly.</p></div>
+    <div class="date-pill">● Clinic status: Available</div>
+  </section>
+  <section class="stats">
+    <div class="stat"><div class="stat-top">Appointments today <span class="stat-icon">▣</span></div><strong>12</strong><div class="trend">↑ 2 more than yesterday</div></div>
+    <div class="stat"><div class="stat-top">Upcoming this week <span class="stat-icon">◷</span></div><strong>38</strong><div class="trend">Across 5 working days</div></div>
+    <div class="stat"><div class="stat-top">Available slots <span class="stat-icon">＋</span></div><strong>24</strong><div class="trend">Next 7 days</div></div>
+    <div class="stat"><div class="stat-top">Completed this month <span class="stat-icon">✓</span></div><strong>86</strong><div class="trend">↑ 12% from last month</div></div>
+  </section>
+  <div class="grid">
+    <div>
+      <section class="panel" id="appointments">
+        <div class="panel-head"><div><h3>Today's appointments</h3><div class="muted" style="font-size:11px;margin-top:4px">Your schedule · 10 November</div></div><a class="link" href="#appointments" onclick="notify('Showing all appointments in this demo')">View all →</a></div>
+        <div class="appt"><div class="time">09:00 AM</div><div class="patient"><div class="avatar">RK</div><div><strong>Rahul Kumar <span class="type">Standard</span></strong><small>General follow-up · 30 min</small></div></div><span class="tag confirmed">Confirmed</span></div>
+        <div class="appt"><div class="time">09:45 AM</div><div class="patient"><div class="avatar" style="background:#f9e8dd;color:#9a6037">PM</div><div><strong>Priya Menon <span class="type">Quick</span></strong><small>Blood pressure review · 15 min</small></div></div><span class="tag confirmed">Confirmed</span></div>
+        <div class="appt"><div class="time">10:30 AM</div><div class="patient"><div class="avatar" style="background:#eee8fb;color:#7052a2">AS</div><div><strong>Arjun Singh <span class="type">Detail</span></strong><small>Cardiac consultation · 60 min</small></div></div><span class="tag pending">Pending</span></div>
+        <div class="appt"><div class="time">11:45 AM</div><div class="patient"><div class="avatar" style="background:#e8f0fc;color:#456da6">NK</div><div><strong>Neha Kapoor <span class="type">Standard</span></strong><small>ECG review · 30 min</small></div></div><span class="tag confirmed">Confirmed</span></div>
+        <div class="appt"><div class="time">12:30 PM</div><div class="patient"><div class="avatar" style="background:#fce9ef;color:#a44e6b">VD</div><div><strong>Vikram Das <span class="type">Quick</span></strong><small>Prescription review · 15 min</small></div></div><span class="tag pending">Pending</span></div>
+      </section>
+      <section class="panel" id="availability">
+        <div class="panel-head"><div><h3>Weekly availability</h3><div class="muted" style="font-size:11px;margin-top:4px">Your bookable schedule</div></div><button class="btn" onclick="notify('Availability editor preview opened')">Edit availability</button></div>
+        <div class="schedule">
+          <div class="day">MON<b>09</b></div><div class="day selected">TUE<b>10</b></div><div class="day">WED<b>11</b></div><div class="day">THU<b>12</b></div><div class="day">FRI<b>13</b></div><div class="day">SAT<b>14</b></div><div class="day">SUN<b>15</b></div>
+        </div>
+        <div class="slot-list"><div class="slot">09:00 AM – 01:00 PM <em>Available</em></div><div class="slot">02:00 PM – 05:00 PM <em>Available</em></div><div class="slot">01:00 PM – 02:00 PM <span class="muted">Break</span></div><div class="slot">05:00 PM onwards <span class="muted">Closed</span></div></div>
+      </section>
+    </div>
+    <div>
+      <section class="panel" id="consultations">
+        <div class="panel-head"><h3>Consultation types</h3><a class="link" href="#consultations" onclick="notify('Consultation settings preview')">Manage →</a></div>
+        <div class="consult-row"><div><strong>Quick</strong><small>Brief review and follow-up</small></div><span class="duration">15 min</span></div>
+        <div class="consult-row"><div><strong>Standard</strong><small>Regular consultation</small></div><span class="duration">30 min</span></div>
+        <div class="consult-row"><div><strong>Detail</strong><small>Extended consultation</small></div><span class="duration">60 min</span></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h3>Availability by day</h3><span class="muted" style="font-size:10px">Weekly pattern</span></div>
+        <div class="availability"><div><strong>Monday – Friday</strong><small>09:00 AM – 05:00 PM</small></div><div class="switch on" onclick="toggleSwitch(this)"></div></div>
+        <div class="availability"><div><strong>Saturday</strong><small>09:00 AM – 01:00 PM</small></div><div class="switch on" onclick="toggleSwitch(this)"></div></div>
+        <div class="availability"><div><strong>Sunday</strong><small>Not available</small></div><div class="switch" onclick="toggleSwitch(this)"></div></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h3>Recent activity</h3><span class="muted" style="font-size:10px">Today</span></div>
+        <div class="activity"><span class="dot"></span><p><b>New appointment booked</b> · Rahul Kumar<small>Today, 08:42 AM</small></p></div>
+        <div class="activity"><span class="dot" style="background:#d59b3d"></span><p><b>Appointment awaiting confirmation</b> · Arjun Singh<small>Today, 08:15 AM</small></p></div>
+        <div class="activity"><span class="dot" style="background:#7a8da0"></span><p><b>Availability updated</b> · Saturday hours<small>Yesterday, 06:20 PM</small></p></div>
+      </section>
+    </div>
+  </div>
+  <div class="footer-note">MediSlot dashboard preview · Sample data only · Not connected to live patient records</div>
+</main>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+function notify(message){const el=document.getElementById('toast');el.textContent=message;el.classList.add('show');clearTimeout(window.toastTimer);window.toastTimer=setTimeout(()=>el.classList.remove('show'),2400)}
+function toggleSwitch(el){el.classList.toggle('on');notify('Demo availability state changed')}
+document.querySelectorAll('.nav a').forEach(a=>a.addEventListener('click',()=>{document.querySelectorAll('.nav a').forEach(x=>x.classList.remove('active'));a.classList.add('active')}));
+</script>
+</body>
+</html>

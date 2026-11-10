@@ -65,10 +65,14 @@
     <form method="post" novalidate>
         <div class="grid">
             <div class="field">
-                <label for="name">Full name</label>
-                <input id="name" name="name" maxlength="120" required value="{{ form.get('name', '') }}">
+                <label for="first_name">First name</label>
+                <input id="first_name" name="first_name" type="text" maxlength="75" autocomplete="given-name" required value="{{ form.get('first_name', '') }}" placeholder="e.g. Ananya">
             </div>
             <div class="field">
+                <label for="last_name">Last name</label>
+                <input id="last_name" name="last_name" type="text" maxlength="75" autocomplete="family-name" required value="{{ form.get('last_name', '') }}" placeholder="e.g. Sharma">
+            </div>
+            <div class="field full">
                 <label for="email">Email</label>
                 <input id="email" name="email" type="email" maxlength="254" required value="{{ form.get('email', '') }}">
             </div>

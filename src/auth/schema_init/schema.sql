@@ -1,6 +1,8 @@
 CREATE TABLE IF NOT EXISTS users (
     user_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     name VARCHAR(120) NOT NULL,
+    first_name VARCHAR(75) NOT NULL,
+    last_name VARCHAR(75) NOT NULL,
     email VARCHAR(254) NOT NULL,
     password_hash VARCHAR(60) NOT NULL,
     role ENUM('patient', 'doctor') NOT NULL,

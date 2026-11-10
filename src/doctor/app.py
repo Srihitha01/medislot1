@@ -138,13 +138,18 @@ def post_registration(path, payload):
 
 def validate_common(form):
     """Checks shared by doctor and patient registration. Returns error or None."""
-    name = form.get("name", "").strip()
+    first_name = form.get("first_name", "").strip()
+    last_name = form.get("last_name", "").strip()
     email = form.get("email", "").strip().lower()
     password = form.get("password", "")
     confirm = form.get("confirm_password", "")
 
-    if not name:
-        return "Please enter your full name."
+    if not first_name:
+        return "Please enter your first name."
+    if not last_name:
+        return "Please enter your last name."
+    if len(first_name) > 75 or len(last_name) > 75:
+        return "First name and last name must each be 75 characters or fewer."
     if not EMAIL_PATTERN.match(email):
         return "Please enter a valid email address."
     if len(password) < 8:
@@ -359,7 +364,9 @@ def register_doctor():
 
     payload = {
         "role": "doctor",
-        "name": request.form["name"].strip(),
+        "name": f"{request.form['first_name'].strip()} {request.form['last_name'].strip()}",
+        "firstName": request.form["first_name"].strip(),
+        "lastName": request.form["last_name"].strip(),
         "email": request.form["email"].strip().lower(),
         "password": request.form["password"],
         "licenseNumber": license_number,
@@ -418,7 +425,9 @@ def register_patient():
 
     payload = {
         "role": "patient",
-        "name": request.form["name"].strip(),
+        "name": f"{request.form['first_name'].strip()} {request.form['last_name'].strip()}",
+        "firstName": request.form["first_name"].strip(),
+        "lastName": request.form["last_name"].strip(),
         "email": request.form["email"].strip().lower(),
         "password": request.form["password"],
         "phone": phone,
