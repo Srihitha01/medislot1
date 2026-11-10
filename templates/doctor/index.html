@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -388,6 +387,7 @@
         }
 
         .status-pending,
+        .status-blackout,
         .status-rescheduled {
             background: var(--warning-bg);
             color: var(--warning);
@@ -653,6 +653,64 @@
             }
         }
         [hidden] { display: none !important; }
+
+/* MediSlot 2026 · consultation and time-off redesign */
+.ms-hero{display:flex;justify-content:space-between;align-items:center;gap:20px;background:linear-gradient(115deg,#112b49,#174c69 70%,#167a83);color:white;padding:32px 36px;border-radius:22px;margin-bottom:24px;box-shadow:0 14px 36px rgba(17,43,73,.12)}
+.ms-eyebrow{font-size:11px;font-weight:800;letter-spacing:2px;color:#9de6dc}.ms-hero h2{font-size:29px;letter-spacing:-1px;margin:8px 0}.ms-hero p{color:#d6e9f2;font-size:14px;line-height:1.7}.ms-hero-symbol{font-size:64px;opacity:.32}
+.ms-consult-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
+.ms-consult-card{background:#fff;border:1px solid #e1eaf1;border-radius:20px;padding:24px;box-shadow:0 8px 28px rgba(23,47,70,.045);transition:transform .2s,box-shadow .2s,border-color .2s;min-width:0}
+.ms-consult-card:hover{transform:translateY(-4px);box-shadow:0 16px 38px rgba(23,47,70,.12);border-color:#9acbd1}
+.ms-consult-card.inactive{background:#f9fbfc;opacity:.75}.ms-card-top{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.ms-type-icon{height:46px;width:46px;border-radius:14px;display:grid;place-items:center;background:#e8f7f5;color:#087c7c;font-size:22px}
+.ms-duration{background:#f0f6fa;color:#547086;font-size:12px;font-weight:700;border-radius:30px;padding:7px 10px}
+.ms-consult-card h3{font-size:20px;margin:22px 0 6px;color:#142d47}.ms-consult-card .ms-card-sub{font-size:13px;color:#6e8498;min-height:35px}
+.ms-checkbox-line{display:flex;gap:12px;align-items:center;padding:16px;margin:18px 0;background:#f5f9fc;border:1px solid #e2ecf2;border-radius:13px;cursor:pointer}
+.ms-checkbox-line input{width:19px;height:19px;accent-color:#087f80;flex:none}.ms-checkbox-line strong{display:block;font-size:13px;color:#19344b}.ms-checkbox-line small{display:block;color:#71879a;font-size:12px;margin-top:4px}
+.ms-fee-label{font-size:12px;font-weight:700;color:#395369;display:block;margin:16px 0 8px}
+.ms-fee-wrap{display:flex;align-items:center;gap:10px;border:1px solid #d7e4ed;border-radius:12px;padding:0 13px;background:#fff}
+.ms-fee-wrap span{font-size:18px;font-weight:800;color:#087f80}.ms-fee-wrap input{border:0!important;outline:0;width:100%;height:48px;min-width:0;background:transparent;font-size:17px;font-weight:700;color:#16304a}
+.ms-primary-action{display:block;width:100%;background:linear-gradient(100deg,#12304e,#087f80);color:#fff;border:0;border-radius:12px;padding:14px 16px;margin-top:18px;font-weight:750;transition:filter .2s,transform .2s}
+.ms-primary-action:hover{filter:brightness(1.13);transform:translateY(-1px)}.ms-primary-action:disabled{opacity:.55;cursor:wait}
+.ms-note{display:flex;gap:12px;align-items:flex-start;margin-top:20px;padding:18px 22px;border-radius:15px;background:#edf7f7;color:#16465a}.ms-note>span{font-size:22px}.ms-note strong{font-size:13px}.ms-note p{font-size:12px;margin-top:4px;color:#5c7b86}
+.ms-blackout-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:22px}
+.ms-panel{background:white;border:1px solid #e1eaf1;border-radius:20px;padding:26px;box-shadow:0 8px 28px rgba(23,47,70,.04)}
+.ms-panel-heading{display:flex;gap:14px;align-items:center;margin-bottom:25px}.ms-panel-icon{width:45px;height:45px;display:grid;place-items:center;background:#e8f7f5;border-radius:13px;color:#087f80;font-size:22px}
+.ms-panel-heading h3{font-size:17px;color:#142d47}.ms-panel-heading p{font-size:12px;color:#7b8fa0;margin-top:5px}
+.ms-time-fields{display:grid;grid-template-columns:1fr 1fr;gap:14px}.ms-time-fields[hidden]{display:none}
+.ms-optional{font-weight:400;color:#8da1b0}.ms-blackout-item{border:1px solid #e2ebf0;border-radius:14px;padding:16px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.ms-blackout-item strong{color:#19344b;font-size:14px}.ms-blackout-item p{font-size:12px;color:#70859a;margin-top:6px}.ms-block-pill{display:inline-block;background:#fff2df;color:#a76312;border-radius:20px;font-size:11px;font-weight:800;padding:5px 9px;margin-top:8px}
+.ms-remove{border:1px solid #f2d7d7;background:#fff6f6;color:#b64040;border-radius:9px;padding:9px 12px;font-weight:700;font-size:12px}
+@media(max-width:1050px){.ms-consult-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ms-blackout-layout{grid-template-columns:1fr}}
+@media(max-width:650px){.ms-consult-grid{grid-template-columns:1fr}.ms-hero{padding:24px}.ms-hero-symbol{display:none}.ms-panel{padding:18px}.ms-time-fields{grid-template-columns:1fr}}
+
+
+/* Professional service tables, consultation colours and interactive actions */
+.ms-management-panel{margin-bottom:20px;box-shadow:0 8px 28px rgba(23,47,70,.045)}
+.management-table{min-width:780px}
+.management-table thead th{background:#f5f8fc;color:#637b91;text-transform:uppercase;letter-spacing:.45px;font-size:10px}
+.management-table tbody tr{transition:background .18s ease}
+.management-table tbody tr:hover{background:#f5f9ff}
+.management-table td{padding:15px 12px}
+.type-pill{display:inline-flex;align-items:center;gap:7px;border-radius:30px;padding:7px 11px;font-size:11px;font-weight:800;white-space:nowrap}
+.type-pill:before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.type-quick{color:#1d4ed8;background:#eaf2ff}
+.type-standard{color:#047857;background:#e5f8ef}
+.type-detailed{color:#6d28d9;background:#f0eaff}
+.type-video{color:#0369a1;background:#e2f5ff}
+.type-clinic{color:#a16207;background:#fff3d9}
+.type-other{color:#475569;background:#eef2f7}
+.table-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.btn-small{padding:7px 10px;font-size:10px;border-radius:8px}
+.btn-quiet{background:#f1f5f9;color:#475569;box-shadow:none}
+.btn-quiet:hover{background:#e6efff;color:#1d4ed8}
+.btn-outline-danger{background:#fff;color:#b91c1c;border:1px solid #fecaca;box-shadow:none}
+.btn-outline-danger:hover{background:#fff1f2;color:#991b1b}
+.status-active{background:#dcfce7;color:#15803d}
+.status-inactive{background:#f1f5f9;color:#64748b}
+.btn:disabled{opacity:.55;cursor:not-allowed;transform:none}
+.management-table .empty{padding:28px 12px}
+@media(max-width:760px){.management-table{min-width:740px}.ms-management-panel{padding:17px}}
+
 </style>
 </head>
 
@@ -708,9 +766,13 @@
 
     <div class="sidebar-bottom">
         <nav class="nav-menu">
-            <a href="/logout" id="logoutButton">
-                <span class="nav-icon">⇥</span><span class="nav-text">Logout</span>
-            </a>
+            <div class="sidebar-bottom">
+                <form method="post" action="/logout">
+                    <button type="submit" class="btn btn-light" style="width:100%;">
+                        ⇥ Logout
+                    </button>
+                </form>
+            </div>
         </nav>
     </div>
 </aside>
@@ -910,55 +972,35 @@
 
     <!-- CONSULTATION -->
     <section class="section" id="section-consultation">
-        <div class="panel">
-            <div class="panel-header">
-                <div>
-                    <h3>Consultation Types</h3>
-                    <p>Configure the consultation services you offer.</p>
-                </div>
-            </div>
-
-            <div class="consultation-list" id="consultationList">
-                <div class="empty">Loading consultation types...</div>
-            </div>
+      <div class="ms-hero"><div><span class="ms-eyebrow">YOUR PRACTICE · SERVICES</span><h2>Consultation types</h2><p>Three simple appointment formats. Choose what you offer and set a fee for each.</p></div><div class="ms-hero-symbol">✦</div></div>
+      <div class="panel ms-management-panel">
+        <div class="panel-header">
+          <div><h3>Your consultation services</h3><p>Manage every consultation type configured for your account. Internal IDs are never displayed.</p></div>
         </div>
-
-        <div class="panel">
-            <div class="panel-header">
-                <div>
-                    <h3>Add Consultation Type</h3>
-                    <p>Define the consultation name, duration, fee and capacity.</p>
-                </div>
-            </div>
-
-            <form id="consultationForm">
-                <div class="editor-grid">
-                    <div class="field">
-                        <label for="consultationName">Consultation name</label>
-                        <input id="consultationName" maxlength="40" placeholder="video / in_clinic / phone" required>
-                    </div>
-
-                    <div class="field">
-                        <label for="consultationDuration">Duration (minutes)</label>
-                        <input id="consultationDuration" type="number" min="5" max="180" value="30" required>
-                    </div>
-
-                    <div class="field">
-                        <label for="consultationFee">Fee (INR)</label>
-                        <input id="consultationFee" type="number" min="0" step="0.01" value="0" required>
-                    </div>
-
-                    <div class="field">
-                        <label for="consultationCapacity">Capacity</label>
-                        <input id="consultationCapacity" type="number" min="1" max="50" value="1" required>
-                    </div>
-                </div>
-
-                <div class="form-actions">
-                    <button class="btn" type="submit">Add Consultation Type</button>
-                </div>
-            </form>
+        <div class="table-wrap">
+          <table class="management-table">
+            <thead><tr><th>Consultation type</th><th>Duration</th><th>Fee</th><th>Capacity</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="consultationList"><tr><td colspan="6" class="empty">Loading consultation types…</td></tr></tbody>
+          </table>
         </div>
+      </div>
+      <div class="panel ms-management-panel">
+        <div class="panel-header"><div><h3 id="consultationEditorTitle">Add consultation type</h3><p>Create a service or edit an existing one. Changes retain the existing consultation type ID.</p></div></div>
+        <form id="consultationForm">
+          <input type="hidden" id="consultationEditId" value="">
+          <div class="editor-grid">
+            <div class="field"><label for="consultationName">Consultation name</label><input id="consultationName" maxlength="40" placeholder="quick, standard, detailed, video, in_person" required></div>
+            <div class="field"><label for="consultationDuration">Duration (minutes)</label><input id="consultationDuration" type="number" min="5" max="180" value="30" required></div>
+            <div class="field"><label for="consultationFee">Fee (INR)</label><input id="consultationFee" type="number" min="0" max="99999999.99" step="0.01" value="0" required></div>
+            <div class="field"><label for="consultationCapacity">Capacity</label><input id="consultationCapacity" type="number" min="1" max="50" value="1" required></div>
+          </div>
+          <div class="form-actions">
+            <button class="btn" type="submit" id="saveConsultationButton">Add consultation type</button>
+            <button class="btn btn-light" type="button" id="cancelConsultationEdit" hidden>Cancel edit</button>
+          </div>
+        </form>
+      </div>
+      <div class="ms-note"><span>✧</span><div><strong>Safe updates</strong><p>Changing consultation settings does not reprice existing appointments. Future unbooked slots are reconciled by the slot materialiser.</p></div></div>
     </section>
 
     <!-- SCHEDULE -->
@@ -1011,11 +1053,12 @@
                             <th>Weekday</th>
                             <th>Start Time</th>
                             <th>End Time</th>
-                            <th>Consultation Type ID</th>
+                            <th>Consultation Type</th>
+                            <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody id="availabilityTable">
-                        <tr><td colspan="4" class="empty">Loading availability...</td></tr>
+                        <tr><td colspan="5" class="empty">Loading availability...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -1024,12 +1067,13 @@
         <div class="panel">
             <div class="panel-header">
                 <div>
-                    <h3>Add Weekly Availability</h3>
-                    <p>Create a recurring weekly working session.</p>
+                    <h3 id="availabilityFormTitle">Add Weekly Availability</h3>
+                    <p id="availabilityFormDescription">Create a recurring weekly working session.</p>
                 </div>
             </div>
 
             <form id="availabilityForm">
+                <input type="hidden" id="availabilityEditId" value="">
                 <div class="editor-grid">
                     <div class="field">
                         <label for="availabilityConsultationType">Consultation type</label>
@@ -1063,7 +1107,8 @@
                 </div>
 
                 <div class="form-actions">
-                    <button class="btn" type="submit">Add Availability</button>
+                    <button class="btn" type="submit" id="saveAvailabilityButton">Add Availability</button>
+                    <button class="btn btn-light" type="button" id="cancelAvailabilityEdit" hidden>Cancel edit</button>
                 </div>
             </form>
         </div>
@@ -1071,44 +1116,26 @@
 
     <!-- BLACKOUT DATES -->
     <section class="section" id="section-blackouts">
-        <div class="panel">
-            <div class="panel-header">
-                <div>
-                    <h3>Blackout Dates</h3>
-                    <p>Mark dates when you are unavailable for new appointments.</p>
-                </div>
+      <div class="ms-hero"><div><span class="ms-eyebrow">YOUR PRACTICE · TIME OFF</span><h2>Time off &amp; blackouts</h2><p>Block a full day or just the hours you cannot accept appointments.</p></div><div class="ms-hero-symbol">◷</div></div>
+      <div class="ms-blackout-layout">
+        <div class="ms-panel">
+          <div class="ms-panel-heading"><div class="ms-panel-icon">▦</div><div><h3>Add unavailable time</h3><p>Times use Asia/Kolkata (IST).</p></div></div>
+          <form id="blackoutForm">
+            <div class="field"><label for="blackoutDate">Blackout date</label><input id="blackoutDate" type="date" required></div>
+            <label class="ms-checkbox-line" for="blackoutFullDay"><input id="blackoutFullDay" type="checkbox" checked><span><strong>Entire day unavailable</strong><small>Disable all consultations for this date</small></span></label>
+            <div class="ms-time-fields" id="blackoutTimeFields" hidden>
+              <div class="field"><label for="blackoutStart">Unavailable from</label><input id="blackoutStart" type="time" value="13:00"></div>
+              <div class="field"><label for="blackoutEnd">Unavailable until</label><input id="blackoutEnd" type="time" value="15:00"></div>
             </div>
-
-            <form id="blackoutForm">
-                <div class="editor-grid">
-                    <div class="field">
-                        <label for="blackoutDate">Date</label>
-                        <input id="blackoutDate" type="date" required>
-                    </div>
-
-                    <div class="field">
-                        <label for="blackoutReason">Reason</label>
-                        <input id="blackoutReason" maxlength="200" placeholder="Optional reason">
-                    </div>
-                </div>
-
-                <div class="form-actions">
-                    <button class="btn" type="submit">Add Blackout Date</button>
-                </div>
-            </form>
+            <div class="field"><label for="blackoutReason">Reason <span class="ms-optional">(optional)</span></label><input id="blackoutReason" maxlength="200" placeholder="e.g. Personal appointment, conference"></div>
+            <button class="ms-primary-action" type="submit">＋ Save blackout</button>
+          </form>
         </div>
-
-        <div class="panel">
-            <div class="panel-header">
-                <div>
-                    <h3>Configured Blackout Dates</h3>
-                    <p>Remove a blackout date if your availability changes.</p>
-                </div>
-            </div>
-            <div class="blackout-list" id="blackoutList">
-                <div class="empty">Loading blackout dates...</div>
-            </div>
+        <div class="ms-panel">
+          <div class="ms-panel-heading"><div class="ms-panel-icon">☷</div><div><h3>Scheduled blackouts</h3><p>Remove a block when your availability changes.</p></div></div>
+          <div class="blackout-list" id="blackoutList"><div class="empty">Loading blackouts…</div></div>
         </div>
+      </div>
     </section>
 
     <!-- APPOINTMENT SLOTS -->
@@ -1129,8 +1156,8 @@
                 <table>
                     <thead>
                         <tr>
-                            <th>Slot ID</th>
                             <th>Start Time</th>
+                            <th>Consultation Type</th>
                             <th>Duration</th>
                             <th>Booked</th>
                             <th>Capacity</th>
@@ -1245,7 +1272,9 @@
                 <button type="button" class="btn btn-light" onclick="showSection('profile')">
                     Edit Doctor Profile
                 </button>
-                <a class="btn btn-danger" href="/logout" style="text-decoration:none;">Logout</a>
+                <form method="post" action="/logout" style="display:inline;">
+                    <button type="submit" class="btn btn-danger">Logout</button>
+                </form>
             </div>
         </div>
     </section>
@@ -1272,6 +1301,9 @@
     let consultationItems = [];
     let appointmentItems = [];
     let scheduleItems = [];
+    let availabilityItems = [];
+    let editingAvailabilityId = null;
+    let editingConsultationId = null;
 
     function escapeHTML(value) {
         return String(value ?? "").replace(/[&<>"']/g, char => ({
@@ -1351,10 +1383,53 @@
         const safeStatus = formatStatus(status);
         const className = `status-${safeStatus.replace(/[^a-z0-9_-]/g, "")}`;
 
-        return `<span class="status ${className}">${escapeHTML(safeStatus.replaceAll("_", " "))}</span>`;
+        return `<span class="status ${className}">${escapeHTML(safeStatus === "blackout" ? "unavailable (blackout)" : safeStatus.replaceAll("_", " "))}</span>`;
     }
 
-    async function apiRequest(path, method = "GET", body = undefined) {
+    function consultationDisplayName(name) {
+        return String(name || "Consultation")
+            .replace(/[_-]+/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .replace(/\b\w/g, char => char.toUpperCase());
+    }
+
+    function consultationTypeClass(name) {
+        const value = String(name || "").toLowerCase().replace(/[_-]+/g, " ");
+        if (value.includes("quick")) return "type-quick";
+        if (value.includes("standard")) return "type-standard";
+        if (value.includes("detailed")) return "type-detailed";
+        if (value.includes("video")) return "type-video";
+        if (value.includes("clinic") || value.includes("in person")) return "type-clinic";
+        return "type-other";
+    }
+
+    function consultationNameById(id) {
+        const item = consultationItems.find(row => Number(row.consultation_type_id) === Number(id));
+        return item ? consultationDisplayName(item.name) : "Unavailable consultation";
+    }
+
+    function consultationPill(name) {
+        return `<span class="type-pill ${consultationTypeClass(name)}">${escapeHTML(consultationDisplayName(name))}</span>`;
+    }
+
+    async function refreshAccessToken() {
+        try {
+            const r = await fetch("/session/refresh", {
+                method: "POST",
+                credentials: "same-origin"
+            });
+            if (!r.ok) return false;
+            const data = await r.json();
+            if (!data.accessToken) return false;
+            accessToken = data.accessToken;
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    async function apiRequest(path, method = "GET", body = undefined, isRetry = false) {
         if (!accessToken) {
             throw new Error("Your doctor session has expired. Please log in again.");
         }
@@ -1375,6 +1450,14 @@
         }
 
         const response = await fetch(`${API_BASE_URL}${path}`, options);
+
+        if (response.status === 401 && !isRetry) {
+            if (await refreshAccessToken()) {
+                return apiRequest(path, method, body, true);
+            }
+            window.location.href = "/logout";
+            throw new Error("Your session has expired. Please log in again.");
+        }
 
         let result = {};
         const responseText = await response.text();
@@ -1522,8 +1605,10 @@
     function photoLoadFailed() {
         $("profilePhoto").hidden = true;
         $("profilePhotoPlaceholder").hidden = false;
+        $("profilePhotoPlaceholder").textContent = "PHOTO REQUIRED";
         $("headerPhoto").hidden = true;
         $("headerInitials").hidden = false;
+        $("headerInitials").textContent = "!";
     }
     $("headerPhoto").addEventListener("error", photoLoadFailed);
     $("profilePhoto").addEventListener("error", photoLoadFailed);
@@ -1544,8 +1629,10 @@
             } else {
                 $("profilePhoto").hidden = true;
                 $("profilePhotoPlaceholder").hidden = false;
+                $("profilePhotoPlaceholder").textContent = "PHOTO REQUIRED";
                 $("headerPhoto").hidden = true;
                 $("headerInitials").hidden = false;
+                $("headerInitials").textContent = "!";
             }
         } catch (error) {
             photoLoadFailed();
@@ -1575,161 +1662,230 @@
 
     function renderScheduleTable(table, items) {
         if (!items.length) {
-            table.innerHTML = `
-                <tr><td colspan="5" class="empty">
-                    No slots found for this date.
-                </td></tr>`;
+            const columns = table.id === "overviewScheduleTable" ? 4 : 5;
+            table.innerHTML = `<tr><td colspan="${columns}" class="empty">No slots found for this date.</td></tr>`;
             return;
         }
 
         table.innerHTML = items.map(slot => {
             const booked = Number(slot.bookedCount || 0);
             const capacity = Number(slot.capacity || 0);
-            const consultation = slot.consultationTypeId || "—";
-
-            return `
-                <tr>
-                    <td>${escapeHTML(formatTime(slot.startUtc))}</td>
-                    <td>${escapeHTML(slot.durationMinutes ?? "—")} min</td>
-                    <td>${escapeHTML(booked)} / ${escapeHTML(capacity)}</td>
-                    <td>${escapeHTML(consultation)}</td>
-                    <td>${statusBadge(slot.status)}</td>
-                </tr>
-            `;
+            const common = `
+                <td>${escapeHTML(formatTime(slot.startUtc))}</td>
+                <td>${escapeHTML(slot.durationMinutes ?? "—")} min</td>
+                <td>${escapeHTML(booked)} / ${escapeHTML(capacity)}</td>`;
+            const consultationCell = `<td>${consultationPill(consultationNameById(slot.consultationTypeId))}</td>`;
+            const statusCell = `<td>${statusBadge(slot.status)}</td>`;
+            return table.id === "overviewScheduleTable"
+                ? `<tr>${common}${statusCell}</tr>`
+                : `<tr>${common}${consultationCell}${statusCell}</tr>`;
         }).join("");
     }
 
     async function loadSlots() {
         const selectedDate = $("slotDate").value || localDateString();
-
-        const result = await apiRequest(
-            `/doctors/me/schedule?date=${encodeURIComponent(selectedDate)}`
-        );
-
+        const result = await apiRequest(`/doctors/me/schedule?date=${encodeURIComponent(selectedDate)}`);
         const items = result.items || [];
         const table = $("slotsTable");
-
         if (!items.length) {
-            table.innerHTML = `
-                <tr><td colspan="6" class="empty">
-                    No appointment slots found for this date.
-                </td></tr>`;
+            table.innerHTML = `<tr><td colspan="6" class="empty">No appointment slots found for this date.</td></tr>`;
             return;
         }
-
         table.innerHTML = items.map(slot => `
             <tr>
-                <td>${escapeHTML(slot.slotId || slot.slot_id || "—")}</td>
                 <td>${escapeHTML(formatTime(slot.startUtc))}</td>
+                <td>${consultationPill(consultationNameById(slot.consultationTypeId))}</td>
                 <td>${escapeHTML(slot.durationMinutes ?? "—")} min</td>
                 <td>${escapeHTML(slot.bookedCount ?? 0)}</td>
                 <td>${escapeHTML(slot.capacity ?? 0)}</td>
                 <td>${statusBadge(slot.status)}</td>
-            </tr>
-        `).join("");
+            </tr>`
+        ).join("");
     }
 
     async function loadConsultations() {
         const result = await apiRequest("/doctors/me/consultation-types");
         consultationItems = result.items || [];
-
         $("consultationCount").textContent = consultationItems.length;
 
-        const activeItems = consultationItems.filter(item => {
-            return Number(item.is_active ?? 1) === 1;
-        });
-
+        const previous = $("availabilityConsultationType").value;
         $("availabilityConsultationType").innerHTML =
             `<option value="">Select consultation type</option>` +
-            activeItems.map(item => `
-                <option value="${escapeHTML(item.consultation_type_id)}">
-                    ${escapeHTML(item.name)}
-                </option>
-            `).join("");
+            consultationItems.map(item => {
+                const active = Number(item.is_active ?? 1) === 1;
+                const label = consultationDisplayName(item.name) + (active ? "" : " (Inactive)");
+                return `<option value="${escapeHTML(item.consultation_type_id)}" ${active ? "" : "disabled"}>${escapeHTML(label)}</option>`;
+            }).join("");
+        if (consultationItems.some(item => String(item.consultation_type_id) === previous)) {
+            $("availabilityConsultationType").value = previous;
+        }
 
         if (!consultationItems.length) {
-            $("consultationList").innerHTML =
-                `<div class="empty">No consultation types configured.</div>`;
+            $("consultationList").innerHTML = `<tr><td colspan="6" class="empty">No consultation types configured. Add your first service below.</td></tr>`;
             return;
         }
 
-        $("consultationList").innerHTML = consultationItems.map(item => `
-            <div class="list-item">
-                <div>
-                    <h4>${escapeHTML(item.name)}</h4>
-                    <p>
-                        ${escapeHTML(item.duration_min)} minutes
-                        · Capacity: ${escapeHTML(item.capacity)}
-                        · ${Number(item.is_active ?? 1) === 1 ? "Active" : "Inactive"}
-                    </p>
-                </div>
-                <div class="fee">₹${escapeHTML(item.fee_amount)}</div>
-            </div>
-        `).join("");
+        $("consultationList").innerHTML = consultationItems.map(item => {
+            const id = Number(item.consultation_type_id);
+            const active = Number(item.is_active ?? 1) === 1;
+            return `<tr>
+                <td>${consultationPill(item.name)}</td>
+                <td>${escapeHTML(item.duration_min)} min</td>
+                <td><strong>₹${escapeHTML(Number(item.fee_amount || 0).toFixed(2))}</strong></td>
+                <td>${escapeHTML(item.capacity)}</td>
+                <td>${statusBadge(active ? "active" : "inactive")}</td>
+                <td><div class="table-actions">
+                    <button type="button" class="btn btn-light btn-small" data-edit-consultation="${id}">Edit</button>
+                    <button type="button" class="btn btn-small ${active ? "btn-quiet" : ""}" data-toggle-consultation="${id}" data-active="${active ? "1" : "0"}">${active ? "Deactivate" : "Activate"}</button>
+                </div></td>
+            </tr>`;
+        }).join("");
+
+        $("consultationList").querySelectorAll("[data-edit-consultation]").forEach(button => {
+            button.addEventListener("click", () => {
+                const item = consultationItems.find(row => Number(row.consultation_type_id) === Number(button.dataset.editConsultation));
+                if (item) editConsultation(item);
+            });
+        });
+
+        $("consultationList").querySelectorAll("[data-toggle-consultation]").forEach(button => {
+            button.addEventListener("click", async () => {
+                const id = Number(button.dataset.toggleConsultation);
+                const active = button.dataset.active === "1";
+                try {
+                    await apiRequest(`/doctors/me/consultation-types/${id}`, "PATCH", {isActive: !active});
+                    await loadConsultations();
+                    await loadAvailability();
+                    await loadSchedule();
+                    showMessage(`Consultation ${active ? "deactivated" : "activated"}.`, "success");
+                } catch (error) { handleError(error); }
+            });
+        });
+    }
+
+    function editConsultation(item) {
+        editingConsultationId = Number(item.consultation_type_id);
+        $("consultationEditId").value = String(editingConsultationId);
+        $("consultationName").value = item.name || "";
+        $("consultationDuration").value = item.duration_min;
+        $("consultationFee").value = item.fee_amount;
+        $("consultationCapacity").value = item.capacity;
+        $("consultationEditorTitle").textContent = `Edit ${consultationDisplayName(item.name)}`;
+        $("saveConsultationButton").textContent = "Update consultation type";
+        $("cancelConsultationEdit").hidden = false;
+        $("consultationForm").scrollIntoView({behavior:"smooth", block:"center"});
+    }
+
+    function resetConsultationForm() {
+        editingConsultationId = null;
+        $("consultationEditId").value = "";
+        $("consultationForm").reset();
+        $("consultationDuration").value = 30;
+        $("consultationFee").value = 0;
+        $("consultationCapacity").value = 1;
+        $("consultationEditorTitle").textContent = "Add consultation type";
+        $("saveConsultationButton").textContent = "Add consultation type";
+        $("cancelConsultationEdit").hidden = true;
     }
 
     async function loadAvailability() {
         const result = await apiRequest("/doctors/me/availability-patterns");
-        const items = result.items || [];
-
-        if (!items.length) {
-            $("availabilityTable").innerHTML = `
-                <tr><td colspan="4" class="empty">
-                    No weekly availability configured.
-                </td></tr>`;
+        availabilityItems = result.items || [];
+        const table = $("availabilityTable");
+        if (!availabilityItems.length) {
+            table.innerHTML = `<tr><td colspan="5" class="empty">No weekly availability configured.</td></tr>`;
             return;
         }
 
-        $("availabilityTable").innerHTML = items.map(item => `
-            <tr>
-                <td>${escapeHTML(DAY_NAMES[item.day_of_week] || item.day_of_week)}</td>
-                <td>${escapeHTML(item.start_time)}</td>
-                <td>${escapeHTML(item.end_time)}</td>
-                <td>${escapeHTML(item.consultation_type_id)}</td>
-            </tr>
-        `).join("");
+        table.innerHTML = availabilityItems.map(item => {
+            const id = Number(item.pattern_id);
+            return `<tr>
+                <td><strong>${escapeHTML(DAY_NAMES[item.day_of_week] || item.day_of_week)}</strong></td>
+                <td>${escapeHTML(String(item.start_time).slice(0,5))}</td>
+                <td>${escapeHTML(String(item.end_time).slice(0,5))}</td>
+                <td>${consultationPill(consultationNameById(item.consultation_type_id))}</td>
+                <td><div class="table-actions">
+                    <button type="button" class="btn btn-light btn-small" data-edit-availability="${id}">Edit</button>
+                    <button type="button" class="btn btn-outline-danger btn-small" data-delete-availability="${id}">Delete</button>
+                </div></td>
+            </tr>`;
+        }).join("");
+
+        table.querySelectorAll("[data-edit-availability]").forEach(button => {
+            button.addEventListener("click", () => {
+                const item = availabilityItems.find(row => Number(row.pattern_id) === Number(button.dataset.editAvailability));
+                if (item) editAvailability(item);
+            });
+        });
+
+        table.querySelectorAll("[data-delete-availability]").forEach(button => {
+            button.addEventListener("click", async () => {
+                const item = availabilityItems.find(row => Number(row.pattern_id) === Number(button.dataset.deleteAvailability));
+                if (!item) return;
+                const dayName = DAY_NAMES[item.day_of_week] || item.day_of_week;
+                const typeName = consultationNameById(item.consultation_type_id);
+                if (!confirm(`Delete ${typeName} availability on ${dayName}, ${String(item.start_time).slice(0,5)}–${String(item.end_time).slice(0,5)}? Existing booked appointments will be preserved.`)) return;
+                try {
+                    await apiRequest(`/doctors/me/availability-patterns/${Number(item.pattern_id)}`, "DELETE");
+                    if (editingAvailabilityId === Number(item.pattern_id)) resetAvailabilityForm();
+                    await loadAvailability();
+                    await loadSchedule();
+                    await loadSlots();
+                    showMessage("Availability deleted. Existing booked appointments are preserved.", "success");
+                } catch (error) { handleError(error); }
+            });
+        });
+    }
+
+    function editAvailability(item) {
+        editingAvailabilityId = Number(item.pattern_id);
+        $("availabilityEditId").value = String(editingAvailabilityId);
+        $("availabilityConsultationType").value = String(item.consultation_type_id);
+        $("availabilityDay").value = String(item.day_of_week);
+        $("availabilityStart").value = String(item.start_time).slice(0,5);
+        $("availabilityEnd").value = String(item.end_time).slice(0,5);
+        $("availabilityFormTitle").textContent = "Edit Weekly Availability";
+        $("availabilityFormDescription").textContent = "Update this recurring working session. The existing pattern record will be retained.";
+        $("saveAvailabilityButton").textContent = "Update Availability";
+        $("cancelAvailabilityEdit").hidden = false;
+        $("availabilityForm").scrollIntoView({behavior:"smooth", block:"center"});
+    }
+
+    function resetAvailabilityForm() {
+        editingAvailabilityId = null;
+        $("availabilityEditId").value = "";
+        $("availabilityForm").reset();
+        $("availabilityFormTitle").textContent = "Add Weekly Availability";
+        $("availabilityFormDescription").textContent = "Create a recurring weekly working session.";
+        $("saveAvailabilityButton").textContent = "Add Availability";
+        $("cancelAvailabilityEdit").hidden = true;
     }
 
     async function loadBlackouts() {
         const result = await apiRequest("/doctors/me/blackout-dates");
         const items = result.items || [];
-
         if (!items.length) {
-            $("blackoutList").innerHTML =
-                `<div class="empty">No blackout dates configured.</div>`;
+            $("blackoutList").innerHTML = `<div class="empty">No blackouts yet. Your calendar is open.</div>`;
             return;
         }
-
-        $("blackoutList").innerHTML = items.map(item => `
-            <div class="list-item">
-                <div>
-                    <h4>${escapeHTML(item.blackout_date)}</h4>
-                    <p>${escapeHTML(item.reason || "Unavailable")}</p>
-                </div>
-                <button
-                    type="button"
-                    class="btn btn-danger delete-blackout"
-                    data-id="${escapeHTML(item.blackout_id)}">
-                    Remove
-                </button>
-            </div>
-        `).join("");
-
+        $("blackoutList").innerHTML = items.map(item => {
+            const fullDay = Number(item.is_full_day ?? 1) === 1;
+            const formatTime = value => String(value || "").slice(0,5);
+            return `<div class="ms-blackout-item">
+              <div><strong>▦ ${escapeHTML(String(item.blackout_date).slice(0,10))}</strong>
+                <div><span class="ms-block-pill">${fullDay ? "Entire day" : escapeHTML(formatTime(item.start_time)) + " – " + escapeHTML(formatTime(item.end_time)) + " IST"}</span></div>
+                <p>${escapeHTML(item.reason || "Unavailable")}</p></div>
+              <button type="button" class="ms-remove delete-blackout" data-id="${escapeHTML(item.blackout_id)}">Remove</button>
+            </div>`;
+        }).join("");
         document.querySelectorAll(".delete-blackout").forEach(button => {
             button.addEventListener("click", async () => {
-                if (!confirm("Remove this blackout date?")) return;
-
+                if (!confirm("Remove this blackout?")) return;
                 try {
-                    await apiRequest(
-                        `/doctors/me/blackout-dates/${encodeURIComponent(button.dataset.id)}`,
-                        "DELETE"
-                    );
-
+                    await apiRequest(`/doctors/me/blackout-dates/${encodeURIComponent(button.dataset.id)}`, "DELETE");
                     await loadBlackouts();
-                    showMessage("Blackout date removed.", "success");
-                } catch (error) {
-                    handleError(error);
-                }
+                    showMessage("Blackout removed.", "success");
+                } catch(error) { handleError(error); }
             });
         });
     }
@@ -1771,14 +1927,14 @@
 
         table.innerHTML = items.map(item => {
             const patient = item.patient_name || "Patient";
-            const consultation = item.consultation_type || "—";
+            const consultation = consultationDisplayName(item.consultation_type || "—");
             const dateTime = formatDateTime(item.slot_start_utc);
 
             if (table.id === "recentAppointmentsTable") {
                 return `
                     <tr>
                         <td>${escapeHTML(patient)}</td>
-                        <td>${escapeHTML(consultation)}</td>
+                        <td>${consultationPill(consultation)}</td>
                         <td>${escapeHTML(dateTime)}</td>
                         <td>${statusBadge(item.status)}</td>
                     </tr>
@@ -1792,7 +1948,7 @@
                         <strong>${escapeHTML(patient)}</strong><br>
                         <span class="muted-note">${escapeHTML(item.patient_email || "")}</span>
                     </td>
-                    <td>${escapeHTML(consultation)}</td>
+                    <td>${consultationPill(consultation)}</td>
                     <td>${escapeHTML(dateTime)}</td>
                     <td>₹${escapeHTML(item.fee_amount ?? "—")}</td>
                     <td>${statusBadge(item.status)}</td>
@@ -1840,7 +1996,7 @@
                 <p>Email: ${escapeHTML(patient.patient_email || "Not provided")}</p>
                 <p>Phone: ${escapeHTML(patient.patient_phone || "Not provided")}</p>
                 <p>City: ${escapeHTML(patient.patient_city || "Not provided")}</p>
-                <p>Consultation: ${escapeHTML(patient.consultation_type || "—")}</p>
+                <p>Consultation: ${escapeHTML(consultationDisplayName(patient.consultation_type || "—"))}</p>
                 <p>Appointment status: ${escapeHTML(patient.status || "—")}</p>
             </div>
         `).join("");
@@ -1873,72 +2029,86 @@
         }
     });
 
-    // Add consultation type.
-    $("consultationForm").addEventListener("submit", async event => {
-        event.preventDefault();
-
-        try {
-            await apiRequest("/doctors/me/consultation-types", "POST", {
-                name: $("consultationName").value.trim().toLowerCase(),
-                durationMin: Number($("consultationDuration").value),
-                feeAmount: Number($("consultationFee").value),
-                capacity: Number($("consultationCapacity").value)
-            });
-
-            $("consultationForm").reset();
-            $("consultationDuration").value = 30;
-            $("consultationFee").value = 0;
-            $("consultationCapacity").value = 1;
-
-            await loadConsultations();
-            showMessage("Consultation type added successfully.", "success");
-        } catch (error) {
-            handleError(error);
-        }
-    });
-
-    // Add weekly availability.
+    // Create or update weekly availability. PUT updates the same pattern_id.
     $("availabilityForm").addEventListener("submit", async event => {
         event.preventDefault();
-
-        try {
-            await apiRequest("/doctors/me/availability-patterns", "POST", {
-                consultationTypeId: Number($("availabilityConsultationType").value),
-                dayOfWeek: Number($("availabilityDay").value),
-                startTime: $("availabilityStart").value,
-                endTime: $("availabilityEnd").value
-            });
-
-            await loadAvailability();
-            showMessage(
-                "Weekly availability added. The scheduled materialiser manages slot creation.",
-                "success"
-            );
-        } catch (error) {
-            handleError(error);
+        const startTime = $("availabilityStart").value;
+        const endTime = $("availabilityEnd").value;
+        if (!startTime || !endTime || startTime >= endTime) {
+            showMessage("End time must be later than start time.");
+            return;
         }
+        const payload = {
+            consultationTypeId: Number($("availabilityConsultationType").value),
+            dayOfWeek: Number($("availabilityDay").value),
+            startTime,
+            endTime
+        };
+        try {
+            const updating = editingAvailabilityId !== null;
+            const path = updating
+                ? `/doctors/me/availability-patterns/${editingAvailabilityId}`
+                : "/doctors/me/availability-patterns";
+            await apiRequest(path, updating ? "PUT" : "POST", payload);
+            resetAvailabilityForm();
+            await loadAvailability();
+            await loadSchedule();
+            await loadSlots();
+            showMessage(updating ? "Availability pattern updated successfully." : "Weekly availability added successfully.", "success");
+        } catch (error) { handleError(error); }
     });
 
-    // Add blackout date.
+    $("cancelAvailabilityEdit").addEventListener("click", resetAvailabilityForm);
+
+    // Create or update consultation types without changing their numeric primary keys.
+    $("consultationForm").addEventListener("submit", async event => {
+        event.preventDefault();
+        const payload = {
+            name: $("consultationName").value.trim().toLowerCase(),
+            durationMin: Number($("consultationDuration").value),
+            feeAmount: Number($("consultationFee").value),
+            capacity: Number($("consultationCapacity").value)
+        };
+        try {
+            const updating = editingConsultationId !== null;
+            const path = updating
+                ? `/doctors/me/consultation-types/${editingConsultationId}`
+                : "/doctors/me/consultation-types";
+            await apiRequest(path, updating ? "PUT" : "POST", payload);
+            resetConsultationForm();
+            await loadConsultations();
+            await loadAvailability();
+            await loadSchedule();
+            showMessage(updating ? "Consultation type updated successfully." : "Consultation type created successfully.", "success");
+        } catch (error) { handleError(error); }
+    });
+
+    $("cancelConsultationEdit").addEventListener("click", resetConsultationForm);
+
+    // Full-day and timed blackouts.
+    $("blackoutFullDay").addEventListener("change", () => {
+        $("blackoutTimeFields").hidden = $("blackoutFullDay").checked;
+    });
     $("blackoutForm").addEventListener("submit", async event => {
         event.preventDefault();
-
+        const fullDay = $("blackoutFullDay").checked;
+        const startTime = $("blackoutStart").value;
+        const endTime = $("blackoutEnd").value;
+        if (!fullDay && (!startTime || !endTime || startTime >= endTime)) {
+            showMessage("Choose an end time later than the start time."); return;
+        }
         try {
             await apiRequest("/doctors/me/blackout-dates", "POST", {
                 date: $("blackoutDate").value,
-                reason: $("blackoutReason").value.trim()
+                reason: $("blackoutReason").value.trim(),
+                fullDay, startTime: fullDay ? null : startTime,
+                endTime: fullDay ? null : endTime
             });
-
             $("blackoutForm").reset();
+            $("blackoutTimeFields").hidden = true;
             await loadBlackouts();
-
-            showMessage(
-                "Blackout date added. Existing booked appointments are preserved.",
-                "success"
-            );
-        } catch (error) {
-            handleError(error);
-        }
+            showMessage("Blackout saved. Existing booked appointments remain unchanged.", "success");
+        } catch(error) { handleError(error); }
     });
 
     // Upload / replace doctor photo using the presigned S3 URL.
@@ -2058,11 +2228,15 @@
 
             await Promise.all([
                 loadProfile(),
-                loadConsultations(),
-                loadAvailability(),
                 loadBlackouts(),
-                loadSchedule(),
                 loadAppointments()
+            ]);
+
+            // Consultation type names must be available before availability/slot tables render.
+            await loadConsultations();
+            await Promise.all([
+                loadAvailability(),
+                loadSchedule()
             ]);
 
             // Load the active section if the page was opened with a hash.

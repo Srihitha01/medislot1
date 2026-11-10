@@ -1547,9 +1547,9 @@ def _doctor_collection(
                     if "feeAmount" in data:
                         value = Decimal(str(data["feeAmount"]))
 
-                        if value < 0:
+                        if value < 0 or value > Decimal("99999999.99"):
                             raise ValueError(
-                                "feeAmount must be non-negative"
+                                "feeAmount is outside the supported range"
                             )
 
                         values["feeAmount"] = value
@@ -1663,25 +1663,44 @@ def _doctor_collection(
 
                     cur.execute(
                         """
-                        SELECT consultation_type_id
+                        SELECT consultation_type_id, is_active
                         FROM consultation_types
                         WHERE consultation_type_id = %s
                           AND doctor_user_id = %s
-                          AND is_active = 1
                         """,
                         (consultation_id, user_id),
                     )
+                    consultation_row = cur.fetchone()
 
-                    if not cur.fetchone():
+                    if not consultation_row:
                         return _response(
                             400,
-                            {
-                                "message": (
-                                    "Active consultation type does not "
-                                    "belong to this doctor"
-                                )
-                            },
+                            {"message": "Consultation type does not belong to this doctor"},
                         )
+
+                    if not bool(consultation_row["is_active"]):
+                        # An existing pattern may still be edited while its
+                        # consultation is inactive, but an inactive type cannot
+                        # be assigned to a new pattern or substituted into one.
+                        same_existing_pattern = False
+                        if method != "POST" and resource_id:
+                            cur.execute(
+                                """
+                                SELECT pattern_id
+                                FROM availability_patterns
+                                WHERE pattern_id = %s
+                                  AND doctor_user_id = %s
+                                  AND consultation_type_id = %s
+                                """,
+                                (resource_id, user_id, consultation_id),
+                            )
+                            same_existing_pattern = cur.fetchone() is not None
+
+                        if not same_existing_pattern:
+                            return _response(
+                                400,
+                                {"message": "Choose an active consultation type"},
+                            )
 
                     if method == "POST":
                         cur.execute(
@@ -1713,6 +1732,25 @@ def _doctor_collection(
                                 {"message": "patternId is required"},
                             )
 
+                        # Check ownership/existence before UPDATE. MySQL rowcount
+                        # can be zero when the submitted values are unchanged;
+                        # that must not be mistaken for a missing pattern.
+                        cur.execute(
+                            """
+                            SELECT pattern_id
+                            FROM availability_patterns
+                            WHERE pattern_id = %s
+                              AND doctor_user_id = %s
+                            FOR UPDATE
+                            """,
+                            (resource_id, user_id),
+                        )
+                        if not cur.fetchone():
+                            return _response(
+                                404,
+                                {"message": "Availability pattern not found"},
+                            )
+
                         cur.execute(
                             """
                             UPDATE availability_patterns
@@ -1732,16 +1770,6 @@ def _doctor_collection(
                                 user_id,
                             ),
                         )
-
-                        if not cur.rowcount:
-                            return _response(
-                                404,
-                                {
-                                    "message": (
-                                        "Availability pattern not found"
-                                    )
-                                },
-                            )
 
                         new_id = resource_id
 
