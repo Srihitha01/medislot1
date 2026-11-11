@@ -711,6 +711,19 @@
 .management-table .empty{padding:28px 12px}
 @media(max-width:760px){.management-table{min-width:740px}.ms-management-panel{padding:17px}}
 
+
+        .management-table tbody tr.schedule-conflict,
+        #availabilityTable tr.schedule-conflict {
+            outline: 2px solid rgba(220, 65, 65, .55);
+            outline-offset: -2px;
+            background: rgba(254, 226, 226, .55);
+            transition: background .2s ease, outline-color .2s ease;
+        }
+        #availabilityTable tr:hover,
+        #consultationList tr:hover {
+            background: rgba(37, 99, 235, .045);
+        }
+
 </style>
 </head>
 
@@ -1799,7 +1812,7 @@
 
         table.innerHTML = availabilityItems.map(item => {
             const id = Number(item.pattern_id);
-            return `<tr>
+            return `<tr data-pattern-row="${id}">
                 <td><strong>${escapeHTML(DAY_NAMES[item.day_of_week] || item.day_of_week)}</strong></td>
                 <td>${escapeHTML(String(item.start_time).slice(0,5))}</td>
                 <td>${escapeHTML(String(item.end_time).slice(0,5))}</td>
@@ -2030,6 +2043,37 @@
     });
 
     // Create or update weekly availability. PUT updates the same pattern_id.
+    function timeToMinutes(value) {
+        const parts = String(value || "").slice(0, 5).split(":").map(Number);
+        if (parts.length !== 2 || parts.some(Number.isNaN)) return NaN;
+        return parts[0] * 60 + parts[1];
+    }
+
+    function findAvailabilityOverlap(payload) {
+        const proposedStart = timeToMinutes(payload.startTime);
+        const proposedEnd = timeToMinutes(payload.endTime);
+
+        return availabilityItems.find(item => {
+            // When editing, ignore the row being edited; compare against every
+            // other pattern for this doctor and weekday, regardless of type.
+            if (editingAvailabilityId !== null &&
+                Number(item.pattern_id) === Number(editingAvailabilityId)) {
+                return false;
+            }
+
+            if (Number(item.day_of_week) !== Number(payload.dayOfWeek)) {
+                return false;
+            }
+
+            const existingStart = timeToMinutes(item.start_time);
+            const existingEnd = timeToMinutes(item.end_time);
+
+            // Half-open intervals: adjacent windows (e.g. 10:00-11:00 and
+            // 11:00-12:00) are valid; actual intersections are not.
+            return proposedStart < existingEnd && existingStart < proposedEnd;
+        });
+    }
+
     $("availabilityForm").addEventListener("submit", async event => {
         event.preventDefault();
         const startTime = $("availabilityStart").value;
@@ -2044,6 +2088,33 @@
             startTime,
             endTime
         };
+
+        if (!payload.consultationTypeId) {
+            showMessage("Please select a consultation type.");
+            return;
+        }
+
+        const conflict = findAvailabilityOverlap(payload);
+        if (conflict) {
+            const conflictName = consultationNameById(conflict.consultation_type_id);
+            const conflictDay = DAY_NAMES[conflict.day_of_week] || "selected day";
+            const conflictStart = String(conflict.start_time).slice(0, 5);
+            const conflictEnd = String(conflict.end_time).slice(0, 5);
+            showMessage(
+                `This time overlaps with your existing ${conflictName} availability on ${conflictDay} (${conflictStart}–${conflictEnd}). Use Edit on that row or choose a different time.`
+            );
+
+            const conflictRow = document.querySelector(
+                `[data-pattern-row="${Number(conflict.pattern_id)}"]`
+            );
+            if (conflictRow) {
+                conflictRow.classList.add("schedule-conflict");
+                conflictRow.scrollIntoView({behavior: "smooth", block: "center"});
+                window.setTimeout(() => conflictRow.classList.remove("schedule-conflict"), 2600);
+            }
+            return;
+        }
+
         try {
             const updating = editingAvailabilityId !== null;
             const path = updating

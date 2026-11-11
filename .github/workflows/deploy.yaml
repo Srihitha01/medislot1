@@ -1287,6 +1287,8 @@ jobs:
             --description "Doctor Dashboard deployment ${GITHUB_RUN_ID}" \
             --region "$AWS_REGION"
 
+          NO_STACK_CHANGES=false
+
           if ! aws cloudformation wait change-set-create-complete \
             --stack-name "$DASHBOARD_STACK" \
             --change-set-name "$change_set" \
@@ -1302,40 +1304,46 @@ jobs:
             if [[ "$reason" == *"didn't contain changes"* ]] || \
                [[ "$reason" == *"No updates are to be performed"* ]]; then
 
-              echo "Dashboard stack is already up to date."
+              echo "Dashboard infrastructure is already up to date; the application release will still be published."
 
               aws cloudformation delete-change-set \
                 --stack-name "$DASHBOARD_STACK" \
                 --change-set-name "$change_set" \
                 --region "$AWS_REGION" || true
 
-              exit 0
+              NO_STACK_CHANGES=true
+            else
+              echo "::error::Dashboard Change Set creation failed: $reason"
+              exit 1
             fi
-
-            echo "::error::Dashboard Change Set creation failed: $reason"
-            exit 1
           fi
 
-          aws cloudformation describe-change-set \
-            --stack-name "$DASHBOARD_STACK" \
-            --change-set-name "$change_set" \
-            --region "$AWS_REGION" \
-            --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' \
-            --output table
-
-          aws cloudformation execute-change-set \
-            --stack-name "$DASHBOARD_STACK" \
-            --change-set-name "$change_set" \
-            --region "$AWS_REGION"
-
-          if [[ "$change_type" == CREATE ]]; then
-            aws cloudformation wait stack-create-complete \
+          # The application ZIP is deployed independently through the S3
+          # release manifest. Do not exit the job just because CloudFormation
+          # has no infrastructure changes; otherwise the new ZIP is never
+          # published and EC2 keeps serving the previous dashboard.
+          if [[ "$NO_STACK_CHANGES" != true ]]; then
+            aws cloudformation describe-change-set \
               --stack-name "$DASHBOARD_STACK" \
-              --region "$AWS_REGION"
-          else
-            aws cloudformation wait stack-update-complete \
+              --change-set-name "$change_set" \
+              --region "$AWS_REGION" \
+              --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' \
+              --output table
+
+            aws cloudformation execute-change-set \
               --stack-name "$DASHBOARD_STACK" \
+              --change-set-name "$change_set" \
               --region "$AWS_REGION"
+
+            if [[ "$change_type" == CREATE ]]; then
+              aws cloudformation wait stack-create-complete \
+                --stack-name "$DASHBOARD_STACK" \
+                --region "$AWS_REGION"
+            else
+              aws cloudformation wait stack-update-complete \
+                --stack-name "$DASHBOARD_STACK" \
+                --region "$AWS_REGION"
+            fi
           fi
 
       - name: Publish latest dashboard release for EC2 automatic pull
