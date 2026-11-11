@@ -19,10 +19,37 @@ button.secondary{background:#e7f5f6;color:#076477}.grid{display:grid;grid-templa
 #status.error{background:#fff0ee;color:#a63232}#results{max-height:430px;overflow:auto}
 .full{grid-column:1/-1}.slot{display:flex;justify-content:space-between;align-items:center;gap:12px}
 @media(max-width:800px){main{grid-template-columns:1fr}.grid{grid-template-columns:1fr}header{padding:18px 24px}}
+
+/* MediSlot Teal & Ivory light form theme */
+:root{color-scheme:light}
+html,body{background:#f4f8f7 !important;color:#19343a !important;color-scheme:light !important}
+.login-card,.card{background:#fff !important;color:#19343a !important;border-color:#dce9e6 !important}
+input,select,textarea{background:#fff !important;color:#294b4c !important;border-color:#cbded9 !important;color-scheme:light !important}
+button{color-scheme:light}
+
+
+/* Full-page doctor profile and appointment slots */
+.doctor-view{max-width:1160px;margin:28px auto 60px;padding:0 24px}
+.doctor-view[hidden]{display:none!important}
+.doctor-view-top{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:20px}
+.doctor-profile-card,.doctor-slots-section{background:#fff;border:1px solid #dce9e6;border-radius:20px;padding:28px;box-shadow:0 10px 28px rgba(26,72,70,.06);margin-bottom:22px}
+.doctor-profile-heading{display:flex;align-items:center;gap:24px;flex-wrap:wrap}
+.doctor-photo,.doctor-photo-fallback{width:150px;height:150px;border-radius:18px;object-fit:cover;border:1px solid #dce9e6;background:#e8f6f5}
+.doctor-photo-fallback{display:grid;place-items:center;font-size:54px;color:#087f8c}
+.doctor-identity h1{font-size:clamp(25px,3vw,34px);margin:8px 0;color:#19343a}
+.doctor-identity p{margin:6px 0;color:#627d7c;font-size:15px}
+.eyebrow{font-size:11px;letter-spacing:.12em;font-weight:800;color:#087f8c}
+.consultation-list{display:flex;flex-wrap:wrap;gap:10px;margin-top:24px;padding-top:20px;border-top:1px solid #e3eeeb}
+.consultation-chip{background:#edf7f5;border:1px solid #d3e9e3;color:#28545a;padding:10px 14px;border-radius:12px;font-size:13px;font-weight:650}
+.doctor-slots-section h2{margin:7px 0;font-size:24px;color:#19343a}
+.doctor-slots-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:20px}
+.doctor-slot-card{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px;border:1px solid #dce9e6;border-radius:13px;background:#fbfdfc}
+.doctor-slot-card strong{color:#19343a}.doctor-slot-card span{color:#607b79;font-size:14px}
+@media(max-width:700px){.doctor-view{padding:0 16px}.doctor-profile-card,.doctor-slots-section{padding:20px}.doctor-slots-grid{grid-template-columns:1fr}.doctor-view-top{align-items:flex-start;flex-direction:column}}
 </style></head><body>
 <header><div class="brand">Medi<b>Slot</b> <span class="muted" style="font-size:13px;font-weight:500">Patient Portal</span></div><a href="/logout">Sign out</a></header>
 <div class="hero"><p class="care-quote">💚 “Taking care of yourself is a meaningful step towards a healthier tomorrow.”</p><h1>Your care, made simple.</h1><p>Manage your health profile, find a trusted specialist, and explore appointment availability in one place.</p></div>
-<main><div>
+<main id="patientHome"><div>
 <section><h2>My health profile</h2><p class="muted">Your information is private to your account.</p>
 <div id="status" role="status"></div>
 <form id="profile">
@@ -42,8 +69,22 @@ button.secondary{background:#e7f5f6;color:#076477}.grid{display:grid;grid-templa
 <div><label>Hospital</label><input name="hospital" placeholder="e.g. MediSlot"></div>
 <div><label>City</label><input name="city" placeholder="e.g. Hyderabad"></div>
 </div><button>Search doctors</button></form><div id="results" aria-live="polite"></div><div id="paging"></div></section>
-<section style="margin-top:22px"><h2>Doctor profile & available slots</h2><p class="muted">Select a doctor above to see consultation fees and open seats.</p>
-<div id="details"></div><div id="slots"></div></section></div></main>
+</div></main>
+<div id="doctorView" class="doctor-view" hidden>
+  <div class="doctor-view-top"><button type="button" class="secondary" id="backHome">← Go back to home</button><span class="muted">MediSlot · Doctor details</span></div>
+  <section class="doctor-profile-card">
+    <div class="doctor-profile-heading">
+      <img id="doctorPhoto" class="doctor-photo" alt="Doctor profile photo" hidden>
+      <div id="doctorPhotoFallback" class="doctor-photo-fallback" aria-hidden="true">🩺</div>
+      <div class="doctor-identity"><span class="eyebrow">DOCTOR PROFILE</span><h1 id="doctorName"></h1><p id="doctorSpecialisation"></p><p id="doctorHospital"></p></div>
+    </div>
+    <div id="doctorConsultations" class="consultation-list"></div>
+  </section>
+  <section class="doctor-slots-section">
+    <div class="slots-heading"><div><span class="eyebrow">APPOINTMENT AVAILABILITY</span><h2>Available appointment slots</h2><p class="muted">Choose a suitable date and time from the available appointments.</p></div></div>
+    <div id="slots" class="doctor-slots-grid"></div>
+  </section>
+</div>
 <script>
 const BASE={{ api_base_url|tojson }},TOKEN={{ access_token|tojson }};
 const statusBox=document.querySelector('#status');
@@ -56,6 +97,48 @@ document.querySelector('#delete').onclick=async()=>{if(!confirm('Delete your pro
 let currentPage=1;
 async function search(page=1){currentPage=page;const q=new URLSearchParams(new FormData(document.querySelector('#search')));q.set('page',page);q.set('pageSize',10);const out=document.querySelector('#results');out.replaceChildren();try{const d=await api('/doctors/search?'+q);if(!d.items.length)out.append(node('p','No matching doctors found.','muted'));for(const doc of d.items){const card=node('div','','card');card.append(node('h3',doc.name),node('p',[doc.specialisation,doc.hospital,doc.city].filter(Boolean).join(' · ')));const b=node('button','View profile & slots','secondary');b.onclick=()=>doctor(doc.doctorId);card.append(b);out.append(card)}const paging=document.querySelector('#paging');paging.replaceChildren(node('small',`Page ${d.page} of ${Math.max(1,d.totalPages)} · ${d.total} doctors `));if(page>1){const b=node('button','Previous','secondary');b.onclick=()=>search(page-1);paging.append(b)}if(page<d.totalPages){const b=node('button','Next','secondary');b.onclick=()=>search(page+1);paging.append(b)}}catch(e){out.append(node('p',e.message,'muted'))}}
 document.querySelector('#search').onsubmit=e=>{e.preventDefault();search(1)};
-async function doctor(id){const details=document.querySelector('#details'),slots=document.querySelector('#slots');details.replaceChildren();slots.replaceChildren();try{const d=(await api('/doctors/'+id)).doctor;details.append(node('h3',d.name),node('p',[d.specialisation,d.hospital,d.city].filter(Boolean).join(' · ')));for(const t of d.consultationTypes)details.append(node('p',`${t.name} · ${t.durationMinutes} min · ₹${t.fee}`));const start=new Date(),end=new Date(start.getTime()+14*86400000);const params=new URLSearchParams({startFrom:start.toISOString(),startTo:end.toISOString()});const data=await api('/doctors/'+id+'/slots?'+params);slots.append(node('h3','Open appointments (next 14 days)'));if(!data.items.length)slots.append(node('p','No open slots in this period.','muted'));for(const s of data.items){const row=node('div','','card slot');row.append(node('span',new Date(s.startUtc).toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'})),node('strong',s.freeSeats+' seats left'));slots.append(row)}}catch(e){slots.append(node('p',e.message,'muted'))}}
+document.querySelector('#backHome').onclick=()=>{
+  document.querySelector('#doctorView').hidden=true;
+  document.querySelector('#patientHome').hidden=false;
+  window.scrollTo({top:0,behavior:'smooth'});
+};
+async function doctor(id){
+  const home=document.querySelector('#patientHome'),view=document.querySelector('#doctorView');
+  const slots=document.querySelector('#slots'),consultations=document.querySelector('#doctorConsultations');
+  home.hidden=true;view.hidden=false;window.scrollTo({top:0,behavior:'smooth'});
+  slots.replaceChildren(node('p','Loading available appointments…','muted'));
+  consultations.replaceChildren();
+  document.querySelector('#doctorName').textContent='';
+  document.querySelector('#doctorSpecialisation').textContent='';
+  document.querySelector('#doctorHospital').textContent='';
+  const photo=document.querySelector('#doctorPhoto'),fallback=document.querySelector('#doctorPhotoFallback');
+  photo.hidden=true;photo.removeAttribute('src');fallback.hidden=false;
+  try{
+    const d=(await api('/doctors/'+id)).doctor;
+    document.querySelector('#doctorName').textContent=d.name||'Doctor';
+    document.querySelector('#doctorSpecialisation').textContent=d.specialisation||'Specialisation not provided';
+    document.querySelector('#doctorHospital').textContent=[d.hospital,d.city].filter(Boolean).join(' · ');
+    if(d.photoUrl){
+      photo.onload=()=>{photo.hidden=false;fallback.hidden=true};
+      photo.onerror=()=>{photo.hidden=true;fallback.hidden=false};
+      photo.src=d.photoUrl;
+    }
+    for(const t of (d.consultationTypes||[])){
+      const chip=node('div',`${t.name} · ${t.durationMinutes} min · ₹${t.fee}`,'consultation-chip');
+      consultations.append(chip);
+    }
+    const start=new Date(),end=new Date(start.getTime()+14*86400000);
+    const params=new URLSearchParams({startFrom:start.toISOString(),startTo:end.toISOString()});
+    const data=await api('/doctors/'+id+'/slots?'+params);
+    slots.replaceChildren();
+    if(!data.items.length)slots.append(node('p','No open slots in the next 14 days.','muted'));
+    for(const item of data.items){
+      const row=node('div','','doctor-slot-card');
+      const when=node('strong',new Date(item.startUtc).toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'}));
+      const seats=node('span',`${item.freeSeats} seat${item.freeSeats===1?'':'s'} available`);
+      row.append(when,seats);slots.append(row);
+    }
+  }catch(e){slots.replaceChildren(node('p',e.message,'muted'))}
+}
 profile();search();
 </script></body></html>

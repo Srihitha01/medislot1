@@ -2577,7 +2577,8 @@ def _public_doctor(doctor_id):
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT d.user_id AS doctorId, u.name AS name,
-                    sp.name AS specialisation, h.name AS hospital, h.city AS city
+                    sp.name AS specialisation, h.name AS hospital, h.city AS city,
+                    d.photo_key AS photoKey
                     FROM doctors d JOIN users u ON u.user_id=d.user_id
                     LEFT JOIN specialisations sp ON sp.specialisation_id=d.specialisation_id
                     LEFT JOIN hospitals h ON h.hospital_id=d.hospital_id
@@ -2596,6 +2597,23 @@ def _public_doctor(doctor_id):
                 (doctor_id,),
             )
             doctor["consultationTypes"] = cur.fetchall()
+
+        # Return a short-lived read URL for the mandatory doctor profile photo.
+        photo_key = doctor.pop("photoKey", None)
+        bucket = os.environ.get("DOCTOR_PHOTOS_BUCKET")
+        if photo_key and bucket:
+            try:
+                doctor["photoUrl"] = _s3_client().generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": bucket, "Key": photo_key},
+                    ExpiresIn=900,
+                )
+            except Exception:
+                logger.exception("Public doctor photo URL generation failed")
+                doctor["photoUrl"] = None
+        else:
+            doctor["photoUrl"] = None
+
         return _response(200, {"doctor": doctor})
     finally:
         conn.close()

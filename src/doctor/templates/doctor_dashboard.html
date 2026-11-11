@@ -1682,6 +1682,44 @@ select option { background:#202a3d; color:#e7edf5; }
     *,*::before,*::after { scroll-behavior:auto !important; animation:none !important; transition:none !important; }
 }
 
+
+/* MediSlot Teal & Ivory LIGHT override */
+:root{
+ --primary:#087f8c !important;--primary-dark:#066874 !important;--primary-light:#e8f6f5 !important;
+ --background:#f4f8f7 !important;--surface:#ffffff !important;--text:#19343a !important;
+ --muted:#718786 !important;--border:#dce9e6 !important;
+ color-scheme:light;
+}
+html,body{background:#f4f8f7 !important;color:#19343a !important;color-scheme:light !important}
+.sidebar,.sidebar-nav,.doctor-sidebar{background:#edf5f3 !important;color:#294b4c !important;border-color:#d5e5e1 !important}
+.sidebar a,.sidebar button,.sidebar .nav-link{color:#526d6d !important}
+.sidebar a.active,.sidebar .active,.sidebar .nav-link.active{background:#dcefeb !important;color:#066874 !important;border-color:#a9d2ca !important}
+main,.main-content,.content,.dashboard-content{background:#f4f8f7 !important;color:#19343a !important}
+.panel,.ms-panel,.ms-management-panel,.card,.section-card,.availability-card,.schedule-card,.ms-slot-card,
+.form-card,.stat-card,.kpi-card,.management-card{
+ background:#ffffff !important;background-image:none !important;color:#19343a !important;
+ border:1px solid #dce9e6 !important;box-shadow:0 8px 24px rgba(26,72,70,.06) !important
+}
+h1,h2,h3,h4,label,.panel-title,.section-title{color:#19343a !important}
+p,.muted,.subtitle,.help-text{color:#718786}
+table{background:#fff !important;color:#294b4c !important;border-color:#dce9e6 !important}
+thead,th{background:#edf5f3 !important;color:#426364 !important}
+td,tr{background:#fff !important;color:#294b4c !important;border-color:#e1ece9 !important}
+input,select,textarea,button:not(.primary):not(.btn-primary){
+ background:#fff !important;color:#294b4c !important;border-color:#cbded9 !important
+}
+input[type="time"],input[type="date"],input[type="datetime-local"]{
+ color-scheme:light !important;background:#fff !important;color:#294b4c !important
+}
+input[type="time"]::-webkit-calendar-picker-indicator,
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator{
+ filter:none !important;opacity:.78 !important;cursor:pointer
+}
+button.primary,button.btn-primary,.btn-primary,.primary-action{
+ background:#087f8c !important;color:#fff !important;border-color:#087f8c !important
+}
+
 </style>
 </head>
 
