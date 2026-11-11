@@ -6,6 +6,8 @@
     <title>MediSlot | Login</title>
     <style>
         * { box-sizing: border-box; }
+        .inspiration{margin:18px 0 22px;padding:15px 17px;border:1px solid #c9e4df;border-left:4px solid #087f8c;border-radius:13px;background:#edf7f5;color:#28545a;line-height:1.55}
+        .inspiration strong,.inspiration span{display:block}.inspiration span{font-size:13px;color:#66807d;margin-top:4px}
         body {
             margin: 0;
             min-height: 100vh;
@@ -14,8 +16,8 @@
             align-items: center;
             padding: 24px 16px;
             font-family: Arial, sans-serif;
-            background: linear-gradient(135deg, #eaf2ff, #f7f9fc);
-            color: #18324b;
+            background: linear-gradient(135deg, #e8f6f5, #fbfdfc);
+            color: #19343a;
         }
         .login-card {
             width: 100%;
@@ -117,6 +119,7 @@
         <div class="brand">Medi<span>Slot</span></div>
         <h1>{{ (requested_role or "MediSlot")|capitalize }} Login</h1>
         <p class="subtitle">Sign in securely to access your MediSlot dashboard.</p>
+        <div class="inspiration" role="note">{% if (requested_role or '')|lower == 'doctor' %}🩺 <strong>“Every patient is a person, not just a diagnosis.”</strong><span>Your knowledge makes a difference. Your compassion makes it memorable.</span>{% else %}💚 <strong>“Your health deserves time, attention, and care.”</strong><span>Take the next step towards feeling your best.</span>{% endif %}</div>
 
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% for category, message in messages %}

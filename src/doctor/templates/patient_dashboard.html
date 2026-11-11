@@ -2,9 +2,9 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MediSlot | Patient Care Portal</title>
 <style>
-:root{font-family:Inter,ui-sans-serif,system-ui,Arial;color:#17314b;background:#f3f7fb}*{box-sizing:border-box}body{margin:0}
-header{background:#fff;border-bottom:1px solid #dce7f0;padding:18px max(24px,calc((100vw - 1160px)/2));display:flex;justify-content:space-between;align-items:center;gap:12px}
-.brand{font-size:25px;font-weight:850;color:#087b91}.brand b{color:#17314b}a{color:#087b91}header a{text-decoration:none;font-weight:600}
+:root{font-family:Inter,ui-sans-serif,system-ui,Arial;color:#19343a;background:#f4f8f7}*.care-quote{box-sizing:border-box}.care-quote{display:inline-block;margin:0 0 12px;padding:9px 13px;border-radius:10px;background:rgba(255,255,255,.22);font-size:14px;font-weight:600}*{box-sizing:border-box}body{margin:0}
+header{background:#fff;border-bottom:1px solid #dce9e6;padding:18px max(24px,calc((100vw - 1160px)/2));display:flex;justify-content:space-between;align-items:center;gap:12px}
+.brand{font-size:25px;font-weight:850;color:#087f8c}.brand b{color:#19343a}a{color:#087f8c}header a{text-decoration:none;font-weight:600}
 .hero{background:linear-gradient(115deg,#0b5975,#0a8c98);color:#fff;padding:48px max(24px,calc((100vw - 1160px)/2))}
 .hero h1{font-size:clamp(26px,4vw,42px);margin:0 0 10px}.hero p{opacity:.88;margin:0;max-width:620px}
 main{max-width:1160px;margin:28px auto;padding:0 24px;display:grid;grid-template-columns:1fr 1.35fr;gap:22px}
@@ -21,7 +21,7 @@ button.secondary{background:#e7f5f6;color:#076477}.grid{display:grid;grid-templa
 @media(max-width:800px){main{grid-template-columns:1fr}.grid{grid-template-columns:1fr}header{padding:18px 24px}}
 </style></head><body>
 <header><div class="brand">Medi<b>Slot</b> <span class="muted" style="font-size:13px;font-weight:500">Patient Portal</span></div><a href="/logout">Sign out</a></header>
-<div class="hero"><h1>Your care, made simple.</h1><p>Manage your health profile, find a trusted specialist, and explore appointment availability in one place.</p></div>
+<div class="hero"><p class="care-quote">💚 “Taking care of yourself is a meaningful step towards a healthier tomorrow.”</p><h1>Your care, made simple.</h1><p>Manage your health profile, find a trusted specialist, and explore appointment availability in one place.</p></div>
 <main><div>
 <section><h2>My health profile</h2><p class="muted">Your information is private to your account.</p>
 <div id="status" role="status"></div>

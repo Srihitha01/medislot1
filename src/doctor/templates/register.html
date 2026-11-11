@@ -6,10 +6,12 @@
     <title>MediSlot | Register as {{ role|capitalize }}</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
+        .inspiration{margin:16px 0 20px;padding:14px 16px;border:1px solid #c9e4df;border-left:4px solid #087f8c;border-radius:13px;background:#edf7f5;color:#28545a;line-height:1.55}
+        .inspiration strong,.inspiration span{display:block}.inspiration span{font-size:13px;color:#66807d;margin-top:4px}
         :root {
-            --primary: #2563eb; --primary-dark: #1d4ed8; --primary-light: #eff6ff;
-            --background: #f5f7fb; --surface: #fff; --text: #172033;
-            --muted: #718096; --border: #e8edf4;
+            --primary: #087f8c; --primary-dark: #066874; --primary-light: #e8f6f5;
+            --background: #f4f8f7; --surface: #fff; --text: #19343a;
+            --muted: #718786; --border: #dce9e6;
             --success: #15803d; --success-bg: #dcfce7;
             --danger: #b91c1c; --danger-bg: #fee2e2;
         }
@@ -50,6 +52,7 @@
 <div class="card">
     <div class="logo">Medi<span>Slot</span></div>
     <h1>Create your {{ role }} account</h1>
+    <div class="inspiration" role="note">{% if role|lower == 'doctor' %}🩺 <strong>“Healing is an art guided by science and warmed by compassion.”</strong><span>Join a community that puts thoughtful care first.</span>{% else %}🌿 <strong>“A healthier tomorrow begins with one small step today.”</strong><span>Create your account and make your care journey easier.</span>{% endif %}</div>
 
     <div class="tabs">
         <a href="{{ url_for('register_doctor') }}" class="{{ 'active' if role == 'doctor' }}">Doctor</a>
