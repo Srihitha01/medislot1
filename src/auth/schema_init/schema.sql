@@ -125,22 +125,6 @@ CREATE TABLE IF NOT EXISTS blackout_dates (
     CONSTRAINT fk_blackout_doctor FOREIGN KEY (doctor_user_id) REFERENCES doctors(user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS availability_exceptions (
-    exception_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    doctor_user_id BIGINT UNSIGNED NOT NULL,
-    consultation_type_id BIGINT UNSIGNED NOT NULL,
-    exception_date DATE NOT NULL,
-    exception_type VARCHAR(30) NOT NULL,
-    start_time TIME NULL,
-    end_time TIME NULL,
-    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (exception_id),
-    KEY idx_availability_exceptions_doctor_date (doctor_user_id, exception_date),
-    CONSTRAINT fk_availability_exceptions_doctor FOREIGN KEY (doctor_user_id) REFERENCES doctors(user_id),
-    CONSTRAINT fk_availability_exceptions_consultation FOREIGN KEY (consultation_type_id) REFERENCES consultation_types(consultation_type_id),
-    CONSTRAINT chk_availability_exception_time CHECK (start_time IS NULL OR end_time IS NULL OR start_time < end_time)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS appointments (
     appointment_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

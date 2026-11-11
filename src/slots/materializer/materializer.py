@@ -114,16 +114,6 @@ def fetch_data(doctor_id=None):
                     (did, cid),
                 )
                 patterns = cur.fetchall()
-                cur.execute(
-                    """
-                    SELECT exception_date, exception_type, start_time, end_time
-                    FROM availability_exceptions
-                    WHERE doctor_user_id=%s AND consultation_type_id=%s
-                    ORDER BY exception_date, start_time
-                    """,
-                    (did, cid),
-                )
-                exceptions = cur.fetchall()
 
                 if did not in doctor_blackouts:
                     cur.execute(
@@ -135,7 +125,6 @@ def fetch_data(doctor_id=None):
                 result.append({
                     **item,
                     "patterns": patterns,
-                    "exceptions": exceptions,
                     "blackouts": doctor_blackouts[did],
                 })
             return result
@@ -166,8 +155,7 @@ def _schedule_slots_for_day(schedule, target_day):
 
     windows = effective_windows(
         schedule.get("patterns", []),
-        schedule.get("exceptions", []),
-        [],
+        [],  # Slots are still materialised but marked BLACKOUT below.
         target_day,
     )
     if not windows:

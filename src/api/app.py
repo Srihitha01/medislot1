@@ -30,15 +30,9 @@ from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import BotoCoreError, ClientError
 
 try:
-    from .availability_rules import (
-        validate_doctor_day,
-        validate_exception_payload,
-    )
+    from .availability_rules import validate_doctor_day
 except ImportError:
-    from availability_rules import (
-        validate_doctor_day,
-        validate_exception_payload,
-    )
+    from availability_rules import validate_doctor_day
 
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -1287,17 +1281,6 @@ def _validate_doctor_schedule(cursor, user_id):
 
         patterns = cursor.fetchall()
 
-        cursor.execute(
-            """
-            SELECT exception_date, exception_type, start_time, end_time
-            FROM availability_exceptions
-            WHERE doctor_user_id = %s
-              AND consultation_type_id = %s
-            """,
-            (user_id, consultation_id),
-        )
-
-        exceptions = cursor.fetchall()
 
         cursor.execute(
             """
@@ -1319,7 +1302,6 @@ def _validate_doctor_schedule(cursor, user_id):
                 "consultation_type_id": int(consultation_id),
                 "is_active": bool(item["is_active"]),
                 "patterns": patterns,
-                "exceptions": exceptions,
                 "blackouts": blackouts,
             }
         )
@@ -1331,11 +1313,6 @@ def _validate_doctor_schedule(cursor, user_id):
         for offset in range(30)
     }
 
-    for schedule in schedules:
-        dates_to_validate.update(
-            date.fromisoformat(str(row["exception_date"])[:10])
-            for row in schedule["exceptions"]
-        )
 
     for target_day in sorted(dates_to_validate):
         validate_doctor_day(schedules, target_day)
@@ -1894,175 +1871,6 @@ def _doctor_collection(
                         return _response(404, {"message": "Blackout not found"})
                     conn.commit()
                     return _response(200, {"message": "Blackout deleted"})
-
-            # DATE-SPECIFIC AVAILABILITY EXCEPTIONS
-            elif table_name == "availability_exceptions":
-
-                if method == "GET":
-                    cur.execute(
-                        """
-                        SELECT *
-                        FROM availability_exceptions
-                        WHERE doctor_user_id = %s
-                        ORDER BY exception_date, start_time
-                        """,
-                        (user_id,),
-                    )
-
-                    return _response(
-                        200,
-                        {
-                            "items": cur.fetchall(),
-                            "timezone": "Asia/Kolkata",
-                        },
-                    )
-
-                if method in {"POST", "PUT", "PATCH"}:
-                    required = (
-                        "consultationTypeId",
-                        "date",
-                        "type",
-                    )
-
-                    if any(key not in data for key in required):
-                        raise ValueError(
-                            "consultationTypeId, date and type are required"
-                        )
-
-                    consultation_id = int(data["consultationTypeId"])
-                    day = date.fromisoformat(str(data["date"]))
-
-                    kind, start_time, end_time = (
-                        validate_exception_payload(
-                            data["type"],
-                            data.get("startTime"),
-                            data.get("endTime"),
-                        )
-                    )
-
-                    cur.execute(
-                        """
-                        SELECT consultation_type_id
-                        FROM consultation_types
-                        WHERE consultation_type_id = %s
-                          AND doctor_user_id = %s
-                          AND is_active = 1
-                        """,
-                        (consultation_id, user_id),
-                    )
-
-                    if not cur.fetchone():
-                        return _response(
-                            400,
-                            {
-                                "message": (
-                                    "Active consultation type does not "
-                                    "belong to this doctor"
-                                )
-                            },
-                        )
-
-                    if method == "POST":
-                        cur.execute(
-                            """
-                            INSERT INTO availability_exceptions (
-                                doctor_user_id,
-                                consultation_type_id,
-                                exception_date,
-                                exception_type,
-                                start_time,
-                                end_time
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s)
-                            """,
-                            (
-                                user_id,
-                                consultation_id,
-                                day,
-                                kind,
-                                start_time,
-                                end_time,
-                            ),
-                        )
-
-                        new_id = int(cur.lastrowid)
-
-                    else:
-                        cur.execute(
-                            """
-                            UPDATE availability_exceptions
-                            SET consultation_type_id = %s,
-                                exception_date = %s,
-                                exception_type = %s,
-                                start_time = %s,
-                                end_time = %s
-                            WHERE exception_id = %s
-                              AND doctor_user_id = %s
-                            """,
-                            (
-                                consultation_id,
-                                day,
-                                kind,
-                                start_time,
-                                end_time,
-                                resource_id,
-                                user_id,
-                            ),
-                        )
-
-                        if not cur.rowcount:
-                            return _response(
-                                404,
-                                {
-                                    "message": (
-                                        "Availability exception not found"
-                                    )
-                                },
-                            )
-
-                        new_id = resource_id
-
-                    _validate_doctor_schedule(cur, user_id)
-                    conn.commit()
-
-                    return _response(
-                        201 if method == "POST" else 200,
-                        {
-                            "exceptionId": new_id,
-                            "timezone": "Asia/Kolkata",
-                        },
-                    )
-
-                if method == "DELETE" and resource_id:
-                    cur.execute(
-                        """
-                        DELETE FROM availability_exceptions
-                        WHERE exception_id = %s
-                          AND doctor_user_id = %s
-                        """,
-                        (resource_id, user_id),
-                    )
-
-                    if not cur.rowcount:
-                        return _response(
-                            404,
-                            {
-                                "message": (
-                                    "Availability exception not found"
-                                )
-                            },
-                        )
-
-                    conn.commit()
-
-                    return _response(
-                        200,
-                        {
-                            "message": (
-                                "Availability exception deleted"
-                            )
-                        },
-                    )
 
         return _response(
             405,
@@ -2967,10 +2775,6 @@ def lambda_handler(event, context):
             (
                 "/doctors/me/blackout-dates",
                 "blackout_dates",
-            ),
-            (
-                "/doctors/me/availability-exceptions",
-                "availability_exceptions",
             ),
         ]
 

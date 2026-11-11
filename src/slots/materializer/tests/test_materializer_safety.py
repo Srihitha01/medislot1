@@ -32,25 +32,24 @@ class FakeDynamoTable:
 
 
 class MaterializerSafetyTests(unittest.TestCase):
-    def test_multiple_override_sessions_generate_both_sets(self):
+    def test_weekly_pattern_generates_only_recurring_sessions(self):
         schedule = {
             "user_id": "doctor-1", "consultation_type_id": 4,
-            "timezone": "Asia/Kolkata", "duration_min": 60, "capacity": 1,
-            "is_active": 1, "patterns": [
+            "timezone": "Asia/Kolkata", "duration_min": 60,
+            "capacity": 1, "is_active": 1,
+            "patterns": [
                 {"day_of_week": 1, "start_time": "09:00", "end_time": "12:00"}
-            ],
-            "exceptions": [
-                {"exception_date": "2026-11-09", "exception_type": "OVERRIDE",
-                 "start_time": "10:00", "end_time": "12:00"},
-                {"exception_date": "2026-11-09", "exception_type": "OVERRIDE",
-                 "start_time": "14:00", "end_time": "16:00"},
             ],
             "blackouts": [],
         }
-        slots = materializer._schedule_slots_for_day(schedule, date(2026, 11, 9))
-        self.assertEqual(len(slots), 4)
-        self.assertEqual({slot["localStartTime"] for slot in slots},
-                         {"10:00:00", "11:00:00", "14:00:00", "15:00:00"})
+        slots = materializer._schedule_slots_for_day(
+            schedule, date(2026, 11, 9)
+        )
+        self.assertEqual(len(slots), 3)
+        self.assertEqual(
+            [slot["localStartTime"] for slot in slots],
+            ["09:00:00", "10:00:00", "11:00:00"],
+        )
 
     def test_reconciliation_query_has_date_envelope_and_does_not_cancel_outside_range(self):
         table = FakeDynamoTable([

@@ -5,7 +5,6 @@ Weekdays use ISO numbering: Monday=1 ... Sunday=7.
 """
 from datetime import date, datetime, time, timedelta
 
-VALID_TYPES = {"ADD", "OVERRIDE", "CLOSED"}
 
 
 def as_date(value):
@@ -58,35 +57,32 @@ def overlaps(a, b):
     return a0 < b1 and b0 < a1
 
 
-def effective_windows(patterns, exceptions, blackouts, target_date):
-    """Resolve one consultation type for one local calendar date."""
+def _full_day_blackout_date(item):
+    """Return a full-day blackout date; timed blackouts are handled per slot."""
+    if isinstance(item, dict):
+        if not item.get("is_full_day", 1):
+            return None
+        item = item.get("blackout_date")
+    return as_date(item)
+
+
+def effective_windows(patterns, blackouts, target_date):
+    """Resolve recurring weekly patterns for one local date, minus full-day blackouts."""
     day = as_date(target_date)
-    blackout_days = {as_date(item) for item in (blackouts or [])}
+    blackout_days = {
+        blackout_day
+        for blackout_day in (_full_day_blackout_date(item) for item in (blackouts or []))
+        if blackout_day is not None
+    }
     if day in blackout_days:
         return []
 
-    rows = [row for row in (exceptions or []) if as_date(row["exception_date"]) == day]
-    kinds = {str(row["exception_type"]).upper() for row in rows}
-    unknown = kinds - VALID_TYPES
-    if unknown:
-        raise ValueError(f"unknown exception type: {sorted(unknown)}")
-
-    closed_rows = [row for row in rows if str(row["exception_type"]).upper() == "CLOSED"]
-    if closed_rows:
-        if len(rows) != 1:
-            raise ValueError("CLOSED cannot be combined with other exceptions")
-        if closed_rows[0].get("start_time") is not None or closed_rows[0].get("end_time") is not None:
-            raise ValueError("CLOSED must not contain times")
-        return []
-
-    override_rows = [row for row in rows if str(row["exception_type"]).upper() == "OVERRIDE"]
-    add_rows = [row for row in rows if str(row["exception_type"]).upper() == "ADD"]
-    if override_rows:
-        base = [(row["start_time"], row["end_time"]) for row in override_rows]
-    else:
-        base = [(row["start_time"], row["end_time"]) for row in (patterns or []) if int(row["day_of_week"]) == day.isoweekday()]
-    additions = [(row["start_time"], row["end_time"]) for row in add_rows]
-    return validate_windows(base + additions, "Effective schedule")
+    windows = [
+        (row["start_time"], row["end_time"])
+        for row in (patterns or [])
+        if int(row["day_of_week"]) == day.isoweekday()
+    ]
+    return validate_windows(windows, "Weekly availability")
 
 
 def validate_doctor_day(schedules, target_date):
@@ -99,8 +95,7 @@ def validate_doctor_day(schedules, target_date):
         doctor_id = str(schedule["user_id"])
         consultation_id = int(schedule["consultation_type_id"])
         windows = effective_windows(
-            schedule.get("patterns", []), schedule.get("exceptions", []),
-            schedule.get("blackouts", []), day,
+            schedule.get("patterns", []), schedule.get("blackouts", []), day,
         )
         for start, end in windows:
             start, end = window(start, end)
@@ -121,15 +116,3 @@ def validate_doctor_day(schedules, target_date):
     return True
 
 
-def validate_exception_payload(kind, start=None, end=None):
-    kind = str(kind).upper()
-    if kind not in VALID_TYPES:
-        raise ValueError("type must be ADD, OVERRIDE or CLOSED")
-    if kind == "CLOSED":
-        if start is not None or end is not None:
-            raise ValueError("CLOSED must not include startTime/endTime")
-        return kind, None, None
-    if start is None or end is None:
-        raise ValueError(f"{kind} requires startTime and endTime")
-    start, end = window(start, end)
-    return kind, start, end

@@ -23,7 +23,6 @@ def _schedule(blackouts):
         "timezone": "Asia/Kolkata",
         "is_active": True,
         "patterns": [{"day_of_week": 2, "start_time": "09:00:00", "end_time": "10:00:00"}],
-        "exceptions": [],
         "blackouts": blackouts,
     }
 
@@ -33,6 +32,22 @@ class BlackoutSlotTests(unittest.TestCase):
         slots = materializer._schedule_slots_for_day(_schedule([date(2026, 11, 17)]), date(2026, 11, 17))
         self.assertEqual(len(slots), 2)
         self.assertTrue(all(s["status"] == "BLACKOUT" for s in slots))
+
+    def test_timed_blackout_only_marks_overlapping_slot(self):
+        schedule = _schedule([{
+            "blackout_date": date(2026, 11, 17),
+            "is_full_day": 0,
+            "start_time": "09:30:00",
+            "end_time": "10:00:00",
+        }])
+        slots = materializer._schedule_slots_for_day(
+            schedule, date(2026, 11, 17)
+        )
+        self.assertEqual(len(slots), 2)
+        self.assertEqual(
+            [slot["status"] for slot in slots],
+            ["OPEN", "BLACKOUT"],
+        )
 
     def test_normal_day_generates_open_slots(self):
         slots = materializer._schedule_slots_for_day(_schedule([date(2026, 11, 17)]), date(2026, 11, 24))

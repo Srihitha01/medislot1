@@ -322,6 +322,11 @@ def _drop_schema(cursor):
     WARNING: This permanently deletes data and is used
     only by the explicitly confirmed reset action.
     """
+    # This legacy child table is no longer part of the current schema list,
+    # but may still exist in databases being explicitly reset. Drop it first
+    # so its foreign keys do not block dropping doctors/consultation_types.
+    cursor.execute("DROP TABLE IF EXISTS availability_exceptions")
+
     for table_name in reversed(_table_names()):
         cursor.execute(
             f"DROP TABLE IF EXISTS `{table_name}`"
@@ -430,6 +435,62 @@ def _migrate_blackout_dates(cursor, database):
 
 
 # ---------------------------------------------------------
+# REMOVE LEGACY AVAILABILITY EXCEPTIONS
+# ---------------------------------------------------------
+
+def _remove_availability_exceptions(cursor, database):
+    """
+    Remove the date-specific availability_exceptions model.
+
+    Full-day CLOSED rows are preserved as blackout_dates. ADD/OVERRIDE
+    rows are intentionally not converted: the new scheduling model is
+    recurring availability_patterns plus explicit blackout_dates.
+    """
+    cursor.execute(
+        """
+        SELECT 1
+        FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = %s
+          AND TABLE_NAME = 'availability_exceptions'
+        LIMIT 1
+        """,
+        (database,)
+    )
+    if not cursor.fetchone():
+        logger.info("Legacy availability_exceptions table is already absent")
+        return
+
+    # Preserve explicit CLOSED dates in the supported blackout model.
+    cursor.execute(
+        """
+        INSERT INTO blackout_dates (
+            doctor_user_id, blackout_date, reason,
+            is_full_day, start_time, end_time
+        )
+        SELECT
+            ae.doctor_user_id,
+            ae.exception_date,
+            'Migrated from a closed availability exception',
+            1,
+            NULL,
+            NULL
+        FROM availability_exceptions ae
+        LEFT JOIN blackout_dates bd
+          ON bd.doctor_user_id = ae.doctor_user_id
+         AND bd.blackout_date = ae.exception_date
+         AND bd.is_full_day = 1
+        WHERE UPPER(ae.exception_type) = 'CLOSED'
+          AND bd.blackout_id IS NULL
+        """
+    )
+
+    cursor.execute("DROP TABLE availability_exceptions")
+    logger.info(
+        "Removed availability_exceptions; CLOSED dates were retained as blackouts"
+    )
+
+
+# ---------------------------------------------------------
 # MAIN LAMBDA HANDLER
 # ---------------------------------------------------------
 
@@ -518,6 +579,7 @@ def lambda_handler(event, context):
 
                 _create_schema(cursor)
                 _migrate_blackout_dates(cursor, database)
+                _remove_availability_exceptions(cursor, database)
 
                 conn.commit()
 
@@ -548,6 +610,8 @@ def lambda_handler(event, context):
             _ensure_app_user(cursor, database)
 
             _create_schema(cursor)
+            _migrate_blackout_dates(cursor, database)
+            _remove_availability_exceptions(cursor, database)
 
             conn.commit()
 
