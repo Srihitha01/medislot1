@@ -46,6 +46,20 @@ button{color-scheme:light}
 .doctor-slot-card{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px;border:1px solid #dce9e6;border-radius:13px;background:#fbfdfc}
 .doctor-slot-card strong{color:#19343a}.doctor-slot-card span{color:#607b79;font-size:14px}
 @media(max-width:700px){.doctor-view{padding:0 16px}.doctor-profile-card,.doctor-slots-section{padding:20px}.doctor-slots-grid{grid-template-columns:1fr}.doctor-view-top{align-items:flex-start;flex-direction:column}}
+
+/* Ensure hidden panels remain hidden even where layout CSS sets display:grid/flex. */
+#doctorView[hidden],#doctorPhoto[hidden],#doctorPhotoFallback[hidden]{display:none!important}
+#patientHome[hidden]{display:none!important}
+.doctor-photo{width:150px;height:150px;object-fit:cover;object-position:center;border-radius:18px;border:1px solid #dce9e6;background:#edf7f5}
+.doctor-photo-fallback{width:150px;height:150px;border:0;background:transparent;display:grid;place-items:center;font-size:64px}
+.doctor-slot-card{display:block;padding:0;overflow:hidden;background:#fff;border:1px solid #dce9e6;border-radius:13px}
+.doctor-slot-toggle{display:flex;width:100%;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px;margin:0;border:0;border-radius:0;background:#fff;color:#294b4c;text-align:left;font-weight:700}
+.doctor-slot-toggle:hover{background:#f0f8f6}
+.doctor-slot-toggle .slot-time{white-space:nowrap;font-size:14px;color:#294b4c}
+.doctor-slot-toggle .slot-seats{white-space:nowrap;font-size:12px;color:#087f8c}
+.doctor-slot-extra{padding:13px 18px 16px;border-top:1px solid #e1ece9;background:#f6fbfa;color:#426364;font-size:14px;line-height:1.7}
+.doctor-slot-extra[hidden]{display:none!important}
+@media(max-width:620px){.doctor-slot-toggle{align-items:flex-start;flex-direction:column}.doctor-slot-toggle .slot-time{white-space:normal}}
 </style></head><body>
 <header><div class="brand">Medi<b>Slot</b> <span class="muted" style="font-size:13px;font-weight:500">Patient Portal</span></div><a href="/logout">Sign out</a></header>
 <div class="hero"><p class="care-quote">💚 “Taking care of yourself is a meaningful step towards a healthier tomorrow.”</p><h1>Your care, made simple.</h1><p>Manage your health profile, find a trusted specialist, and explore appointment availability in one place.</p></div>
@@ -75,7 +89,7 @@ button{color-scheme:light}
   <section class="doctor-profile-card">
     <div class="doctor-profile-heading">
       <img id="doctorPhoto" class="doctor-photo" alt="Doctor profile photo" hidden>
-      <div id="doctorPhotoFallback" class="doctor-photo-fallback" aria-hidden="true">🩺</div>
+      <span id="doctorPhotoFallback" class="doctor-photo-fallback" aria-label="Doctor photo unavailable">🩺</span>
       <div class="doctor-identity"><span class="eyebrow">DOCTOR PROFILE</span><h1 id="doctorName"></h1><p id="doctorSpecialisation"></p><p id="doctorHospital"></p></div>
     </div>
     <div id="doctorConsultations" class="consultation-list"></div>
@@ -99,14 +113,14 @@ async function search(page=1){currentPage=page;const q=new URLSearchParams(new F
 document.querySelector('#search').onsubmit=e=>{e.preventDefault();search(1)};
 document.querySelector('#backHome').onclick=()=>{
   document.querySelector('#doctorView').hidden=true;
-  document.querySelector('#patientHome').hidden=false;
-  window.scrollTo({top:0,behavior:'smooth'});
+  document.querySelector('#patientHome').scrollIntoView({behavior:'smooth',block:'start'});
 };
 async function doctor(id){
-  const home=document.querySelector('#patientHome'),view=document.querySelector('#doctorView');
+  const view=document.querySelector('#doctorView');
   const slots=document.querySelector('#slots'),consultations=document.querySelector('#doctorConsultations');
-  home.hidden=true;view.hidden=false;window.scrollTo({top:0,behavior:'smooth'});
+  view.hidden=false;
   slots.replaceChildren(node('p','Loading available appointments…','muted'));
+  view.scrollIntoView({behavior:'smooth',block:'start'});
   consultations.replaceChildren();
   document.querySelector('#doctorName').textContent='';
   document.querySelector('#doctorSpecialisation').textContent='';
@@ -132,11 +146,29 @@ async function doctor(id){
     const data=await api('/doctors/'+id+'/slots?'+params);
     slots.replaceChildren();
     if(!data.items.length)slots.append(node('p','No open slots in the next 14 days.','muted'));
+    const consultationById=new Map((d.consultationTypes||[]).map(t=>[String(t.consultationTypeId),t]));
+    const dateTime=(value,options)=>new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kolkata',...options}).format(new Date(value));
     for(const item of data.items){
       const row=node('div','','doctor-slot-card');
-      const when=node('strong',new Date(item.startUtc).toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'}));
-      const seats=node('span',`${item.freeSeats} seat${item.freeSeats===1?'':'s'} available`);
-      row.append(when,seats);slots.append(row);
+      const toggle=node('button','','doctor-slot-toggle');
+      toggle.type='button';
+      const date=dateTime(item.startUtc,{day:'2-digit',month:'2-digit',year:'numeric'}).replaceAll('/','-');
+      const from=dateTime(item.startUtc,{hour:'numeric',minute:'2-digit',hourCycle:'h23'});
+      const to=dateTime(item.endUtc,{hour:'numeric',minute:'2-digit',hourCycle:'h23'});
+      const when=node('span',`${date} ${from} to ${to}`,'slot-time');
+      const seats=node('span',`${item.freeSeats} seat${item.freeSeats===1?'':'s'} available · View details`,'slot-seats');
+      toggle.append(when,seats);
+      const extra=node('div','','doctor-slot-extra');extra.hidden=true;
+      const consult=consultationById.get(String(item.consultationTypeId));
+      const consultName=consult?consult.name:'Consultation details';
+      const consultFee=consult&&consult.fee!==null&&consult.fee!==undefined?`₹${consult.fee}`:'Price not provided';
+      extra.textContent=`Consultation: ${consultName} · Price: ${consultFee} · Duration: ${item.durationMinutes|| (consult&&consult.durationMinutes)||'—'} minutes`;
+      toggle.setAttribute('aria-expanded','false');
+      toggle.onclick=()=>{
+        extra.hidden=!extra.hidden;
+        toggle.setAttribute('aria-expanded',String(!extra.hidden));
+      };
+      row.append(toggle,extra);slots.append(row);
     }
   }catch(e){slots.replaceChildren(node('p',e.message,'muted'))}
 }
