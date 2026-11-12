@@ -347,7 +347,7 @@ def _reconcile_window(table, doctor_id, date_from, date_to, expected_ids):
     return cancelled, preserved_booked
 
 
-def lambda_handler(event, context):
+def _lambda_handler_impl(event, context):
     event = event or {}
     doctor_id = event.get("doctorId")
 
@@ -425,3 +425,48 @@ def lambda_handler(event, context):
     }
     log.info(json.dumps({"event": "slot_materialisation_complete", **result}))
     return result
+
+def lambda_handler(event, context):
+    event = event or {}
+    request_id = getattr(context, "aws_request_id", None)
+    log.info(json.dumps({
+        "event": "slot_materialisation_started",
+        "service": "slot-materializer",
+        "requestId": request_id,
+        "doctorId": str(event.get("doctorId")) if event.get("doctorId") is not None else None,
+        "dateFrom": event.get("dateFrom"),
+        "dateTo": event.get("dateTo"),
+    }))
+    try:
+        result = _lambda_handler_impl(event, context)
+        log.info(json.dumps({
+            "event": "slot_materialisation_succeeded",
+            "service": "slot-materializer",
+            "status": "SUCCEEDED",
+            "statusCode": 200,
+            "requestId": request_id,
+            **result,
+        }, default=str))
+        return result
+    except (ValueError, TypeError) as exc:
+        log.warning(json.dumps({
+            "event": "slot_materialisation_rejected",
+            "service": "slot-materializer",
+            "status": "REJECTED",
+            "statusCode": 400,
+            "requestId": request_id,
+            "reasonType": type(exc).__name__,
+            "reason": str(exc),
+        }))
+        raise
+    except Exception as exc:
+        log.exception(json.dumps({
+            "event": "slot_materialisation_failed",
+            "service": "slot-materializer",
+            "status": "FAILED",
+            "statusCode": 500,
+            "requestId": request_id,
+            "errorType": type(exc).__name__,
+        }))
+        raise
+

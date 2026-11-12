@@ -2045,9 +2045,15 @@ def _materializer_trigger(user_id=None):
     try:
         _dispatch_materializer(user_id)
 
-    except Exception:
+    except Exception as exc:
         # Never fail the doctor's save; the daily schedule is the fallback.
-        logger.exception("Could not start materializer invocation")
+        logger.warning(json.dumps({
+            "event": "slot_materializer_dispatch_deferred",
+            "outcome": "primary_schedule_save_preserved",
+            "fallback": "scheduled_materializer",
+            "errorType": type(exc).__name__,
+            "reason": str(exc),
+        }))
 
 
 def _collection_and_materialize(
@@ -2652,7 +2658,7 @@ def _get_slot(slot_id):
 # MAIN LAMBDA HANDLER
 # ---------------------------------------------------------
 
-def lambda_handler(event, context):
+def _lambda_handler_impl(event, context):
     request_id = getattr(context, "aws_request_id", None)
 
     request_context = event.get("requestContext") or {}
@@ -2937,3 +2943,54 @@ def lambda_handler(event, context):
                 "requestId": request_id,
             },
         )
+
+def _log_http_response(event, context, result, started_at):
+    """Emit one safe, structured response record for every HTTP invocation."""
+    import time as _time
+    status = int((result or {}).get("statusCode", 500))
+    if 200 <= status < 300:
+        level, outcome = "info", "success"
+    elif status in (401, 403):
+        level, outcome = "warning", "access_denied"
+    elif status == 409:
+        level, outcome = "info", "business_conflict"
+    elif status == 404:
+        level, outcome = "info", "resource_not_found"
+    elif 400 <= status < 500:
+        level, outcome = "warning", "client_rejected"
+    else:
+        level, outcome = "error", "server_failure"
+    headers = {str(k).lower(): v for k, v in (event.get("headers") or {}).items()}
+    rc = event.get("requestContext") or {}
+    http = rc.get("http") or {}
+    record = {
+        "event": "http_response",
+        "service": 'application-api',
+        "method": event.get("httpMethod") or http.get("method"),
+        "path": event.get("path") or event.get("rawPath"),
+        "statusCode": status,
+        "statusDescription": (
+            "Request processed successfully" if 200 <= status < 300 else
+            "Authentication is missing, invalid, expired, or inactive" if status == 401 else
+            "Authenticated user is not permitted to perform this operation" if status == 403 else
+            "Requested resource or route was not found" if status == 404 else
+            "Request conflicts with the current resource or idempotency state" if status == 409 else
+            "Request validation or method check was rejected" if 400 <= status < 500 else
+            "Unexpected application or dependency failure"
+        ),
+        "outcome": outcome,
+        "requestId": getattr(context, "aws_request_id", None),
+        "correlationId": headers.get("x-correlation-id") or rc.get("requestId"),
+        "durationMs": round((_time.monotonic() - started_at) * 1000, 2),
+    }
+    payload = json.dumps(record, default=str, separators=(",", ":"))
+    getattr(logger, level)(payload)
+
+
+def lambda_handler(event, context):
+    import time as _time
+    started_at = _time.monotonic()
+    result = _lambda_handler_impl(event, context)
+    _log_http_response(event or {}, context, result, started_at)
+    return result
+

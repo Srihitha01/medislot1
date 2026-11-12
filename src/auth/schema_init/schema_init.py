@@ -494,7 +494,7 @@ def _remove_availability_exceptions(cursor, database):
 # MAIN LAMBDA HANDLER
 # ---------------------------------------------------------
 
-def lambda_handler(event, context):
+def _lambda_handler_impl(event, context):
     """
     Supported actions:
 
@@ -681,3 +681,22 @@ def lambda_handler(event, context):
                 logger.warning(
                     "Failed to close database connection"
                 )
+
+def lambda_handler(event, context):
+    import time
+    started = time.monotonic()
+    result = _lambda_handler_impl(event, context)
+    status = int((result or {}).get("statusCode", 500))
+    level = "info" if 200 <= status < 300 or status in (404, 409) else ("warning" if status < 500 else "error")
+    record = {
+        "event": "http_response",
+        "service": "schema-init",
+        "action": (event or {}).get("action", "initialize"),
+        "statusCode": status,
+        "statusDescription": "Schema operation completed successfully" if status < 300 else ("Schema precondition or conflict was rejected" if status < 500 else "Schema initialization dependency or runtime failure"),
+        "outcome": "success" if status < 300 else ("client_rejected" if status < 500 else "server_failure"),
+        "requestId": getattr(context, "aws_request_id", None),
+        "durationMs": round((time.monotonic() - started) * 1000, 2),
+    }
+    getattr(logger, level)(json.dumps(record, separators=(",", ":")))
+    return result

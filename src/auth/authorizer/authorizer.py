@@ -331,7 +331,11 @@ def authorizer(event, context):
     """
 
     try:
-        logger.info("MediSlot authorizer started")
+        logger.info(json.dumps({
+            "event": "authorization_started",
+            "service": "authorizer",
+            "requestId": getattr(context, "aws_request_id", None),
+        }))
 
         # Step 1: Extract bearer token.
         token = get_bearer_token(event)
@@ -364,16 +368,38 @@ def authorizer(event, context):
         )
 
     except (jwt.InvalidTokenError, ValueError) as exc:
-        logger.warning("Authorization rejected: %s", str(exc))
+        logger.warning(json.dumps({
+            "event": "authorization_decision",
+            "service": "authorizer",
+            "decision": "DENY",
+            "statusCode": 401,
+            "outcome": "expected_authentication_rejection",
+            "reasonType": type(exc).__name__,
+            "requestId": getattr(context, "aws_request_id", None),
+        }))
+        # API Gateway TOKEN authorizers use this documented signal for HTTP 401.
         raise Exception("Unauthorized")
 
-    except (BotoCoreError, ClientError):
-        logger.exception("AWS service error during authorization")
-        raise Exception("Unauthorized")
+    except (BotoCoreError, ClientError) as exc:
+        logger.exception(json.dumps({
+            "event": "authorization_dependency_failure",
+            "service": "authorizer",
+            "statusCode": 500,
+            "errorType": type(exc).__name__,
+            "requestId": getattr(context, "aws_request_id", None),
+        }))
+        # Do not disguise an AWS outage as invalid credentials.
+        raise
 
-    except Exception:
-        logger.exception("Unexpected authorizer error")
-        raise Exception("Unauthorized")
+    except Exception as exc:
+        logger.exception(json.dumps({
+            "event": "authorization_unexpected_failure",
+            "service": "authorizer",
+            "statusCode": 500,
+            "errorType": type(exc).__name__,
+            "requestId": getattr(context, "aws_request_id", None),
+        }))
+        raise
 
 
 # API Gateway Lambda handler.
