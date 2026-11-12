@@ -2516,6 +2516,13 @@ def _patient_profile(user_id, method, event):
             return _response(200, {"message": "Patient profile saved"})
     except Exception:
         conn.rollback()
+        logger.exception(
+            json.dumps({
+                "event": "patient_profile_operation_failed",
+                "operation": method,
+                "userId": str(user_id),
+            }, separators=(",", ":"))
+        )
         raise
     finally:
         conn.close()
