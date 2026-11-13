@@ -18,6 +18,7 @@
   <nav class="nav-menu" aria-label="Patient navigation">
     <button class="active" data-panel="overview"><span class="nav-icon">▦</span>Overview</button>
     <button data-panel="find"><span class="nav-icon">⌕</span>Find a doctor</button>
+    <button data-panel="appointments"><span class="nav-icon">▣</span>My appointments</button>
     <button data-panel="profile"><span class="nav-icon">◉</span>My profile</button>
   </nav>
   <div class="sidebar-bottom"><div class="account"><div class="avatar" id="sideAvatar">P</div><div><strong id="sideName">Patient account</strong><small>Patient portal</small></div></div><a class="signout" href="/logout">↪ &nbsp;Sign out</a></div>
@@ -41,8 +42,16 @@
   </section>
   <section class="panel" id="findPanel">
     <div class="section-intro"><h2>Find your doctor</h2><p>Search by doctor name, specialisation, hospital or city. Combine filters to narrow your results.</p></div>
-    <section class="box"><form id="search"><div class="form-grid"><div><label>Doctor name</label><input name="name" placeholder="e.g. Sharma"></div><div><label>Specialisation</label><input name="specialisation" placeholder="e.g. Cardiology"></div><div><label>Hospital</label><input name="hospital" placeholder="e.g. MediSlot Clinic"></div><div><label>City</label><input name="city" placeholder="e.g. Hyderabad"></div></div><button class="primary-btn" type="submit">Search doctors</button></form><div id="results" class="doctor-results" aria-live="polite"><p class="empty">Enter a search filter or browse all available doctors.</p></div><div id="paging"></div></section>
+    <section class="box"><form id="search"><div class="form-grid"><div><label>Doctor name</label><input name="name" placeholder="e.g. Sharma"></div><div><label>Specialisation</label><select name="specialisation" id="specialisationFilter"><option value="">All specialisations</option></select></div><div><label>Hospital</label><input name="hospital" placeholder="e.g. MediSlot Clinic"></div><div><label>City</label><input name="city" placeholder="e.g. Hyderabad"></div></div><button class="primary-btn" type="submit">Search doctors</button></form><div id="results" class="doctor-results" aria-live="polite"><p class="empty">Enter a search filter or browse all available doctors.</p></div><div id="paging"></div></section>
     <div id="doctorView" class="doctor-view" hidden><div class="box-head"><h3>Doctor details and availability</h3><button type="button" class="link-button" id="backHome">← Back to search</button></div><section class="doctor-profile-card"><div class="doctor-profile-heading"><img id="doctorPhoto" class="doctor-photo" alt="Doctor profile photo" hidden><span id="doctorPhotoFallback" class="doctor-photo-fallback">🩺</span><div class="doctor-identity"><span class="eyebrow">DOCTOR PROFILE</span><h2 id="doctorName"></h2><p id="doctorSpecialisation"></p><p id="doctorHospital"></p></div></div><div id="doctorConsultations" class="consultation-list"></div></section><section class="doctor-slots-section"><span class="eyebrow">APPOINTMENT AVAILABILITY</span><h3 style="margin:7px 0">Available appointment slots</h3><p class="subtext">Choose a suitable date and time from the available appointments.</p><div id="slots" class="doctor-slots-grid"></div></section></div>
+  </section>
+  <section class="panel" id="appointmentsPanel">
+    <div class="section-intro"><h2>My appointments</h2><p>Your appointments are private and linked to your signed-in patient account.</p></div>
+    <section class="box">
+      <div class="box-head"><div><h3>Appointment history</h3><p>Upcoming and previous consultations</p></div><button type="button" class="secondary-btn" id="refreshAppointments">Refresh</button></div>
+      <div class="appointment-filters"><label for="appointmentStatus">Filter appointments</label><select id="appointmentStatus"><option value="all">All appointments</option><option value="upcoming">Upcoming</option><option value="past">Past</option><option value="cancelled">Cancelled</option></select></div>
+      <div id="appointmentsList" aria-live="polite"><p class="empty">Loading your appointments…</p></div>
+    </section>
   </section>
   <section class="panel" id="profilePanel">
     <div class="section-intro"><h2>My health profile</h2><p>Your information is private to your account. Keep it accurate to help support your care.</p></div>
@@ -56,33 +65,9 @@
 const BASE={{ api_base_url|tojson }},TOKEN={{ access_token|tojson }};
 const statusBox=document.querySelector('#status');
 function notice(msg,error=false){statusBox.style.display='block';statusBox.className=error?'error':'';statusBox.textContent=msg;}
-async function api(path,opts={}){
-  let response;
-  try {
-    response=await fetch(BASE+path,{
-      ...opts,
-      headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json',...(opts.headers||{})}
-    });
-  } catch (networkError) {
-    console.error('MediSlot API network failure', {path, error:networkError});
-    throw new Error('Could not reach the MediSlot API. Check the API URL and network connection.');
-  }
-  const raw=await response.text();
-  let data={};
-  if(raw){try{data=JSON.parse(raw)}catch{data={message:raw.slice(0,300)}}}
-  if(!response.ok){
-    const message=(data && typeof data.message==='string' && data.message.trim())
-      ? data.message.trim()
-      : 'The server returned an empty or invalid error message.';
-    const requestId=data && (data.requestId || data.request_id);
-    const detail=`${message} (HTTP ${response.status}, ${opts.method||'GET'} ${path})${requestId?' · Request ID: '+requestId:''}`;
-    console.error('MediSlot API request failed', {path, method:opts.method||'GET', status:response.status, requestId, response:data});
-    throw new Error(detail);
-  }
-  return data;
-}
+async function api(path,opts={}){const r=await fetch(BASE+path,{...opts,headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json',...(opts.headers||{})}});let data={};try{data=await r.json()}catch{}if(!r.ok)throw Error(data.message||'Request failed ('+r.status+')');return data;}
 function node(tag,text,cls){const e=document.createElement(tag);e.textContent=text??'';if(cls)e.className=cls;return e;}
-function showPanel(name){document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-menu button').forEach(b=>b.classList.toggle('active',b.dataset.panel===name));document.querySelector('#'+name+'Panel').classList.add('active');const labels={overview:'Overview',find:'Find a doctor',profile:'My profile'};document.querySelector('#pageTitle').textContent=labels[name];document.querySelector('#crumbCurrent').textContent=labels[name].toUpperCase();window.scrollTo({top:0,behavior:'smooth'});}
+function showPanel(name){document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-menu button').forEach(b=>b.classList.toggle('active',b.dataset.panel===name));document.querySelector('#'+name+'Panel').classList.add('active');const labels={overview:'Overview',find:'Find a doctor',appointments:'My appointments',profile:'My profile'};document.querySelector('#pageTitle').textContent=labels[name];document.querySelector('#crumbCurrent').textContent=labels[name].toUpperCase();window.scrollTo({top:0,behavior:'smooth'});}
 document.querySelectorAll('[data-panel]').forEach(b=>b.addEventListener('click',()=>showPanel(b.dataset.panel)));document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>showPanel(b.dataset.go)));
 document.querySelector('#todayDate').textContent=new Intl.DateTimeFormat('en-IN',{weekday:'short',day:'numeric',month:'short',year:'numeric'}).format(new Date());
 async function profile(){try{const d=await api('/patients/me');const p=d.profile||{};for(const el of document.querySelector('#profile').elements){if(el.name)el.value=p[el.name]||''}const name=p.fullName||'Patient';document.querySelector('#welcomeTitle').textContent='Welcome'+(name!=='Patient'?', '+name.split(' ')[0]:' to MediSlot')+' 👋';document.querySelector('#sideName').textContent=name;document.querySelector('#sideAvatar').textContent=(name.trim()[0]||'P').toUpperCase();const complete=['fullName','phone','city','dateOfBirth'].every(k=>Boolean(p[k]));document.querySelector('#profileStatus').textContent=complete?'Complete':'Needs update';}catch(e){notice(e.message,true);document.querySelector('#profileStatus').textContent='Unavailable';}}
@@ -93,5 +78,47 @@ async function search(page=1){currentPage=page;const q=new URLSearchParams(new F
 document.querySelector('#search').onsubmit=e=>{e.preventDefault();search(1)};
 document.querySelector('#backHome').onclick=()=>{document.querySelector('#doctorView').hidden=true;document.querySelector('#results').scrollIntoView({behavior:'smooth',block:'start'});};
 async function doctor(id){const view=document.querySelector('#doctorView'),slots=document.querySelector('#slots'),consultations=document.querySelector('#doctorConsultations');view.hidden=false;slots.replaceChildren(node('p','Loading available appointments…','empty'));view.scrollIntoView({behavior:'smooth',block:'start'});consultations.replaceChildren();const photo=document.querySelector('#doctorPhoto'),fallback=document.querySelector('#doctorPhotoFallback');photo.hidden=true;photo.removeAttribute('src');fallback.hidden=false;try{const d=(await api('/doctors/'+id)).doctor;document.querySelector('#doctorName').textContent=d.name||'Doctor';document.querySelector('#doctorSpecialisation').textContent=d.specialisation||'Specialisation not provided';document.querySelector('#doctorHospital').textContent=[d.hospital,d.city].filter(Boolean).join(' · ');if(d.photoUrl){photo.onload=()=>{photo.hidden=false;fallback.hidden=true};photo.onerror=()=>{photo.hidden=true;fallback.hidden=false};photo.src=d.photoUrl;}for(const t of(d.consultationTypes||[]))consultations.append(node('div',`${t.name} · ${t.durationMinutes} min · ₹${t.fee}`,'consultation-chip'));const start=new Date(),end=new Date(start.getTime()+14*86400000),params=new URLSearchParams({startFrom:start.toISOString(),startTo:end.toISOString()}),data=await api('/doctors/'+id+'/slots?'+params);slots.replaceChildren();if(!data.items.length)slots.append(node('p','No open slots in the next 14 days.','empty'));const consultationById=new Map((d.consultationTypes||[]).map(t=>[String(t.consultationTypeId),t]));const fmt=(v,o)=>new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kolkata',...o}).format(new Date(v));for(const item of data.items){const row=node('div','','doctor-slot-card'),toggle=node('button','','doctor-slot-toggle');toggle.type='button';const date=fmt(item.startUtc,{day:'2-digit',month:'short',year:'numeric'}),from=fmt(item.startUtc,{hour:'numeric',minute:'2-digit',hourCycle:'h23'}),to=fmt(item.endUtc,{hour:'numeric',minute:'2-digit',hourCycle:'h23'});toggle.append(node('span',`${date} · ${from}–${to}`),node('span',`${item.freeSeats} seat${item.freeSeats===1?'':'s'} available`,'slot-seats'));const extra=node('div','','doctor-slot-extra');extra.hidden=true;const consult=consultationById.get(String(item.consultationTypeId));extra.textContent=`Consultation: ${consult?.name||'Details unavailable'} · Fee: ${consult&&consult.fee!=null?'₹'+consult.fee:'Not provided'} · Duration: ${item.durationMinutes||consult?.durationMinutes||'—'} minutes`;toggle.setAttribute('aria-expanded','false');toggle.onclick=()=>{extra.hidden=!extra.hidden;toggle.setAttribute('aria-expanded',String(!extra.hidden))};row.append(toggle,extra);slots.append(row)}}catch(e){slots.replaceChildren(node('p',e.message,'empty'))}}
+async function loadSpecialisations(){
+  const select=document.querySelector('#specialisationFilter');
+  try{
+    const data=await api('/reference/specialisations');
+    for(const item of (data.items||[])){
+      const option=document.createElement('option');
+      option.value=item.name; option.textContent=item.name; select.append(option);
+    }
+  }catch(err){ console.error('Specialisation list could not be loaded:',err); }
+}
+async function loadAppointments(){
+  const out=document.querySelector('#appointmentsList');
+  out.replaceChildren(node('p','Loading your appointments…','empty'));
+  try{
+    const data=await api('/patients/me/appointments');
+    const items=data.items||[];
+    const filter=document.querySelector('#appointmentStatus').value;
+    const now=Date.now();
+    const filtered=items.filter(a=>{
+      const start=new Date(a.slotStartUtc).getTime();
+      const cancelled=String(a.status||'').toLowerCase().includes('cancel');
+      if(filter==='cancelled') return cancelled;
+      if(filter==='upcoming') return !cancelled && start>=now;
+      if(filter==='past') return !cancelled && start<now;
+      return true;
+    });
+    out.replaceChildren();
+    if(!filtered.length){out.append(node('p','No appointments found for this filter. Your bookings will appear here.','empty'));return;}
+    for(const a of filtered){
+      const card=node('article','','card');
+      const date=new Intl.DateTimeFormat('en-IN',{dateStyle:'medium',timeStyle:'short',timeZone:'Asia/Kolkata'}).format(new Date(a.slotStartUtc));
+      card.append(node('h4',a.doctorName||'Doctor'));
+      card.append(node('p',`${a.specialisation||'Specialist'} · ${a.consultationType||'Consultation'}`));
+      card.append(node('p',`${date} IST · ${a.status||'Booked'} · ₹${a.feeAmount??'—'}`));
+      out.append(card);
+    }
+  }catch(err){out.replaceChildren(node('p',err.message,'empty'));}
+}
+document.querySelector('#refreshAppointments').addEventListener('click',loadAppointments);
+document.querySelector('#appointmentStatus').addEventListener('change',loadAppointments);
+document.querySelector('[data-panel="appointments"]').addEventListener('click',loadAppointments);
+loadSpecialisations();
 profile();
 </script></body></html>
