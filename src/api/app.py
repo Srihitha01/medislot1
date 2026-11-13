@@ -2654,43 +2654,6 @@ def _get_slot(slot_id):
     return _response(200, {"item": slot})
 
 
-def _patient_appointments(user_id):
-    """Return only appointments belonging to the authenticated patient."""
-    conn = _db_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                    a.appointment_id AS appointmentId,
-                    a.slot_id AS slotId,
-                    a.slot_start_utc AS slotStartUtc,
-                    a.slot_end_utc AS slotEndUtc,
-                    a.status AS status,
-                    a.fee_amount AS feeAmount,
-                    u.name AS doctorName,
-                    sp.name AS specialisation,
-                    ct.name AS consultationType,
-                    ct.duration_min AS durationMinutes
-                FROM appointments a
-                JOIN doctors d ON d.user_id = a.doctor_user_id
-                JOIN users u ON u.user_id = d.user_id
-                LEFT JOIN specialisations sp
-                    ON sp.specialisation_id = d.specialisation_id
-                JOIN consultation_types ct
-                    ON ct.consultation_type_id = a.consultation_type_id
-                WHERE a.patient_user_id = %s
-                ORDER BY a.slot_start_utc DESC
-                LIMIT 100
-                """,
-                (user_id,),
-            )
-            items = cur.fetchall()
-        return _response(200, {"items": items, "count": len(items)})
-    finally:
-        conn.close()
-
-
 # ---------------------------------------------------------
 # MAIN LAMBDA HANDLER
 # ---------------------------------------------------------
@@ -2762,15 +2725,6 @@ def _lambda_handler_impl(event, context):
             and path == "/reference/hospitals"
         ):
             return _reference_data("hospitals")
-
-        # Patient-owned appointment history
-        if (
-            path == "/patients/me/appointments"
-            and method == "GET"
-        ):
-            if role != "patient":
-                return _response(403, {"message": "Only patients can view their appointments"})
-            return _patient_appointments(user_id)
 
         # Patient portal
         if path == "/patients/me":
