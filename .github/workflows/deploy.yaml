@@ -104,7 +104,8 @@ jobs:
             src/doctor/requirements.txt \
             src/doctor/templates/login.html \
             src/doctor/templates/welcome.html \
-            src/doctor/templates/doctor_dashboard.html; do
+            src/doctor/templates/doctor_dashboard.html \
+            src/doctor/templates/patient_dashboard.html; do
 
             if [[ ! -s "$file" ]]; then
               echo "::error::Missing or empty dashboard file: $file"
@@ -1129,7 +1130,8 @@ jobs:
             src/doctor/requirements.txt \
             src/doctor/templates/login.html \
             src/doctor/templates/welcome.html \
-            src/doctor/templates/doctor_dashboard.html; do
+            src/doctor/templates/doctor_dashboard.html \
+            src/doctor/templates/patient_dashboard.html; do
 
             if [[ ! -s "$file" ]]; then
               echo "::error::Missing or empty dashboard file: $file"

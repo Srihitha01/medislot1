@@ -2521,6 +2521,59 @@ def _patient_profile(user_id, method, event):
         conn.close()
 
 
+
+def _patient_appointments(user_id, event):
+    """Return only the authenticated patient's appointment and refund history."""
+    params = _query(event)
+    requested_status = params.get("status")
+    allowed = {"booked", "confirmed", "completed", "cancelled", "rescheduled", "no_show"}
+    if requested_status and requested_status not in allowed:
+        return _response(400, {"message": "Invalid appointment status", "allowedStatuses": sorted(allowed)})
+
+    sql = """
+        SELECT
+            a.appointment_id AS appointmentId,
+            a.slot_start_utc AS slotStartUtc,
+            a.slot_end_utc AS slotEndUtc,
+            a.status AS status,
+            a.fee_amount AS feeAmount,
+            u.name AS doctorName,
+            sp.name AS specialisation,
+            h.name AS hospital,
+            h.city AS city,
+            ct.name AS consultationType,
+            ct.duration_min AS durationMinutes,
+            r.refund_id AS refundId,
+            r.reason AS refundReason,
+            r.tier AS refundTier,
+            r.refund_percent AS refundPercent,
+            r.refund_amount AS refundAmount,
+            r.created_at AS refundCreatedAt
+        FROM appointments a
+        INNER JOIN users u ON u.user_id = a.doctor_user_id AND u.role = 'doctor'
+        LEFT JOIN doctors d ON d.user_id = a.doctor_user_id
+        LEFT JOIN specialisations sp ON sp.specialisation_id = d.specialisation_id
+        LEFT JOIN hospitals h ON h.hospital_id = d.hospital_id
+        LEFT JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+        LEFT JOIN refund_ledger r ON r.appointment_id = a.appointment_id
+        WHERE a.patient_user_id = %s
+    """
+    values = [int(user_id)]
+    if requested_status:
+        sql += " AND a.status = %s"
+        values.append(requested_status)
+    sql += " ORDER BY a.slot_start_utc DESC, a.appointment_id DESC LIMIT 200"
+
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(values))
+            rows = cur.fetchall()
+        return _response(200, {"items": rows, "count": len(rows)})
+    finally:
+        conn.close()
+
+
 def _pagination(params):
     try:
         page = int(params.get("page", "1"))
@@ -2563,12 +2616,28 @@ def _doctor_search(event):
             total = int(cur.fetchone()["total"])
             cur.execute(
                 f"""SELECT d.user_id AS doctorId, u.name AS name,
-                    sp.name AS specialisation, h.name AS hospital, h.city AS city
+                    sp.name AS specialisation, h.name AS hospital, h.city AS city,
+                    d.qualifications AS qualifications,
+                    d.years_experience AS yearsExperience,
+                    d.photo_key AS photoKey
                     {joins} WHERE {where}
                     ORDER BY u.name, d.user_id LIMIT %s OFFSET %s""",
                 tuple(values) + (page_size, (page - 1) * page_size),
             )
             items = cur.fetchall()
+        photo_bucket = os.environ.get("DOCTOR_PHOTOS_BUCKET")
+        for item in items:
+            photo_key = item.pop("photoKey", None)
+            item["photoUrl"] = None
+            if photo_key and photo_bucket:
+                try:
+                    item["photoUrl"] = _s3_client().generate_presigned_url(
+                        "get_object",
+                        Params={"Bucket": photo_bucket, "Key": photo_key},
+                        ExpiresIn=900,
+                    )
+                except Exception:
+                    logger.exception("Doctor search photo URL generation failed")
         return _response(200, {
             "items": items, "page": page, "pageSize": page_size,
             "total": total, "totalPages": (total + page_size - 1) // page_size,
@@ -2731,6 +2800,12 @@ def _lambda_handler_impl(event, context):
             if role != "patient":
                 return _response(403, {"message": "Only patients can manage patient profiles"})
             return _patient_profile(user_id, method, event)
+
+        # Patient appointment history (strictly scoped to authenticated patient)
+        if method == "GET" and path == "/patients/me/appointments":
+            if role != "patient":
+                return _response(403, {"message": "Only patients can view their appointments"})
+            return _patient_appointments(user_id, event)
 
         # Public doctor discovery (before the /doctors/me routes)
         if method == "GET" and path == "/doctors/search":
