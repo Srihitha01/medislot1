@@ -221,6 +221,7 @@ def _schedule_slots_for_day(schedule, target_day):
                         "durationMinutes": duration,
                         "capacity": capacity,
                         "bookedCount": 0,
+            "version": 0,
                         "status": "BLACKOUT" if timed_blocked else slot_status,
                         "source": "MATERIALIZED",
                         "expiresAt": expiry,

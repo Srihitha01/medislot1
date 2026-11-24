@@ -42,6 +42,8 @@ logger.setLevel(logging.INFO)
 
 _DDB = None
 _SSM = None
+_EVENTS = boto3.client("events")
+_CLOUDWATCH = boto3.client("cloudwatch")
 
 
 # ---------------------------------------------------------
@@ -2183,6 +2185,108 @@ def _doctor_appointments(user_id, event):
 # PATIENT APPOINTMENT BOOKING
 # ---------------------------------------------------------
 
+
+def _publish_medislot_event(detail_type, detail):
+    """Publish a domain event. Failures are logged; callers must not undo committed SQL."""
+    bus_name = os.environ.get("EVENT_BUS_NAME", "default")
+    try:
+        result = _EVENTS.put_events(Entries=[{
+            "EventBusName": bus_name,
+            "Source": "medislot.appointments",
+            "DetailType": detail_type,
+            "Time": datetime.now(timezone.utc),
+            "Detail": json.dumps(detail, default=str),
+        }])
+        if result.get("FailedEntryCount", 0):
+            logger.error("EventBridge rejected %s event: %s", detail_type, result.get("Entries"))
+            return False
+        logger.info("EVENT_PUBLISHED type=%s bus=%s", detail_type, bus_name)
+        return True
+    except Exception:
+        logger.exception("EVENT_PUBLISH_FAILED type=%s", detail_type)
+        return False
+
+
+def _put_booking_retry_metric(retries):
+    try:
+        _CLOUDWATCH.put_metric_data(
+            Namespace="MediSlot/Bookings",
+            MetricData=[{
+                "MetricName": "BookingConflictRetries",
+                "Dimensions": [{"Name": "Environment", "Value": os.environ.get("ENVIRONMENT", "dev")}],
+                "Unit": "Count",
+                "Value": float(retries),
+                "Timestamp": datetime.now(timezone.utc),
+            }],
+        )
+    except Exception:
+        logger.exception("Unable to publish BookingConflictRetries metric")
+
+
+def _put_cancellation_tier_metric(tier):
+    try:
+        _CLOUDWATCH.put_metric_data(
+            Namespace="MediSlot/Appointments",
+            MetricData=[{
+                "MetricName": "CancellationsByTier",
+                "Dimensions": [
+                    {"Name": "Environment", "Value": os.environ.get("ENVIRONMENT", "dev")},
+                    {"Name": "Tier", "Value": str(tier)},
+                ],
+                "Unit": "Count",
+                "Value": 1.0,
+                "Timestamp": datetime.now(timezone.utc),
+            }],
+        )
+    except Exception:
+        logger.exception("Unable to publish CancellationsByTier metric")
+
+
+def _refund_policy():
+    """Read JSON policy from SSM; safe defaults match the approved milestone policy."""
+    parameter_name = os.environ.get(
+        "REFUND_POLICY_PARAMETER",
+        f"/medislot/{os.environ.get('ENVIRONMENT', 'dev')}/refund/policy",
+    )
+    default = [
+        {"tier": "FULL", "minimumHours": 48, "refundPercent": 100},
+        {"tier": "PARTIAL_75", "minimumHours": 24, "refundPercent": 75},
+        {"tier": "PARTIAL_50", "minimumHours": 2, "refundPercent": 50},
+        {"tier": "NONE", "minimumHours": 0, "refundPercent": 0},
+    ]
+    try:
+        raw = _parameter(parameter_name, decrypt=False)
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list) or not parsed:
+            raise ValueError("Refund policy must be a non-empty JSON array")
+        return sorted(parsed, key=lambda row: float(row["minimumHours"]), reverse=True)
+    except Exception:
+        logger.warning("Refund policy parameter unavailable/invalid; using approved defaults: %s", parameter_name)
+        return default
+
+
+def _calculate_refund(fee_amount, slot_start_utc, now_utc=None):
+    """Boundary semantics: >48h=100%; (24h,48h]=75%; (2h,24h]=50%; <2h=0%."""
+    now_utc = now_utc or datetime.now(timezone.utc)
+    start = slot_start_utc
+    if isinstance(start, str):
+        start = datetime.fromisoformat(start.replace("Z", "+00:00"))
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    hours = (start.astimezone(timezone.utc) - now_utc.astimezone(timezone.utc)).total_seconds() / 3600
+    if hours > 48:
+        tier, percent = "FULL", 100
+    elif hours >= 24:
+        tier, percent = "PARTIAL_75", 75
+    elif hours >= 2:
+        tier, percent = "PARTIAL_50", 50
+    else:
+        tier, percent = "NONE", 0
+    fee = Decimal(str(fee_amount))
+    refund = (fee * Decimal(percent) / Decimal(100)).quantize(Decimal("0.01"))
+    return tier, percent, refund, hours
+
+
 def _book_appointment(event, user_id, role):
     """Book a slot with DynamoDB capacity protection and request idempotency.
 
@@ -2248,18 +2352,49 @@ def _book_appointment(event, user_id, role):
     conn = None
 
     try:
-        updated = slots.update_item(
-            Key={"slotId": slot_id},
-            UpdateExpression="SET bookedCount = bookedCount + :one, updatedAt = :now",
-            ConditionExpression=(
-                "attribute_exists(slotId) AND #st = :open "
-                "AND bookedCount < capacity AND startUtc > :now"
-            ),
-            ExpressionAttributeNames={"#st": "status"},
-            ExpressionAttributeValues={":one": 1, ":now": now, ":open": "OPEN"},
-            ReturnValues="ALL_NEW",
-        )["Attributes"]
-        reserved = True
+        # OCC on the slot item. Every competing writer must present the version
+        # it observed; successful writes increment it atomically. The bounded
+        # retry loop re-reads strongly consistently and never serialises callers.
+        max_attempts = int(os.environ.get("BOOKING_MAX_ATTEMPTS", "5"))
+        retries = 0
+        updated = None
+        for attempt in range(max_attempts):
+            current = slots.get_item(Key={"slotId": slot_id}, ConsistentRead=True).get("Item")
+            if not current:
+                raise ValueError("Slot does not exist")
+            current_version = int(current.get("version", 0))
+            try:
+                updated = slots.update_item(
+                    Key={"slotId": slot_id},
+                    UpdateExpression="SET bookedCount = if_not_exists(bookedCount, :zero) + :one, #ver = :next, updatedAt = :now",
+                    ConditionExpression=(
+                        "attribute_exists(slotId) AND #st = :open "
+                        "AND bookedCount < capacity AND startUtc > :now "
+                        "AND (attribute_not_exists(#ver) OR #ver = :expected)"
+                    ),
+                    ExpressionAttributeNames={"#st": "status", "#ver": "version"},
+                    ExpressionAttributeValues={
+                        ":zero": 0, ":one": 1, ":now": now, ":open": "OPEN",
+                        ":expected": current_version, ":next": current_version + 1,
+                    },
+                    ReturnValues="ALL_NEW",
+                )["Attributes"]
+                reserved = True
+                break
+            except ClientError as conflict:
+                if conflict.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
+                latest = slots.get_item(Key={"slotId": slot_id}, ConsistentRead=True).get("Item")
+                if not latest or latest.get("status") != "OPEN" or int(latest.get("bookedCount", 0)) >= int(latest.get("capacity", 0)) or str(latest.get("startUtc", "")) <= now:
+                    _put_booking_retry_metric(retries)
+                    raise
+                if attempt == max_attempts - 1:
+                    _put_booking_retry_metric(retries)
+                    raise
+                retries += 1
+                logger.warning("BOOKING_OCC_CONFLICT slotId=%s attempt=%s retry=%s", slot_id, attempt + 1, retries)
+                time.sleep(min(0.025 * (2 ** attempt), 0.25) + (0.005 * (attempt + 1)))
+        _put_booking_retry_metric(retries)
 
         consultation_id = str(updated.get("consultationTypeId", ""))
         if not re.fullmatch(r"[1-9][0-9]{0,19}", consultation_id):
@@ -2300,6 +2435,13 @@ def _book_appointment(event, user_id, role):
             appointment_id = int(cur.lastrowid)
         conn.commit()
         committed = True
+        _publish_medislot_event("AppointmentBooked", {
+            "appointmentId": appointment_id,
+            "patientId": int(patient_id),
+            "doctorId": int(updated["doctorId"]),
+            "slotId": slot_id,
+            "feeAmount": str(consultation["fee_amount"]),
+        })
 
         response_body = {
             "message": "Appointment booked successfully",

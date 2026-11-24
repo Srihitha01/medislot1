@@ -51,6 +51,9 @@ Globals:
           Fn::ImportValue: !Sub medislot-${Environment}-DoctorPhotosBucketName
         SLOT_MATERIALIZER_FUNCTION: !Sub medislot-${Environment}-slot-materializer
         DISPATCH_LOG_TABLE: !Sub medislot-${Environment}-dispatch-log
+        EVENT_BUS_NAME: default
+        REFUND_POLICY_PARAMETER: !Sub /medislot/${Environment}/refund/policy
+        BOOKING_MAX_ATTEMPTS: "5"
 
 Resources:
 
