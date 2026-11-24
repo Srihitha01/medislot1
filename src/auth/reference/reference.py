@@ -1,8 +1,7 @@
-import json, os, logging
+import json, os
 import boto3, pymysql
 from botocore.exceptions import BotoCoreError, ClientError
-
-logger = logging.getLogger(__name__)
+logger=logging.getLogger()
 logger.setLevel(logging.INFO)
 ssm=boto3.client("ssm")
 def param(name,decrypt=False): return ssm.get_parameter(Name=name,WithDecryption=decrypt)["Parameter"]["Value"]
