@@ -486,6 +486,15 @@ def patient_dashboard():
     return render_template("patient_dashboard.html", api_base_url=API_BASE_URL,
                            access_token=session["access_token"])
 
+@app.get("/patient/book-appointment")
+@patient_required
+def patient_book_appointment():
+    return render_template(
+        "book_appointment.html",
+        api_base_url=API_BASE_URL,
+        access_token=session["access_token"],
+    )
+
 # --------------------------------------------------
 # Logout
 # --------------------------------------------------
