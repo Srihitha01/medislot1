@@ -11,87 +11,93 @@
 @media(max-width:1000px){.stats{grid-template-columns:repeat(3,minmax(0,1fr))}.content-grid{grid-template-columns:1fr}.main{padding:24px}}
 @media(max-width:720px){:root{--sidebar:0px}.sidebar{position:static;width:100%;height:auto;padding:14px 15px;border-right:0;border-bottom:1px solid var(--border)}.logo{margin:0 0 10px;padding:0 5px}.nav-label,.sidebar-bottom{display:none}.nav-menu{flex-direction:row;overflow-x:auto}.nav-menu button{white-space:nowrap;width:auto;padding:9px 11px}.main{margin:0;padding:19px 15px 35px}.topbar h1{font-size:20px}.date-pill{display:none}.welcome{padding:22px}.welcome-art{font-size:42px;padding:0}.stats{grid-template-columns:1fr 1fr}.stats .stat-card:last-child{grid-column:1/-1}.form-grid,.doctor-slots-grid{grid-template-columns:1fr}.box{padding:17px}}
 </style><link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,700;9..144,800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,500&display=swap" rel="stylesheet">
 <style id="ms-theme">
-/* ===== MediSlot violet theme (appended last; markup and scripts untouched) ===== */
-:root{--primary:#5a3fd6;--primary-dark:#3f28b0;--primary-light:#ece8ff;--background:#f6f5fb;--bg:#f6f5fb;--surface:#fff;--text:#231d3d;--muted:#6b6788;--border:#e3dff2;--purple:#5a3fd6;--purple-bg:#ece8ff;--green:#0f7a52;--green-bg:#dcf7ea;--success:#0f7a52;--success-bg:#dcf7ea;--orange:#8a5a00;--orange-bg:#fff1d6;--shadow-soft:none;--shadow-hover:none}
-html body,html body .main,html body .main-content{background:#f6f5fb!important;color:#231d3d!important}
-html body{font-family:'Inter',system-ui,sans-serif}
-html body .logo,html body .topbar h1,html body .welcome h2,html body .stats .stat-card h2,html body .panel-header h2,html body .panel-header h3,html body .section-title,html body .ms-hero h1,html body .ms-hero h2,html body .ms-panel-heading h2,html body .ms-panel-heading h3{font-family:'Fraunces',Georgia,serif!important;letter-spacing:-.02em}
-
-/* sidebar */
-html body .sidebar{background:#1f1750!important;background-image:none!important;border:0!important;box-shadow:none!important;color:#cfc8f5!important}
-html body .sidebar .logo,html body .logo{color:#fff!important;font-size:27px!important;font-weight:800}
-html body .sidebar .logo span,html body .logo span{color:#b8f0d8!important}
-html body .sidebar .nav-label{color:#9a91d4!important;font-size:11px!important;letter-spacing:.3px!important;text-transform:none!important}
-html body .sidebar .nav-menu a,html body .sidebar .nav-menu button,html body .sidebar .nav-menu a .nav-text{color:#d6d0f7!important;background:transparent!important;background-image:none!important;border:0!important;border-radius:10px!important;box-shadow:none!important;font-size:13px!important;font-weight:600!important;transform:none!important}
-html body .sidebar .nav-menu a:hover,html body .sidebar .nav-menu button:hover{background:rgba(255,255,255,.09)!important;color:#fff!important;transform:none!important;border:0!important}
-html body .sidebar .nav-menu a.active,html body .sidebar .nav-menu button.active,html body .sidebar .nav-menu a.active .nav-text{background:#5a3fd6!important;color:#fff!important;box-shadow:inset 3px 0 0 #b8f0d8!important}
-html body .sidebar-bottom{border-top:1px solid rgba(255,255,255,.14)!important}
-html body .sidebar .account strong{color:#fff!important}
-html body .sidebar .account small{color:#a8a0da!important}
-html body .sidebar .signout{color:#ffb9bd!important}
-html body .sidebar-bottom .btn,html body .sidebar-bottom button{background:rgba(255,255,255,.1)!important;color:#fff!important;border:1px solid rgba(255,255,255,.22)!important}
-html body .sidebar-bottom .btn:hover,html body .sidebar-bottom button:hover{background:rgba(255,255,255,.2)!important}
-html body .avatar{background:#b8f0d8!important;background-image:none!important;color:#0f5b3f!important;border:0!important;box-shadow:none!important}
-html body .sidebar :focus-visible{outline:3px solid #b8f0d8!important}
-
-/* top bar */
-html body .topbar h1{color:#1f1750!important;font-size:30px!important;font-weight:800!important}
-html body .crumb,html body .topbar .muted{color:#6b6788!important}
-html body .date-pill,html body .doctor-info{background:#fff!important;border:1px solid #e3dff2!important;border-radius:999px!important;color:#231d3d!important;box-shadow:none!important}
-html body .doctor-info strong{color:#1f1750!important}
-
-/* welcome banner: solid violet with a clock-ruler edge */
-html body .welcome,html body .ms-hero{background:#5a3fd6!important;background-image:none!important;border:0!important;border-radius:16px!important;box-shadow:none!important;min-height:0!important;position:relative;overflow:hidden}
-html body .welcome{padding:30px 34px 40px!important}
-html body .welcome:after{content:""!important;position:absolute!important;left:0!important;right:0!important;bottom:0!important;top:auto!important;width:auto!important;height:12px!important;font-size:0!important;transform:none!important;background:repeating-linear-gradient(90deg,#b8f0d8 0 2px,transparent 2px 22px)!important;opacity:.7}
-html body .welcome h1,html body .welcome h2,html body .welcome h3,html body .ms-hero h1,html body .ms-hero h2{color:#fff!important;font-size:29px!important;font-weight:800!important}
-html body .welcome p,html body .welcome small,html body .welcome .welcome-date,html body .ms-hero p,html body .ms-hero small{color:#e6e0ff!important}
-html body .welcome .btn,html body .ms-hero .btn{background:#fff!important;color:#3f28b0!important;border-color:#fff!important}
-html body .welcome .btn:hover,html body .ms-hero .btn:hover{background:#b8f0d8!important;border-color:#b8f0d8!important;color:#0f3d2b!important}
-
-/* stat cards and panels */
-html body .stat-card{background:#fff!important;background-image:none!important;border:1px solid #e3dff2!important;border-radius:14px!important;box-shadow:none!important;min-height:0!important;transform:none!important}
-html body .stat-card:hover{border-color:#5a3fd6!important;transform:none!important;box-shadow:none!important}
-html body .stats .stat-card,html body .stats .stat-card *{color:#231d3d!important}
-html body .stats .stat-card h2{color:#1f1750!important;font-size:33px!important;font-weight:800!important}
-html body .stats .stat-card p,html body .stats .stat-card small,html body .stats .stat-card .stat-heading{color:#6b6788!important;font-size:12px!important}
-html body .stat-card .stat-icon,html body .stat-card .stat-icon.purple{background:#ece8ff!important;color:#5a3fd6!important;border-radius:10px!important}
-html body .stat-card .stat-icon.green{background:#dcf7ea!important;color:#0f7a52!important}
-html body .stat-card .stat-icon.orange{background:#fff1d6!important;color:#8a5a00!important}
-html body .stat-card .stat-icon.blue{background:#e0efff!important;color:#1b5fa8!important}
-html body .panel,html body .ms-panel,html body .ms-management-panel,html body .box{background:#fff!important;background-image:none!important;border:1px solid #e3dff2!important;border-radius:14px!important;box-shadow:none!important;color:#231d3d!important}
-html body .panel h1,html body .panel h2,html body .panel h3,html body .panel h4,html body .panel-header h2,html body .panel-header h3,html body .ms-panel h2,html body .ms-panel h3,html body .ms-management-panel h2,html body .ms-management-panel h3,html body .box h2,html body .box h3,html body .section-title{color:#1f1750!important}
-html body .panel p,html body .panel small,html body .panel .muted,html body .panel-header p,html body .ms-panel p,html body .ms-panel small,html body .ms-management-panel p,html body .box p,html body .box small,html body .muted-note,html body .empty{color:#6b6788!important}
-html body .panel label,html body .ms-panel label,html body .field label,html body .box label{color:#4b4570!important;font-size:12px!important;font-weight:600!important;letter-spacing:0!important}
-html body .list-item,html body .patient-card{border-color:#e3dff2!important}
-
-/* tables */
-html body table,html body .panel table,html body .ms-panel table,html body .ms-management-panel table,html body .table-wrap table,html body .section table{background:#fff!important;border-color:#e3dff2!important}
-html body th,html body .panel th,html body .ms-panel th,html body .ms-management-panel th,html body .table-wrap th,html body .section th{background:#f1eefc!important;color:#4b4570!important;text-transform:none!important;letter-spacing:0!important;font-size:12px!important;font-weight:700!important;border-bottom:1px solid #e3dff2!important;padding:12px!important}
-html body td,html body .panel td,html body .ms-panel td,html body .ms-management-panel td,html body .table-wrap td,html body .section td{background:#fff!important;color:#2e2850!important;font-size:13px!important;border-bottom:1px solid #eeeaf8!important;padding:14px 12px!important}
-html body tbody tr:hover td{background:#faf9ff!important}
-html body .status{border-radius:999px!important;font-size:12px!important;font-weight:600!important}
-
-/* buttons */
-html body .btn,html body .ms-primary-action{background:#5a3fd6!important;background-image:none!important;color:#fff!important;border:1px solid #5a3fd6!important;border-radius:999px!important;padding:10px 18px!important;font-size:13px!important;font-weight:600!important;box-shadow:none!important;transform:none!important;filter:none!important}
-html body .btn:hover,html body .ms-primary-action:hover{background:#3f28b0!important;border-color:#3f28b0!important;transform:none!important;box-shadow:none!important;filter:none!important}
-html body .btn-light,html body .btn-quiet,html body .btn-accent-soft{background:#fff!important;color:#3f28b0!important;border:1px solid #cfc7f3!important}
-html body .btn-light:hover,html body .btn-quiet:hover,html body .btn-accent-soft:hover{background:#f1eefc!important;border-color:#5a3fd6!important;color:#3f28b0!important}
-html body .btn-danger{background:#c0262d!important;border-color:#c0262d!important;color:#fff!important}
-html body .btn-danger:hover{background:#9d1c22!important;border-color:#9d1c22!important}
-html body .btn-outline-danger{background:#fff!important;color:#b4232a!important;border:1px solid #f0b8bb!important}
-html body .btn-outline-danger:hover{background:#fdeeee!important}
-html body .btn-small{padding:6px 13px!important;font-size:12px!important}
-html body .btn:disabled{opacity:.5!important;cursor:not-allowed}
-
-/* forms and messages */
-html body input:not([type=checkbox]):not([type=radio]),html body select,html body textarea{background:#fff!important;color:#231d3d!important;border:1px solid #d9d4ee!important;border-radius:10px!important;box-shadow:none!important}
-html body input:focus,html body select:focus,html body textarea:focus{border-color:#5a3fd6!important;box-shadow:0 0 0 3px #ddd5ff!important;outline:0!important}
-html body .message{border-radius:12px!important;box-shadow:none!important}
-html body .message.success{color:#0f5b3f!important;background:#dcf7ea!important;border-color:#a9e6c9!important}
-html body .message.error{color:#8f1d1d!important;background:#fde4e4!important;border-color:#f3b9b9!important}
-html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
+/* MediSlot warm-clinical theme — patient workspace */
+:root{
+ --paper:#f7f3ea;--card:#fffdf8;--ink:#14313d;--muted:#566b75;--line:#e4dccb;
+ --teal:#0b6b73;--teal-dark:#08525a;--teal-soft:#e3f2ef;
+ --amber:#e8a33a;--coral:#d9573b;
+ --primary:#0b6b73;--primary-dark:#08525a;--primary-light:#e3f2ef;
+ --bg:#f7f3ea;--background:#f7f3ea;--surface:#fffdf8;--text:#14313d;
+ --border:#e4dccb;--green:#176b49;--green-bg:#dff1e5;
+ --purple:#0b6b73;--purple-bg:#e3f2ef;--orange:#80530d;--orange-bg:#fff1d7;
+ --sidebar:248px
+}
+html{scroll-behavior:smooth}
+html body{background:var(--paper)!important;color:var(--ink)!important;font-family:'Inter',system-ui,sans-serif}
+html body .sidebar{background:#14313d!important;border-right:1px solid #244650!important;color:#f7f3ea!important;box-shadow:none!important}
+html body .logo{color:#fffdf8!important;font-family:'Newsreader',Georgia,serif!important;font-size:29px!important;font-weight:600!important}
+html body .logo span{color:#8ed4c8!important}
+html body .nav-label{color:#a9c3c5!important;letter-spacing:1.2px!important;font-size:10px!important}
+html body .nav-menu button{color:#e2eeeb!important;background:transparent!important;border:0!important;border-radius:11px!important}
+html body .nav-menu button:hover{background:rgba(255,255,255,.09)!important;color:#fff!important}
+html body .nav-menu button.active{background:#0b6b73!important;color:#fff!important;box-shadow:inset 3px 0 0 #e8a33a!important}
+html body .sidebar-bottom{border-top:1px solid rgba(255,255,255,.16)!important}
+html body .account strong{color:#fffdf8!important}
+html body .account small{color:#b9cecc!important}
+html body .signout{color:#ffc0ae!important}
+html body .avatar{background:#dff1e5!important;color:#176b49!important;border:1px solid #c6e5d1!important}
+html body .main{background:var(--paper)!important}
+html body .topbar h1,html body .section-intro h2,html body .box h3,
+html body .stat-card h2{font-family:'Newsreader',Georgia,serif!important;color:#14313d!important;letter-spacing:-.025em}
+html body .topbar h1{font-size:31px!important;font-weight:600!important}
+html body .crumb,html body .subtext,html body .section-intro p,
+html body .box-head p,html body .stat-card small{color:#566b75!important}
+html body .date-pill{background:#fffdf8!important;border:1px solid #e4dccb!important;color:#14313d!important;border-radius:999px!important}
+html body .welcome{background:linear-gradient(115deg,#14313d,#0b6b73)!important;color:#fffdf8!important;border:0!important;border-radius:18px!important;box-shadow:0 14px 32px rgba(20,49,61,.12)!important;position:relative;overflow:hidden}
+html body .welcome:after{content:""!important;position:absolute!important;right:-45px!important;top:-95px!important;width:230px!important;height:230px!important;border:1px solid rgba(255,255,255,.18)!important;border-radius:50%!important;box-shadow:0 0 0 28px rgba(255,255,255,.045),0 0 0 58px rgba(255,255,255,.035)!important;background:none!important}
+html body .welcome h2{color:#fffdf8!important;font-family:'Newsreader',Georgia,serif!important;font-size:28px!important}
+html body .welcome p{color:#e0efeb!important;opacity:1!important}
+html body .welcome-art{color:#b8ded6!important}
+html body .stat-card,html body .box,html body .card,
+html body .doctor-profile-card,html body .doctor-slots-section,
+html body .appointment-row,html body .doctor-result{
+ background:#fffdf8!important;border:1px solid #e4dccb!important;border-radius:15px!important;
+ box-shadow:0 8px 24px rgba(20,49,61,.045)!important;color:#14313d!important
+}
+html body .stat-heading p,html body .box-head p,html body .card p,
+html body .doctor-identity p,html body .appointment-row p{color:#566b75!important}
+html body .stat-icon,html body .stat-icon.blue,html body .stat-icon.purple{
+ background:#e3f2ef!important;color:#0b6b73!important
+}
+html body .stat-icon.green{background:#dff1e5!important;color:#176b49!important}
+html body .quick{background:#fffdf8!important;border-color:#e4dccb!important;color:#14313d!important;border-radius:12px!important}
+html body .quick:hover{background:#f2f7f3!important;border-color:#9fcfc5!important}
+html body .quick b{color:#14313d!important}
+html body .quick span{color:#566b75!important}
+html body .quick-icon{color:#0b6b73!important}
+html body .tip{background:#e3f2ef!important;border:1px solid #c8e2db!important;color:#385b5d!important}
+html body .tip strong{color:#08525a!important}
+html body .section-intro h2,html body .box h3{font-size:22px!important}
+html body label{color:#38535d!important;font-weight:650!important}
+html body input,html body select,html body textarea{
+ background:#fffdf8!important;color:#14313d!important;border:1px solid #d8cdb9!important;border-radius:10px!important
+}
+html body input::placeholder{color:#829198!important}
+html body input:focus,html body select:focus,html body textarea:focus{
+ border-color:#0b6b73!important;box-shadow:0 0 0 3px rgba(11,107,115,.13)!important
+}
+html body .primary-btn{background:#0b6b73!important;color:#fff!important;border:1px solid #0b6b73!important;border-radius:999px!important}
+html body .primary-btn:hover{background:#08525a!important}
+html body .secondary-btn{background:#fffdf8!important;color:#08525a!important;border:1px solid #b8d8d0!important;border-radius:999px!important}
+html body .secondary-btn:hover{background:#e3f2ef!important}
+html body .danger-btn{background:#d9573b!important;color:#fff!important;border-radius:999px!important}
+html body .link-button{color:#0b6b73!important}
+html body .doctor-photo,html body .doctor-photo-fallback,
+html body .doctor-result-photo,html body .doctor-result-fallback{border-color:#e4dccb!important;background:#e3f2ef!important}
+html body .consultation-chip{background:#e3f2ef!important;border-color:#c8e2db!important;color:#08525a!important}
+html body .doctor-slot-card{background:#fffdf8!important;border-color:#e4dccb!important}
+html body .doctor-slot-toggle{background:#fffdf8!important;color:#14313d!important}
+html body .doctor-slot-toggle:hover{background:#f2f7f3!important}
+html body .doctor-slot-extra{background:#f5f4ec!important;color:#385b5d!important;border-color:#e4dccb!important}
+html body .status-pill{background:#dff1e5!important;color:#176b49!important}
+html body .refund-line{background:#e3f2ef!important;color:#385b5d!important}
+html body .empty-state{border-color:#d8cdb9!important;color:#566b75!important}
+html body #status{background:#e3f2ef!important;color:#08525a!important}
+html body #status.error{background:#fbe8e2!important;color:#a63827!important}
+html body .footer-note{color:#71838a!important}
+html body :focus-visible{outline:3px solid #0b6b73!important;outline-offset:2px}
 </style>
 </head>
 <body>
