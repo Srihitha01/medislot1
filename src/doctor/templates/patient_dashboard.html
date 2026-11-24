@@ -46,19 +46,38 @@
   </section>
   <section class="panel" id="findPanel">
     <div class="section-intro"><h2>Find your doctor</h2><p>Search by doctor name, specialisation, hospital or city. Combine filters to narrow your results.</p></div>
-    <section class="box"><form id="search"><div class="form-grid"><div><label>Doctor name</label><input name="name" placeholder="e.g. Sharma"></div><div><label for="specialisationFilter">Specialisation</label><select id="specialisationFilter" name="specialisation"><option value="">All specialisations</option></select></div><div><label>Hospital</label><input name="hospital" placeholder="e.g. MediSlot Clinic"></div><div><label>City</label><input name="city" placeholder="e.g. Hyderabad"></div></div><button class="primary-btn" type="submit">Search doctors</button></form><div id="results" class="doctor-results" aria-live="polite"><p class="empty">Enter a search filter or browse all available doctors.</p></div><div id="paging"></div></section>
+    <section class="box">
+      <form id="search">
+        <div class="form-grid">
+          <div>
+            <label>Doctor name</label>
+            <input name="name" placeholder="e.g. Sharma">
+          </div><div><label for="specialisationFilter">Specialisation</label>
+            <select id="specialisationFilter" name="specialisation"><option value="">All specialisations</option></select></div><div><label>Hospital</label>
+      <input name="hospital" placeholder="e.g. MediSlot Clinic"></div>
+      <div><label>City</label><input name="city" placeholder="e.g. Hyderabad">
+      </div>
+    </div>
+    <button class="primary-btn" type="submit">Search doctors
+
+      </button>
+    </form>
+    <div id="results" class="doctor-results" aria-live="polite">
+      <p class="empty">Enter a search filter or browse all available doctors.</p></div><div id="paging"></div></section>
     <div id="doctorView" class="doctor-view" hidden><div class="box-head"><h3>Doctor details and availability</h3><button type="button" class="link-button" id="backHome">← Back to search</button></div><section class="doctor-profile-card"><div class="doctor-profile-heading"><img id="doctorPhoto" class="doctor-photo" alt="Doctor profile photo" hidden><span id="doctorPhotoFallback" class="doctor-photo-fallback">🩺</span><div class="doctor-identity"><span class="eyebrow">DOCTOR PROFILE</span><h2 id="doctorName"></h2><p id="doctorSpecialisation"></p><p id="doctorHospital"></p></div></div><div id="doctorConsultations" class="consultation-list"></div></section><section class="doctor-slots-section"><span class="eyebrow">APPOINTMENT AVAILABILITY</span><h3 style="margin:7px 0">Available appointment slots</h3><p class="subtext">Choose a suitable date and time from the available appointments.</p><div id="slots" class="doctor-slots-grid"></div></section></div>
   </section>
   <section class="panel" id="profilePanel">
     <div class="section-intro"><h2>My health profile</h2><p>Your information is private to your account. Keep it accurate to help support your care.</p></div>
     <section class="box"><div class="box-head"><div><h3>Personal information</h3><p>Update your details below</p></div><span class="stat-icon blue">👤</span></div><div id="status" role="status"></div>
-      <form id="profile"><div class="form-grid"><div><label>Full name</label><input name="fullName" required maxlength="150" placeholder="Your full name"></div><div><label>Phone</label><input name="phone" maxlength="30" placeholder="Contact number"></div><div><label>City</label><input name="city" maxlength="100" placeholder="Your city"></div><div><label>Date of birth</label><input name="dateOfBirth" type="date"></div><div><label>Gender</label><select name="gender"><option value="">Prefer not to say</option><option>Female</option><option>Male</option><option>Other</option></select></div><div><label>Emergency contact name</label><input name="emergencyContactName" placeholder="Contact person"></div><div><label>Emergency phone</label><input name="emergencyContactPhone" placeholder="Emergency phone number"></div></div><button class="primary-btn" type="submit">Save profile</button><button type="button" class="danger-btn" id="delete">Delete profile details</button></form>
+      <form id="profile"><div class="form-grid"><div><label>Full name</label>
+        <input name="fullName" required maxlength="150" placeholder="Your full name"></div><div><label>Phone</label><input name="phone" maxlength="30" placeholder="Contact number"></div><div><label>City</label><input name="city" maxlength="100" placeholder="Your city"></div><div><label>Date of birth</label><input name="dateOfBirth" type="date"></div><div><label>Gender</label><select name="gender"><option value="">Prefer not to say</option><option>Female</option><option>Male</option><option>Other</option></select></div><div><label>Emergency contact name</label><input name="emergencyContactName" placeholder="Contact person"></div><div><label>Emergency phone</label><input name="emergencyContactPhone" placeholder="Emergency phone number"></div></div><button class="primary-btn" type="submit">Save profile</button><button type="button" class="danger-btn" id="delete">Delete profile details</button></form>
     </section>
   </section>
 
   <section class="panel" id="appointmentsPanel">
     <div class="section-intro"><h2>My appointments</h2><p>View appointments linked to your signed-in patient account.</p></div>
-    <section class="box"><div class="box-head"><div><h3>Appointment history</h3><p>Upcoming and previous appointments</p></div><button class="secondary-btn" id="refreshAppointments" type="button">Refresh</button></div><div id="appointmentResults" aria-live="polite"><p class="empty">Loading your appointments…</p></div></section>
+    <section class="box"><div class="box-head"><div><h3>Appointment history</h3>
+      <p>Upcoming and previous appointments</p></div><button class="secondary-btn" id="refreshAppointments" type="button">Refresh</button></div><div id="appointmentResults" aria-live="polite"><p class="empty">Loading your appointments…</p></div></section>
   </section>
   <section class="panel" id="refundsPanel">
     <div class="section-intro"><h2>Payments & refunds</h2><p>Refund entries recorded against your appointments.</p></div>
@@ -92,7 +111,15 @@ async function profile(){try{const d=await api('/patients/me');const p=d.profile
 document.querySelector('#profile').onsubmit=async e=>{e.preventDefault();const data=Object.fromEntries(new FormData(e.target));for(const k of Object.keys(data))if(data[k]==='')data[k]=null;try{await api('/patients/me',{method:'PATCH',body:JSON.stringify(data)});notice('Your profile has been saved successfully.');await profile()}catch(err){notice(err.message,true)}};
 document.querySelector('#delete').onclick=async()=>{if(!confirm('Delete your profile details? Your login account remains active.'))return;try{await api('/patients/me',{method:'DELETE'});notice('Profile details deleted.');await profile()}catch(e){notice(e.message,true)}};
 let specialisationsLoaded=false;
-async function loadSpecialisations(){const select=document.querySelector('#specialisationFilter');try{const data=await api('/reference/specialisations');for(const item of(data.items||[])){const opt=document.createElement('option');opt.value=item.name;opt.textContent=item.name;select.append(opt)}specialisationsLoaded=true;}catch(e){notice('Specialisations could not be loaded: '+e.message,true)}}
+async function loadSpecialisations(){
+  const select=document.querySelector('#specialisationFilter');try{
+    const data=await api('/reference/specialisations');
+    for(const item of(data.items||[])){const opt=document.createElement('option');
+    opt.value=item.name;opt.textContent=item.name;select.append(opt)
+  }specialisationsLoaded=true;
+  }catch(e)
+  {
+    notice('Specialisations could not be loaded: '+e.message,true)}}
 let currentPage=1;
 async function search(page=1){currentPage=page;const q=new URLSearchParams(new FormData(document.querySelector('#search')));q.set('page',page);q.set('pageSize',10);const out=document.querySelector('#results');out.replaceChildren(node('p','Searching for doctors…','empty'));try{const d=await api('/doctors/search?'+q);out.replaceChildren();if(!d.items.length)out.append(node('p','No matching active doctors found. Try changing your filters.','empty'));for(const doc of d.items){const card=node('article','','doctor-result');const photo=doc.photoUrl?document.createElement('img'):node('div','🩺','doctor-result-fallback');if(doc.photoUrl){photo.className='doctor-result-photo';photo.alt='Dr '+(doc.name||'')+' profile photo';photo.src=doc.photoUrl;photo.onerror=()=>{const fallback=node('div','🩺','doctor-result-fallback');photo.replaceWith(fallback)}}const info=node('div');info.append(node('h4',doc.name||'Doctor'),node('p',[doc.specialisation,doc.hospital,doc.city].filter(Boolean).join(' · ')||'Details available in profile'));if(doc.qualifications)info.append(node('p',doc.qualifications));if(doc.yearsExperience!==null&&doc.yearsExperience!==undefined)info.append(node('p',`${doc.yearsExperience} years of experience`));const b=node('button','View consultation types & slots','secondary-btn');b.type='button';b.onclick=()=>doctor(doc.doctorId);info.append(b);card.append(photo,info);out.append(card)}const paging=document.querySelector('#paging');paging.replaceChildren(node('small',`Page ${d.page} of ${Math.max(1,d.totalPages)} · ${d.total} doctors`,'subtext'));if(page>1){const b=node('button','Previous','secondary-btn');b.onclick=()=>search(page-1);paging.append(b)}if(page<d.totalPages){const b=node('button','Next','secondary-btn');b.onclick=()=>search(page+1);paging.append(b)}}catch(e){out.replaceChildren(node('p',e.message,'empty'))}}
 document.querySelector('#search').onsubmit=e=>{e.preventDefault();search(1)};

@@ -284,7 +284,7 @@ jobs:
   # ============================================================
 
   verify_ssm:
-    name: Verify existing SSM SecureString parameters
+    name: Initialize and verify SSM SecureString parameters
     needs: deploy_network
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -307,43 +307,92 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Verify existing SSM SecureString parameters
+      - name: Create missing SSM SecureString parameters and preserve existing values
         id: ssm
         shell: bash
         run: |
           set -euo pipefail
 
-          get_version() {
+          ensure_parameter() {
             local parameter_name="$1"
-            local output_name="$2"
+            local parameter_value="$2"
+            local output_name="$3"
             local version
+            local error_file="/tmp/ssm-get-parameter-error.txt"
 
-            version=$(aws ssm get-parameter \
+            if version=$(aws ssm get-parameter \
               --name "$parameter_name" \
               --query 'Parameter.Version' \
-              --output text)
+              --output text 2>"$error_file"); then
+              echo "Parameter already exists: $parameter_name (version $version). Existing value preserved."
+            else
+              if ! grep -q "ParameterNotFound" "$error_file"; then
+                cat "$error_file"
+                echo "::error::Could not check SSM parameter $parameter_name. Refusing to overwrite or recreate it."
+                exit 1
+              fi
+
+              echo "Parameter is missing; creating SecureString: $parameter_name"
+
+              if ! aws ssm put-parameter \
+                --name "$parameter_name" \
+                --type SecureString \
+                --tier Standard \
+                --value "$parameter_value" \
+                --description "MediSlot ${ENVIRONMENT} application secret" \
+                --no-overwrite >/dev/null 2>"$error_file"; then
+
+                # Another deployment may have created the parameter after our first read.
+                if ! version=$(aws ssm get-parameter \
+                  --name "$parameter_name" \
+                  --query 'Parameter.Version' \
+                  --output text 2>"$error_file"); then
+                  cat "$error_file"
+                  echo "::error::Failed to create or verify SSM parameter $parameter_name."
+                  exit 1
+                fi
+
+                echo "Parameter was created by another deployment run: $parameter_name (version $version)."
+              else
+                version=$(aws ssm get-parameter \
+                  --name "$parameter_name" \
+                  --query 'Parameter.Version' \
+                  --output text)
+                echo "Created $parameter_name (version $version)."
+              fi
+            fi
 
             if [[ -z "$version" || "$version" == "None" ]]; then
-              echo "::error::Required SSM parameter is missing: $parameter_name"
+              echo "::error::Could not determine the version of $parameter_name."
               exit 1
             fi
 
             echo "$output_name=$version" >> "$GITHUB_OUTPUT"
-            echo "Verified $parameter_name (version $version)."
           }
 
-          get_version \
+          # Hex-only values avoid unsupported RDS password characters.
+          # New values are stored only when a parameter is missing and are never logged.
+          DB_MASTER_PASSWORD="$(openssl rand -hex 20)"
+          DB_APP_PASSWORD="$(openssl rand -hex 20)"
+          JWT_SECRET="$(openssl rand -hex 48)"
+
+          ensure_parameter \
             "/medislot/${ENVIRONMENT}/db/password" \
+            "$DB_MASTER_PASSWORD" \
             "db_password_version"
 
-          get_version \
+          ensure_parameter \
             "/medislot/${ENVIRONMENT}/db/app-password" \
+            "$DB_APP_PASSWORD" \
             "app_password_version"
 
-          get_version \
+          ensure_parameter \
             "/medislot/${ENVIRONMENT}/auth/jwt-secret" \
+            "$JWT_SECRET" \
             "jwt_secret_version"
 
+          unset DB_MASTER_PASSWORD DB_APP_PASSWORD JWT_SECRET
+          echo "All required SSM SecureString parameters are ready."
   # ============================================================
   # 4. DATA STACK
   # ============================================================
@@ -474,8 +523,8 @@ jobs:
   # with administrator credentials; this job only verifies it.
   # ============================================================
 
-  verify_iam:
-    name: Verify IAM Stack
+  deploy_iam:
+    name: Deploy IAM Stack
     needs: [deploy_data, deploy_network]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -486,6 +535,9 @@ jobs:
       id-token: write
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -493,47 +545,103 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Verify IAM stack exists and uses the current artifact bucket
+      - name: Deploy IAM stack using Change Set
         shell: bash
         env:
           ARTIFACT_BUCKET: ${{ needs.deploy_network.outputs.artifact_bucket }}
         run: |
           set -euo pipefail
 
-          status=$(aws cloudformation describe-stacks \
-            --stack-name "$IAM_STACK" \
-            --query 'Stacks[0].StackStatus' \
-            --output text 2>/dev/null || echo NOT_FOUND)
-
-          case "$status" in
-            CREATE_COMPLETE|UPDATE_COMPLETE|UPDATE_ROLLBACK_COMPLETE)
-              echo "$IAM_STACK status: $status"
-              ;;
-            *)
-              echo "::error::$IAM_STACK is not healthy (status: $status). Deploy it manually with administrator credentials."
-              exit 1
-              ;;
-          esac
-
-          configured=$(aws cloudformation describe-stacks \
-            --stack-name "$IAM_STACK" \
-            --query "Stacks[0].Parameters[?ParameterKey=='DeploymentArtifactBucketName'].ParameterValue | [0]" \
-            --output text)
-
-          if [[ "$configured" != "$ARTIFACT_BUCKET" ]]; then
-            echo "::error::$IAM_STACK was deployed with DeploymentArtifactBucketName='$configured' but the network stack bucket is '$ARTIFACT_BUCKET'. Redeploy the IAM stack manually: aws cloudformation deploy --stack-name $IAM_STACK --template-file cloudformation/iam-stack.yaml --capabilities CAPABILITY_NAMED_IAM --parameter-overrides Environment=$ENVIRONMENT DeploymentArtifactBucketName=$ARTIFACT_BUCKET"
+          if [[ -z "${ARTIFACT_BUCKET:-}" || "$ARTIFACT_BUCKET" == "None" ]]; then
+            echo "::error::Deployment artifact bucket output is missing."
             exit 1
           fi
 
-          echo "IAM stack is healthy and uses artifact bucket $ARTIFACT_BUCKET."
+          status=$(aws cloudformation describe-stacks \
+            --stack-name "$IAM_STACK" \
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || echo NONE)
 
+          case "$status" in
+            NONE|REVIEW_IN_PROGRESS)
+              change_type=CREATE
+              ;;
+            ROLLBACK_COMPLETE)
+              echo "::error::$IAM_STACK is in ROLLBACK_COMPLETE. Inspect stack events before recovery."
+              exit 1
+              ;;
+            *_IN_PROGRESS)
+              echo "::error::$IAM_STACK is busy ($status). Wait for it to finish and rerun."
+              exit 1
+              ;;
+            *)
+              change_type=UPDATE
+              ;;
+          esac
+
+          change_set="${IAM_STACK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          aws cloudformation create-change-set \
+            --stack-name "$IAM_STACK" \
+            --change-set-name "$change_set" \
+            --change-set-type "$change_type" \
+            --template-body file://cloudformation/iam-stack.yaml \
+            --parameters \
+              ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
+              ParameterKey=GitHubOwner,ParameterValue=Srihitha01 \
+              ParameterKey=GitHubRepository,ParameterValue=medislot1 \
+              ParameterKey=GitHubOwnerId,ParameterValue=168816985 \
+              ParameterKey=GitHubRepositoryId,ParameterValue=1434045145 \
+              ParameterKey=DeploymentArtifactBucketName,ParameterValue="$ARTIFACT_BUCKET" \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --description "GitHub Actions run ${GITHUB_RUN_ID}"
+
+          if ! aws cloudformation wait change-set-create-complete \
+            --stack-name "$IAM_STACK" \
+            --change-set-name "$change_set"; then
+            reason=$(aws cloudformation describe-change-set \
+              --stack-name "$IAM_STACK" \
+              --change-set-name "$change_set" \
+              --query StatusReason \
+              --output text 2>/dev/null || true)
+
+            if [[ "$reason" == *"didn't contain changes"* ]] || \
+               [[ "$reason" == *"No updates are to be performed"* ]]; then
+              echo "IAM stack is already up to date."
+              aws cloudformation delete-change-set \
+                --stack-name "$IAM_STACK" \
+                --change-set-name "$change_set" || true
+              exit 0
+            fi
+
+            echo "::error::IAM Change Set creation failed: $reason"
+            exit 1
+          fi
+
+          aws cloudformation describe-change-set \
+            --stack-name "$IAM_STACK" \
+            --change-set-name "$change_set" \
+            --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' \
+            --output table
+
+          aws cloudformation execute-change-set \
+            --stack-name "$IAM_STACK" \
+            --change-set-name "$change_set"
+
+          if [[ "$change_type" == CREATE ]]; then
+            aws cloudformation wait stack-create-complete --stack-name "$IAM_STACK"
+          else
+            aws cloudformation wait stack-update-complete --stack-name "$IAM_STACK"
+          fi
+
+          echo "$IAM_STACK deployment completed."
   # ============================================================
   # 6. AUTHENTICATION STACK
   # ============================================================
 
   deploy_auth:
     name: Deploy Authentication Stack
-    needs: [verify_iam, verify_ssm, deploy_network]
+    needs: [deploy_iam, verify_ssm, deploy_network]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: development
@@ -1372,7 +1480,7 @@ jobs:
     needs:
       - deploy_network
       - deploy_data
-      - verify_iam
+      - deploy_iam
       - deploy_auth
       - deploy_api
       - deploy_doctor_dashboard
