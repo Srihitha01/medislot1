@@ -258,6 +258,68 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-ssm-endpoint
+  AwsServicesEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTPS from MediSlot Lambda to AWS service endpoints
+      VpcId: !Ref MediSlotVPC
+      SecurityGroupIngress:
+        - Description: Allow HTTPS from MediSlot Lambda security group
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-aws-services-endpoint-sg
+
+  CloudWatchMonitoringInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref MediSlotVPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.monitoring
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref AwsServicesEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-cloudwatch-monitoring-endpoint
+
+  EventBridgeInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref MediSlotVPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.events
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref AwsServicesEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-eventbridge-endpoint
+
+  SESInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref MediSlotVPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.email
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref AwsServicesEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-ses-endpoint
 
   # Dedicated destination for S3 server access logs.
   # This bucket intentionally does not log to itself.
@@ -423,3 +485,21 @@ Outputs:
     Value: !Ref SSMInterfaceEndpoint
     Export:
       Name: !Sub medislot-${Environment}-SSMInterfaceEndpointId
+
+  CloudWatchMonitoringInterfaceEndpointId:
+    Description: Private CloudWatch Monitoring interface endpoint ID
+    Value: !Ref CloudWatchMonitoringInterfaceEndpoint
+    Export:
+      Name: !Sub medislot-${Environment}-CloudWatchMonitoringInterfaceEndpointId
+
+  EventBridgeInterfaceEndpointId:
+    Description: Private EventBridge interface endpoint ID
+    Value: !Ref EventBridgeInterfaceEndpoint
+    Export:
+      Name: !Sub medislot-${Environment}-EventBridgeInterfaceEndpointId
+
+  SESInterfaceEndpointId:
+    Description: Private SES API interface endpoint ID
+    Value: !Ref SESInterfaceEndpoint
+    Export:
+      Name: !Sub medislot-${Environment}-SESInterfaceEndpointId
