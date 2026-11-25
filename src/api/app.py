@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html as html_lib
 import json
 import logging
 import os
@@ -43,14 +44,8 @@ logger.setLevel(logging.INFO)
 
 _DDB = None
 _SSM = None
-_PARAMETER_CACHE = {}
-_AWS_CALL_CONFIG = Config(
-    connect_timeout=2,
-    read_timeout=3,
-    retries={"max_attempts": 2, "mode": "standard"},
-)
-_EVENTS = boto3.client("events", config=_AWS_CALL_CONFIG)
-_CLOUDWATCH = boto3.client("cloudwatch", config=_AWS_CALL_CONFIG)
+_EVENTS = boto3.client("events")
+_CLOUDWATCH = boto3.client("cloudwatch")
 
 
 # ---------------------------------------------------------
@@ -61,7 +56,7 @@ def _dynamodb():
     global _DDB
 
     if _DDB is None:
-        _DDB = boto3.resource("dynamodb", config=_AWS_CALL_CONFIG)
+        _DDB = boto3.resource("dynamodb")
 
     return _DDB
 
@@ -70,7 +65,7 @@ def _ssm():
     global _SSM
 
     if _SSM is None:
-        _SSM = boto3.client("ssm", config=_AWS_CALL_CONFIG)
+        _SSM = boto3.client("ssm")
 
     return _SSM
 
@@ -87,27 +82,10 @@ def _table(env_name: str):
 
 
 def _parameter(name: str, decrypt: bool = False):
-    """Read SSM parameters with a short execution-environment cache.
-
-    The Lambda is VPC-attached; bounded SDK timeouts prevent an unreachable
-    interface endpoint from consuming the entire API request timeout.
-    """
-    now = time.monotonic()
-    cached = _PARAMETER_CACHE.get(name)
-    if cached and cached[0] > now:
-        return cached[1]
-    started = time.monotonic()
-    logger.info("DEPENDENCY_START service=ssm operation=get_parameter name=%s", name)
-    value = _ssm().get_parameter(
+    return _ssm().get_parameter(
         Name=name,
         WithDecryption=decrypt,
     )["Parameter"]["Value"]
-    _PARAMETER_CACHE[name] = (now + 60, value)
-    logger.info(
-        "DEPENDENCY_END service=ssm operation=get_parameter name=%s durationMs=%.2f",
-        name, (time.monotonic() - started) * 1000,
-    )
-    return value
 
 
 # ---------------------------------------------------------
@@ -2340,7 +2318,6 @@ def _book_appointment(event, user_id, role):
     expires_at = now_epoch + 24 * 60 * 60
 
     try:
-        logger.info("BOOKING_STAGE_START stage=idempotency_claim slotId=%s", slot_id)
         idem_table.put_item(
             Item={
                 "idemKey": idem_key,
@@ -2352,7 +2329,6 @@ def _book_appointment(event, user_id, role):
             },
             ConditionExpression=Attr("idemKey").not_exists(),
         )
-        logger.info("BOOKING_STAGE_END stage=idempotency_claim slotId=%s", slot_id)
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
             logger.exception("Unable to create idempotency record")
@@ -2385,16 +2361,11 @@ def _book_appointment(event, user_id, role):
         retries = 0
         updated = None
         for attempt in range(max_attempts):
-            stage_started = time.monotonic()
-            logger.info("BOOKING_STAGE_START stage=slot_read slotId=%s attempt=%s", slot_id, attempt + 1)
             current = slots.get_item(Key={"slotId": slot_id}, ConsistentRead=True).get("Item")
-            logger.info("BOOKING_STAGE_END stage=slot_read slotId=%s durationMs=%.2f", slot_id, (time.monotonic() - stage_started) * 1000)
             if not current:
                 raise ValueError("Slot does not exist")
             current_version = int(current.get("version", 0))
             try:
-                stage_started = time.monotonic()
-                logger.info("BOOKING_STAGE_START stage=slot_reservation slotId=%s attempt=%s", slot_id, attempt + 1)
                 updated = slots.update_item(
                     Key={"slotId": slot_id},
                     UpdateExpression="SET bookedCount = if_not_exists(bookedCount, :zero) + :one, #ver = :next, updatedAt = :now",
@@ -2411,7 +2382,6 @@ def _book_appointment(event, user_id, role):
                     ReturnValues="ALL_NEW",
                 )["Attributes"]
                 reserved = True
-                logger.info("BOOKING_STAGE_END stage=slot_reservation slotId=%s durationMs=%.2f", slot_id, (time.monotonic() - stage_started) * 1000)
                 break
             except ClientError as conflict:
                 if conflict.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
@@ -2432,13 +2402,8 @@ def _book_appointment(event, user_id, role):
         if not re.fullmatch(r"[1-9][0-9]{0,19}", consultation_id):
             raise ValueError("Slot contains an invalid numeric consultationTypeId")
 
-        stage_started = time.monotonic()
-        logger.info("BOOKING_STAGE_START stage=rds_connect slotId=%s", slot_id)
         conn = _db_connection()
-        logger.info("BOOKING_STAGE_END stage=rds_connect slotId=%s durationMs=%.2f", slot_id, (time.monotonic() - stage_started) * 1000)
         with conn.cursor() as cur:
-            stage_started = time.monotonic()
-            logger.info("BOOKING_STAGE_START stage=consultation_lookup slotId=%s", slot_id)
             cur.execute(
                 """
                 SELECT fee_amount
@@ -2450,14 +2415,11 @@ def _book_appointment(event, user_id, role):
                 (int(consultation_id), int(updated["doctorId"])),
             )
             consultation = cur.fetchone()
-            logger.info("BOOKING_STAGE_END stage=consultation_lookup slotId=%s durationMs=%.2f", slot_id, (time.monotonic() - stage_started) * 1000)
             if not consultation:
                 raise ValueError("Consultation type is no longer active")
 
             start = datetime.fromisoformat(updated["startUtc"].replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
             end = datetime.fromisoformat(updated["endUtc"].replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
-            stage_started = time.monotonic()
-            logger.info("BOOKING_STAGE_START stage=appointment_insert slotId=%s", slot_id)
             cur.execute(
                 """
                 INSERT INTO appointments (
@@ -2473,13 +2435,20 @@ def _book_appointment(event, user_id, role):
                 ),
             )
             appointment_id = int(cur.lastrowid)
-            logger.info("BOOKING_STAGE_END stage=appointment_insert slotId=%s durationMs=%.2f appointmentId=%s", slot_id, (time.monotonic() - stage_started) * 1000, appointment_id)
-        stage_started = time.monotonic()
-        logger.info("BOOKING_STAGE_START stage=rds_commit slotId=%s", slot_id)
+            cur.execute("SELECT email FROM users WHERE user_id=%s AND role='patient'", (int(patient_id),))
+            patient_record = cur.fetchone() or {}
+            patient_email = patient_record.get("email")
         conn.commit()
-        logger.info("BOOKING_STAGE_END stage=rds_commit slotId=%s durationMs=%.2f", slot_id, (time.monotonic() - stage_started) * 1000)
         committed = True
-        logger.info("BOOKING_STAGE_START stage=eventbridge_publish slotId=%s appointmentId=%s", slot_id, appointment_id)
+        booking_message = (
+            f"Your MediSlot appointment #{appointment_id} is confirmed. "
+            f"Consultation fee recorded: ₹{consultation['fee_amount']}. "
+            "This application currently records fees in RDS and does not collect or transfer payments."
+        )
+        _notify_patient(
+            patient_id, appointment_id, "APPOINTMENT_BOOKED",
+            "Appointment booked", booking_message, patient_email,
+        )
         _publish_medislot_event("AppointmentBooked", {
             "appointmentId": appointment_id,
             "patientId": int(patient_id),
@@ -2487,7 +2456,6 @@ def _book_appointment(event, user_id, role):
             "slotId": slot_id,
             "feeAmount": str(consultation["fee_amount"]),
         })
-        logger.info("BOOKING_STAGE_END stage=eventbridge_publish slotId=%s appointmentId=%s", slot_id, appointment_id)
 
         response_body = {
             "message": "Appointment booked successfully",
@@ -2708,6 +2676,183 @@ def _patient_profile(user_id, method, event):
     finally:
         conn.close()
 
+
+
+
+def _ses_client():
+    from botocore.config import Config
+    return boto3.client(
+        "ses",
+        region_name=os.environ.get("AWS_REGION", "ap-south-1"),
+        config=Config(connect_timeout=2, read_timeout=4, retries={"max_attempts": 1}),
+    )
+
+
+def _save_patient_notification(cur, patient_id, notification_type, title, message, appointment_id=None):
+    cur.execute(
+        """INSERT INTO patient_notifications
+           (patient_user_id, appointment_id, notification_type, title, message)
+           VALUES (%s, %s, %s, %s, %s)""",
+        (int(patient_id), appointment_id, notification_type, title, message),
+    )
+
+
+def _notify_patient(patient_id, appointment_id, notification_type, title, message, email):
+    """Persist in-app notification and send transactional email directly through SES."""
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            _save_patient_notification(cur, patient_id, notification_type, title, message, appointment_id)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception("PATIENT_NOTIFICATION_PERSIST_FAILED patientId=%s", patient_id)
+    finally:
+        conn.close()
+
+    if not email:
+        logger.warning("SES_EMAIL_SKIPPED patientId=%s reason=registered_email_missing", patient_id)
+        return
+
+    sender_parameter = os.environ.get(
+        "SES_FROM_EMAIL_PARAMETER",
+        f"/medislot/{os.environ.get('ENVIRONMENT', 'dev')}/notifications/from-email",
+    )
+    try:
+        sender = _parameter(sender_parameter, decrypt=False)
+        result = _ses_client().send_email(
+            Source=sender,
+            Destination={"ToAddresses": [email]},
+            Message={
+                "Subject": {"Data": title, "Charset": "UTF-8"},
+                "Body": {
+                    "Text": {"Data": message, "Charset": "UTF-8"},
+                    "Html": {
+                        "Data": (
+                            "<html><body style='font-family:Arial,sans-serif;color:#18313b'>"
+                            f"<h2>{html_lib.escape(title)}</h2><p>{html_lib.escape(message)}</p>"
+                            "<p>MediSlot – Your care, made simpler.</p>"
+                            "</body></html>"
+                        ),
+                        "Charset": "UTF-8",
+                    },
+                },
+            },
+        )
+        logger.info(
+            "SES_EMAIL_ACCEPTED patientId=%s appointmentId=%s type=%s messageId=%s",
+            patient_id, appointment_id, notification_type, result.get("MessageId"),
+        )
+    except Exception:
+        # Email failure must not undo an already committed booking/cancellation.
+        logger.exception(
+            "SES_EMAIL_FAILED patientId=%s appointmentId=%s type=%s",
+            patient_id, appointment_id, notification_type,
+        )
+
+
+def _patient_notifications(user_id):
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT notification_id AS notificationId, appointment_id AS appointmentId,
+                          notification_type AS type, title, message, is_read AS isRead,
+                          created_at AS createdAt
+                   FROM patient_notifications
+                   WHERE patient_user_id=%s
+                   ORDER BY created_at DESC, notification_id DESC LIMIT 100""",
+                (int(user_id),),
+            )
+            rows = cur.fetchall()
+        return _response(200, {"items": rows, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+def _cancel_patient_appointment(appointment_id, patient_id):
+    """Cancel only the caller's future booked appointment and create a refund ledger entry."""
+    conn = _db_connection()
+    slot_id = None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT a.appointment_id, a.patient_user_id, a.doctor_user_id,
+                          a.slot_id, a.slot_start_utc, a.fee_amount, u.email,
+                          u.name AS patient_name
+                   FROM appointments a
+                   JOIN users u ON u.user_id=a.patient_user_id
+                   WHERE a.appointment_id=%s AND a.patient_user_id=%s
+                   FOR UPDATE""",
+                (int(appointment_id), int(patient_id)),
+            )
+            row = cur.fetchone()
+            if not row:
+                conn.rollback()
+                return _response(404, {"message": "Appointment not found"})
+            if row["slot_start_utc"].replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc):
+                conn.rollback()
+                return _response(409, {"message": "Past or started appointments cannot be cancelled"})
+            cur.execute("SELECT status FROM appointments WHERE appointment_id=%s FOR UPDATE", (int(appointment_id),))
+            current = cur.fetchone()
+            if not current or current["status"] not in ("booked", "confirmed"):
+                conn.rollback()
+                return _response(409, {"message": "Only active appointments can be cancelled"})
+            start = row["slot_start_utc"].replace(tzinfo=timezone.utc)
+            tier, percent, refund, hours = _calculate_refund(
+                row["fee_amount"], start, datetime.now(timezone.utc)
+            )
+            fee = Decimal(str(row["fee_amount"]))
+            cur.execute(
+                """UPDATE appointments SET status='cancelled', active_flag=NULL,
+                          updated_at=CURRENT_TIMESTAMP(3)
+                   WHERE appointment_id=%s AND patient_user_id=%s AND status IN ('booked','confirmed')""",
+                (int(appointment_id), int(patient_id)),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                return _response(409, {"message": "Appointment could not be cancelled because its status changed"})
+            cur.execute(
+                """INSERT INTO refund_ledger
+                   (appointment_id, patient_user_id, reason, tier, refund_percent, fee_amount, refund_amount)
+                   VALUES (%s,%s,'PATIENT_CANCEL',%s,%s,%s,%s)""",
+                (int(appointment_id), int(patient_id), tier, percent, fee, refund),
+            )
+            conn.commit()
+            slot_id = row["slot_id"]
+            patient_email = row["email"]
+        # Release one seat only after the RDS cancellation+ledger transaction commits.
+        try:
+            _table("SLOTS_TABLE").update_item(
+                Key={"slotId": slot_id},
+                UpdateExpression="SET bookedCount = bookedCount - :one, #v = if_not_exists(#v,:zero) + :one, updatedAt=:now",
+                ConditionExpression="attribute_exists(slotId) AND bookedCount >= :one",
+                ExpressionAttributeNames={"#v": "version"},
+                ExpressionAttributeValues={":one": 1, ":zero": 0, ":now": datetime.now(timezone.utc).isoformat()},
+            )
+        except Exception:
+            logger.exception("SLOT_SEAT_RELEASE_FAILED appointmentId=%s slotId=%s", appointment_id, slot_id)
+        msg = f"Your MediSlot appointment #{appointment_id} has been cancelled. Refund recorded: {percent}% (₹{refund}) of the consultation fee ₹{fee}. This is a ledger record; no money has been transferred because no payment gateway is connected."
+        _notify_patient(patient_id, appointment_id, "APPOINTMENT_CANCELLED", "Appointment cancelled", msg, patient_email)
+        _publish_medislot_event("AppointmentCancelled", {"appointmentId": int(appointment_id), "patientId": int(patient_id), "slotId": slot_id, "refundPercent": percent, "refundAmount": str(refund), "refundTier": tier})
+        _put_cancellation_tier_metric(tier)
+        return _response(200, {
+            "message": "Appointment cancelled and refund recorded",
+            "appointmentId": int(appointment_id), "refundTier": tier,
+            "refundPercent": percent, "feeAmount": str(fee),
+            "refundAmount": str(refund),
+            "paymentStatus": "LEDGER_ONLY_NO_PAYMENT_GATEWAY",
+        })
+    except pymysql.err.IntegrityError:
+        conn.rollback()
+        logger.exception("CANCELLATION_LEDGER_CONFLICT appointmentId=%s", appointment_id)
+        return _response(409, {"message": "A refund record already exists for this appointment"})
+    except Exception:
+        conn.rollback()
+        logger.exception("APPOINTMENT_CANCELLATION_FAILED appointmentId=%s", appointment_id)
+        return _response(500, {"message": "Appointment cancellation failed"})
+    finally:
+        conn.close()
 
 
 def _patient_appointments(user_id, event):
@@ -2988,6 +3133,19 @@ def _lambda_handler_impl(event, context):
             if role != "patient":
                 return _response(403, {"message": "Only patients can manage patient profiles"})
             return _patient_profile(user_id, method, event)
+
+        # Patient in-app notifications
+        if method == "GET" and path == "/patients/me/notifications":
+            if role != "patient":
+                return _response(403, {"message": "Only patients can view notifications"})
+            return _patient_notifications(user_id)
+
+        # Patient appointment cancellation
+        cancel_match = re.fullmatch(r"/appointments/([1-9][0-9]*)/cancel", path)
+        if method == "POST" and cancel_match:
+            if role != "patient":
+                return _response(403, {"message": "Only patients can cancel their appointments"})
+            return _cancel_patient_appointment(int(cancel_match.group(1)), user_id)
 
         # Patient appointment history (strictly scoped to authenticated patient)
         if method == "GET" and path == "/patients/me/appointments":

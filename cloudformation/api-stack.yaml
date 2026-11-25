@@ -54,9 +54,9 @@ Globals:
         EVENT_BUS_NAME: default
         REFUND_POLICY_PARAMETER: !Sub /medislot/${Environment}/refund/policy
         BOOKING_MAX_ATTEMPTS: "5"
+        SES_FROM_EMAIL_PARAMETER: !Sub /medislot/${Environment}/notifications/from-email
 
 Resources:
-
   ApplicationApiAccessLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:

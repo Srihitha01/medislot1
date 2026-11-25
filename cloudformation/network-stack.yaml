@@ -219,40 +219,6 @@ Resources:
         - Key: Name
           Value: !Sub medislot-${Environment}-lambda-endpoint
 
-  # Private endpoint for EventBridge PutEvents from VPC-attached application Lambdas.
-  EventBridgeInterfaceEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref MediSlotVPC
-      ServiceName: !Sub com.amazonaws.${AWS::Region}.events
-      VpcEndpointType: Interface
-      PrivateDnsEnabled: true
-      SubnetIds:
-        - !Ref PrivateSubnetA
-        - !Ref PrivateSubnetB
-      SecurityGroupIds:
-        - !Ref SSMEndpointSecurityGroup
-      Tags:
-        - Key: Name
-          Value: !Sub medislot-${Environment}-events-endpoint
-
-  # Private endpoint for CloudWatch PutMetricData from VPC-attached Lambdas.
-  CloudWatchMonitoringInterfaceEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref MediSlotVPC
-      ServiceName: !Sub com.amazonaws.${AWS::Region}.monitoring
-      VpcEndpointType: Interface
-      PrivateDnsEnabled: true
-      SubnetIds:
-        - !Ref PrivateSubnetA
-        - !Ref PrivateSubnetB
-      SecurityGroupIds:
-        - !Ref SSMEndpointSecurityGroup
-      Tags:
-        - Key: Name
-          Value: !Sub medislot-${Environment}-monitoring-endpoint
-
   ApiGatewayCloudWatchLogsRole:
     Type: AWS::IAM::Role
     Properties:
