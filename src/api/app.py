@@ -2369,7 +2369,7 @@ def _book_appointment(event, user_id, role):
                     UpdateExpression="SET bookedCount = if_not_exists(bookedCount, :zero) + :one, #ver = :next, updatedAt = :now",
                     ConditionExpression=(
                         "attribute_exists(slotId) AND #st = :open "
-                        "AND bookedCount < capacity AND startUtc > :now "
+                        "AND bookedCount < #cap AND startUtc > :now "
                         "AND (attribute_not_exists(#ver) OR #ver = :expected)"
                     ),
                     ExpressionAttributeNames={"#st": "status", "#ver": "version", "#cap": "capacity"},
