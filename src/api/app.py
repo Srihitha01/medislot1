@@ -28,6 +28,7 @@ import boto3
 import pymysql
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import BotoCoreError, ClientError
+from botocore.config import Config
 
 try:
     from .availability_rules import validate_doctor_day
@@ -42,8 +43,14 @@ logger.setLevel(logging.INFO)
 
 _DDB = None
 _SSM = None
-_EVENTS = boto3.client("events")
-_CLOUDWATCH = boto3.client("cloudwatch")
+_PARAMETER_CACHE = {}
+_AWS_CALL_CONFIG = Config(
+    connect_timeout=2,
+    read_timeout=3,
+    retries={"max_attempts": 2, "mode": "standard"},
+)
+_EVENTS = boto3.client("events", config=_AWS_CALL_CONFIG)
+_CLOUDWATCH = boto3.client("cloudwatch", config=_AWS_CALL_CONFIG)
 
 
 # ---------------------------------------------------------
@@ -54,7 +61,7 @@ def _dynamodb():
     global _DDB
 
     if _DDB is None:
-        _DDB = boto3.resource("dynamodb")
+        _DDB = boto3.resource("dynamodb", config=_AWS_CALL_CONFIG)
 
     return _DDB
 
@@ -63,7 +70,7 @@ def _ssm():
     global _SSM
 
     if _SSM is None:
-        _SSM = boto3.client("ssm")
+        _SSM = boto3.client("ssm", config=_AWS_CALL_CONFIG)
 
     return _SSM
 
@@ -80,10 +87,27 @@ def _table(env_name: str):
 
 
 def _parameter(name: str, decrypt: bool = False):
-    return _ssm().get_parameter(
+    """Read SSM parameters with a short execution-environment cache.
+
+    The Lambda is VPC-attached; bounded SDK timeouts prevent an unreachable
+    interface endpoint from consuming the entire API request timeout.
+    """
+    now = time.monotonic()
+    cached = _PARAMETER_CACHE.get(name)
+    if cached and cached[0] > now:
+        return cached[1]
+    started = time.monotonic()
+    logger.info("DEPENDENCY_START service=ssm operation=get_parameter name=%s", name)
+    value = _ssm().get_parameter(
         Name=name,
         WithDecryption=decrypt,
     )["Parameter"]["Value"]
+    _PARAMETER_CACHE[name] = (now + 60, value)
+    logger.info(
+        "DEPENDENCY_END service=ssm operation=get_parameter name=%s durationMs=%.2f",
+        name, (time.monotonic() - started) * 1000,
+    )
+    return value
 
 
 # ---------------------------------------------------------
@@ -2316,6 +2340,7 @@ def _book_appointment(event, user_id, role):
     expires_at = now_epoch + 24 * 60 * 60
 
     try:
+        logger.info("BOOKING_STAGE_START stage=idempotency_claim slotId=%s", slot_id)
         idem_table.put_item(
             Item={
                 "idemKey": idem_key,
@@ -2327,6 +2352,7 @@ def _book_appointment(event, user_id, role):
             },
             ConditionExpression=Attr("idemKey").not_exists(),
         )
+        logger.info("BOOKING_STAGE_END stage=idempotency_claim slotId=%s", slot_id)
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
             logger.exception("Unable to create idempotency record")
@@ -2359,11 +2385,16 @@ def _book_appointment(event, user_id, role):
         retries = 0
         updated = None
         for attempt in range(max_attempts):
+            stage_started = time.monotonic()
+            logger.info("BOOKING_STAGE_START stage=slot_read slotId=%s attempt=%s", slot_id, attempt + 1)
             current = slots.get_item(Key={"slotId": slot_id}, ConsistentRead=True).get("Item")
+            logger.info("BOOKING_STAGE_END stage=slot_read slotId=%s durationMs=%.2f", slot_id, (time.monotonic() - stage_started) * 1000)
             if not current:
                 raise ValueError("Slot does not exist")
             current_version = int(current.get("version", 0))
             try:
+                stage_started = time.monotonic()
+                logger.info("BOOKING_STAGE_START stage=slot_reservation slotId=%s attempt=%s", slot_id, attempt + 1)
                 updated = slots.update_item(
                     Key={"slotId": slot_id},
                     UpdateExpression="SET bookedCount = if_not_exists(bookedCount, :zero) + :one, #ver = :next, updatedAt = :now",
@@ -2380,6 +2411,7 @@ def _book_appointment(event, user_id, role):
                     ReturnValues="ALL_NEW",
                 )["Attributes"]
                 reserved = True
+                logger.info("BOOKING_STAGE_END stage=slot_reservation slotId=%s durationMs=%.2f", slot_id, (time.monotonic() - stage_started) * 1000)
                 break
             except ClientError as conflict:
                 if conflict.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
@@ -2400,8 +2432,13 @@ def _book_appointment(event, user_id, role):
         if not re.fullmatch(r"[1-9][0-9]{0,19}", consultation_id):
             raise ValueError("Slot contains an invalid numeric consultationTypeId")
 
+        stage_started = time.monotonic()
+        logger.info("BOOKING_STAGE_START stage=rds_connect slotId=%s", slot_id)
         conn = _db_connection()
+        logger.info("BOOKING_STAGE_END stage=rds_connect slotId=%s durationMs=%.2f", slot_id, (time.monotonic() - stage_started) * 1000)
         with conn.cursor() as cur:
+            stage_started = time.monotonic()
+            logger.info("BOOKING_STAGE_START stage=consultation_lookup slotId=%s", slot_id)
             cur.execute(
                 """
                 SELECT fee_amount
@@ -2413,11 +2450,14 @@ def _book_appointment(event, user_id, role):
                 (int(consultation_id), int(updated["doctorId"])),
             )
             consultation = cur.fetchone()
+            logger.info("BOOKING_STAGE_END stage=consultation_lookup slotId=%s durationMs=%.2f", slot_id, (time.monotonic() - stage_started) * 1000)
             if not consultation:
                 raise ValueError("Consultation type is no longer active")
 
             start = datetime.fromisoformat(updated["startUtc"].replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
             end = datetime.fromisoformat(updated["endUtc"].replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
+            stage_started = time.monotonic()
+            logger.info("BOOKING_STAGE_START stage=appointment_insert slotId=%s", slot_id)
             cur.execute(
                 """
                 INSERT INTO appointments (
@@ -2433,8 +2473,13 @@ def _book_appointment(event, user_id, role):
                 ),
             )
             appointment_id = int(cur.lastrowid)
+            logger.info("BOOKING_STAGE_END stage=appointment_insert slotId=%s durationMs=%.2f appointmentId=%s", slot_id, (time.monotonic() - stage_started) * 1000, appointment_id)
+        stage_started = time.monotonic()
+        logger.info("BOOKING_STAGE_START stage=rds_commit slotId=%s", slot_id)
         conn.commit()
+        logger.info("BOOKING_STAGE_END stage=rds_commit slotId=%s durationMs=%.2f", slot_id, (time.monotonic() - stage_started) * 1000)
         committed = True
+        logger.info("BOOKING_STAGE_START stage=eventbridge_publish slotId=%s appointmentId=%s", slot_id, appointment_id)
         _publish_medislot_event("AppointmentBooked", {
             "appointmentId": appointment_id,
             "patientId": int(patient_id),
@@ -2442,6 +2487,7 @@ def _book_appointment(event, user_id, role):
             "slotId": slot_id,
             "feeAmount": str(consultation["fee_amount"]),
         })
+        logger.info("BOOKING_STAGE_END stage=eventbridge_publish slotId=%s appointmentId=%s", slot_id, appointment_id)
 
         response_body = {
             "message": "Appointment booked successfully",

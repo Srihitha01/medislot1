@@ -749,6 +749,30 @@ Resources:
                 Action: sqs:SendMessage
                 Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-application-dlq
 
+        - PolicyName: PublishMediSlotDomainEvents
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource:
+                  - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/default
+
+        - PolicyName: PublishMediSlotCustomMetrics
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace:
+                      - MediSlot/Bookings
+                      - MediSlot/Appointments
+
         - PolicyName: PublishMediSlotLogsAndTracing
           PolicyDocument:
             Version: "2012-10-17"
