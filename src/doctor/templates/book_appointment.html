@@ -61,7 +61,7 @@ el('confirmBooking').onclick=async()=>{
   let data={};try{data=await response.json()}catch{}
   if(!response.ok){showMessage(data.message||'We could not book this slot. Please try again or choose another slot.', 'error');button.disabled=false;button.textContent='Try booking again';return}
   completed=true;button.textContent='Appointment confirmed';showMessage(`Your appointment is booked successfully. Appointment ID: ${data.appointmentId??'confirmed'}. You can view it under My appointments.`,'success');
-  const back=document.createElement('a');back.href='/patient';back.textContent='Go to My appointments';back.style.display='inline-block';back.style.marginTop='12px';el('message').append(document.createElement('br'),back);
+  const back=document.createElement('a');back.href='/patient?panel=appointments';back.textContent='Go to My appointments';back.style.display='inline-block';back.style.marginTop='12px';el('message').append(document.createElement('br'),back);
  }catch(e){showMessage('Unable to reach the booking service. You can retry safely; the same idempotency key will be reused.','error');button.disabled=false;button.textContent='Retry booking'}
 };
 el('cancelBooking').onclick=()=>{location.href='/patient'};

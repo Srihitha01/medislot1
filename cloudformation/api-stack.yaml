@@ -62,6 +62,7 @@ Globals:
         REFUND_POLICY_PARAMETER: !Sub /medislot/${Environment}/refund/policy
         BOOKING_MAX_ATTEMPTS: "5"
         SES_FROM_EMAIL_PARAMETER: !Sub /medislot/${Environment}/notifications/from-email
+        SES_FROM_EMAIL: !Ref SesFromEmail
 
 Resources:
   # SES identity verification is managed by CloudFormation. AWS sends a
@@ -71,15 +72,14 @@ Resources:
     Properties:
       EmailIdentity: !Ref SesFromEmail
 
-  # Store the sender address in Parameter Store. The application reads this
-  # parameter at runtime; the address is supplied only through GitHub Secrets.
+  # Sender address is supplied by GitHub Actions and stored for Lambda runtime lookup.
   MediSlotSesFromEmailParameter:
     Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub /medislot/${Environment}/notifications/from-email
       Type: String
       Value: !Ref SesFromEmail
-      Description: !Sub MediSlot ${Environment} verified SES sender email
+      Description: !Sub MediSlot ${Environment} patient notification sender
 
   # Attach only the SES send permission required by patient notifications.
   MediSlotPatientEmailSesPolicy:
@@ -97,12 +97,6 @@ Resources:
               - ses:SendEmail
             Resource:
               - !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*
-          - Sid: ReadPatientEmailSenderParameter
-            Effect: Allow
-            Action:
-              - ssm:GetParameter
-            Resource:
-              - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/notifications/from-email
 
   ApplicationApiAccessLogGroup:
     Type: AWS::Logs::LogGroup
