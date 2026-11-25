@@ -191,6 +191,19 @@ Resources:
             Resource:
               - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
 
+          - Sid: ManageMediSlotSesSenderIdentity
+            Effect: Allow
+            Action:
+              - ses:CreateEmailIdentity
+              - ses:DeleteEmailIdentity
+              - ses:GetEmailIdentity
+              - ses:PutEmailIdentityDkimAttributes
+              - ses:PutEmailIdentityMailFromAttributes
+              - ses:TagResource
+              - ses:UntagResource
+            Resource:
+              - !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*
+
   GitHubDeployIamPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:

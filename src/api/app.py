@@ -2719,7 +2719,11 @@ def _notify_patient(patient_id, appointment_id, notification_type, title, messag
         f"/medislot/{os.environ.get('ENVIRONMENT', 'dev')}/notifications/from-email",
     )
     try:
-        sender = _parameter(sender_parameter, decrypt=False)
+        # GitHub Actions supplies the sender through a NoEcho CloudFormation
+        # parameter. Keep the SSM lookup as a backwards-compatible fallback.
+        sender = os.environ.get("SES_FROM_EMAIL", "").strip()
+        if not sender:
+            sender = _parameter(sender_parameter, decrypt=False)
         result = _ses_client().send_email(
             Source=sender,
             Destination={"ToAddresses": [email]},
