@@ -45,6 +45,7 @@ Globals:
         DB_PASSWORD_PARAMETER_VERSION: !Ref DBPasswordParameterVersion
         JWT_SECRET_PARAMETER: !Sub /medislot/${Environment}/auth/jwt-secret
         JWT_SECRET_PARAMETER_VERSION: !Ref JWTSecretParameterVersion
+        SNS_TOPIC_ARN: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-patient-notifications
         AUTH_TOKENS_TABLE: !Sub medislot-${Environment}-auth-tokens
         ACCESS_TOKEN_MINUTES: "15"
         REFRESH_TOKEN_DAYS: "7"

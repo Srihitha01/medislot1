@@ -191,18 +191,17 @@ Resources:
             Resource:
               - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
 
-          - Sid: ManageMediSlotSesSenderIdentity
+          - Sid: ManageMediSlotPatientNotificationTopic
             Effect: Allow
             Action:
-              - ses:CreateEmailIdentity
-              - ses:DeleteEmailIdentity
-              - ses:GetEmailIdentity
-              - ses:PutEmailIdentityDkimAttributes
-              - ses:PutEmailIdentityMailFromAttributes
-              - ses:TagResource
-              - ses:UntagResource
+              - sns:CreateTopic
+              - sns:DeleteTopic
+              - sns:GetTopicAttributes
+              - sns:SetTopicAttributes
+              - sns:TagResource
+              - sns:UntagResource
             Resource:
-              - !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*
+              - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-patient-notifications
 
   GitHubDeployIamPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -424,6 +423,15 @@ Resources:
                 Action: sqs:SendMessage
                 Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-auth-dlq
 
+        - PolicyName: SubscribePatientEmailNotifications
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Subscribe
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-patient-notifications
+
         # The schema initializer uses the registration role in the current stack.
         - PolicyName: SendSchemaInitializationFailuresToDLQ
           PolicyDocument:
@@ -463,7 +471,6 @@ Resources:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/port
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/app-password
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/jwt-secret
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/notifications/from-email
               - Effect: Allow
                 Action:
                   - dynamodb:GetItem
@@ -521,7 +528,6 @@ Resources:
                   - ssm:GetParameter
                 Resource:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/jwt-secret
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/notifications/from-email
               - Effect: Allow
                 Action:
                   - dynamodb:GetItem
@@ -581,7 +587,6 @@ Resources:
                   - ssm:GetParameter
                 Resource:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/jwt-secret
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/notifications/from-email
               - Effect: Allow
                 Action:
                   - dynamodb:GetItem
@@ -639,7 +644,6 @@ Resources:
                   - ssm:GetParameter
                 Resource:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/jwt-secret
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/notifications/from-email
               - Effect: Allow
                 Action:
                   - dynamodb:GetItem
@@ -698,7 +702,6 @@ Resources:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/port
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/app-password
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/jwt-secret
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/notifications/from-email
 
               - Effect: Allow
                 Action:
@@ -767,14 +770,15 @@ Resources:
                 Action: sqs:SendMessage
                 Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-application-dlq
 
-        - PolicyName: SendPatientTransactionalEmail
+        - PolicyName: PublishAndSubscribePatientNotifications
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action:
-                  - ses:SendEmail
-                Resource: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*
+                  - sns:Publish
+                  - sns:Subscribe
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-patient-notifications
 
         - PolicyName: PublishMediSlotLogsAndTracing
           PolicyDocument:

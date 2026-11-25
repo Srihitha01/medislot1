@@ -16,13 +16,6 @@ Parameters:
     Default: app.lambda_handler
     Description: Python module and handler for the application API router
 
-  SesFromEmail:
-    Type: String
-    NoEcho: true
-    Description: Verified SES sender email supplied by GitHub Actions secret MEDISLOT_SES_FROM_EMAIL
-    AllowedPattern: '^[^\s@]+@[^\s@]+\.[^\s@]+$'
-    ConstraintDescription: Provide a valid sender email address.
-
   EnableReservedConcurrency:
     Type: String
     Default: "false"
@@ -61,42 +54,21 @@ Globals:
         EVENT_BUS_NAME: default
         REFUND_POLICY_PARAMETER: !Sub /medislot/${Environment}/refund/policy
         BOOKING_MAX_ATTEMPTS: "5"
-        SES_FROM_EMAIL_PARAMETER: !Sub /medislot/${Environment}/notifications/from-email
-        SES_FROM_EMAIL: !Ref SesFromEmail
+        SNS_TOPIC_ARN: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-patient-notifications
 
 Resources:
-  # SES identity verification is managed by CloudFormation. AWS sends a
-  # verification message to the configured sender address after deployment.
-  MediSlotSesSenderIdentity:
-    Type: AWS::SES::EmailIdentity
+  # Shared standard SNS topic. Patient subscriptions are filtered by numeric patientId.
+  MediSlotPatientNotificationsTopic:
+    Type: AWS::SNS::Topic
     Properties:
-      EmailIdentity: !Ref SesFromEmail
-
-  # Sender address is supplied by GitHub Actions and stored for Lambda runtime lookup.
-  MediSlotSesFromEmailParameter:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub /medislot/${Environment}/notifications/from-email
-      Type: String
-      Value: !Ref SesFromEmail
-      Description: !Sub MediSlot ${Environment} patient notification sender
-
-  # Attach only the SES send permission required by patient notifications.
-  MediSlotPatientEmailSesPolicy:
-    Type: AWS::IAM::Policy
-    Properties:
-      PolicyName: !Sub medislot-${Environment}-patient-email-ses
-      Roles:
-        - !Sub medislot-${Environment}-app-router-role
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Sid: SendPatientTransactionalEmail
-            Effect: Allow
-            Action:
-              - ses:SendEmail
-            Resource:
-              - !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*
+      TopicName: !Sub medislot-${Environment}-patient-notifications
+      DisplayName: !Sub MediSlot ${Environment} patient notifications
+      KmsMasterKeyId: alias/aws/sns
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
 
   ApplicationApiAccessLogGroup:
     Type: AWS::Logs::LogGroup
@@ -485,3 +457,10 @@ Outputs:
     Value: !GetAtt AppRouterFunction.Arn
     Export:
       Name: !Sub medislot-${Environment}-AppRouterFunctionArn
+
+  PatientNotificationsTopicArn:
+    Description: Shared SNS topic for patient email notifications
+    Value: !Ref MediSlotPatientNotificationsTopic
+    Export:
+      Name: !Sub medislot-${Environment}-PatientNotificationsTopicArn
+

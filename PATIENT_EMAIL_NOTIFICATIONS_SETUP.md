@@ -1,31 +1,29 @@
-# MediSlot patient email notifications (Amazon SES)
+# MediSlot patient email notifications (Amazon SNS)
 
-This update wires the existing patient booking/cancellation notification flow to Amazon SES.
+MediSlot uses Amazon SNS standard-topic email subscriptions instead of Amazon SES. No custom sending domain or SES sender identity is configured.
 
-## What changed
+## Architecture
 
-- The sender address is read from the GitHub Actions secret `MEDISLOT_SES_FROM_EMAIL` during the API stack deployment. It is not written into Python, YAML, or this repository.
-- The API CloudFormation template declares the sender as a `NoEcho` parameter and injects it into the Lambda environment. The Lambda environment remains encrypted with the function's configured KMS key.
-- CloudFormation creates the SES email identity in `ap-south-1`.
-- The API stack attaches a narrowly scoped `ses:SendEmail` permission to the existing application-router Lambda role.
-- The application uses the injected `SES_FROM_EMAIL` value first and retains the previous SSM lookup as a backwards-compatible fallback.
-- The network template already defines the SES API interface endpoint for the private Lambda subnets. No NAT Gateway is added.
-- Existing in-app patient notification persistence remains in place. Email failures are logged and do not roll back a committed booking/cancellation.
+- One topic per environment: `medislot-<environment>-patient-notifications`.
+- Each patient subscribes their registered email address to the shared topic.
+- Each subscription receives a filter policy on the `patientId` message attribute. The registration and API Lambdas publish the authenticated patient's numeric ID as that attribute.
+- The patient must confirm the SNS subscription email before receiving appointment email notifications.
+- In-app notifications continue to be saved in the RDS `patient_notifications` table.
 
-## 1. GitHub repository secret
+## Registration and delivery
 
-In `Srihitha01/medislot1`, open **Settings → Secrets and variables → Actions → New repository secret**.
+1. Patient registration commits the patient and user records to RDS.
+2. The registration Lambda requests an SNS email subscription with the patient's numeric `patientId` filter.
+3. SNS sends a confirmation email. Registration still succeeds if the SNS request fails; the failure is recorded in CloudWatch Logs.
+4. On booking/cancellation, the API saves the in-app notification and ensures the registered email has an SNS subscription.
+5. The API publishes the message to the shared topic with the `patientId` message attribute.
+6. SNS delivers the message only to the matching patient's confirmed subscription.
 
-- Name: `MEDISLOT_SES_FROM_EMAIL`
-- Value: the sender mailbox address you control and want SES to send from.
+The API repeats the idempotent subscription request when sending a notification. This supports patients who registered before SNS was enabled and patients whose registered email address has changed.
 
-Do not add the email address to source files or commit it.
+## One-time IAM stack update before the next workflow run
 
-## 2. Update the existing IAM stack once
-
-The workflow intentionally verifies (rather than creates/updates) the IAM stack because that stack contains the GitHub deployment role used by the workflow itself. Before the first API deployment with this update, update the existing IAM stack so that its GitHub deployment role can manage the SES identity resource.
-
-Run these commands in Windows PowerShell from the repository root, using AWS CLI credentials authorized to update the existing IAM stack:
+The existing GitHub Actions workflow deliberately verifies the IAM stack instead of updating it, because that stack contains the GitHub deployment role used by the workflow itself. Therefore, update the IAM stack once using AWS CLI credentials authorized to update IAM roles and policies. Run from the repository root in Windows PowerShell:
 
 ```powershell
 $Region = "ap-south-1"
@@ -37,41 +35,28 @@ aws cloudformation deploy --stack-name $IamStack --template-file cloudformation/
 if ($LASTEXITCODE -ne 0) { throw "IAM stack update failed." }
 ```
 
-This is an update to the existing IAM stack; it does not delete or recreate the database or application data. Review the CloudFormation change set/stack events before proceeding.
+Review the stack events and confirm `UPDATE_COMPLETE` before pushing the application changes. This updates IAM permissions in place; it does not delete or recreate RDS data.
 
-## 3. Deploy the application update
+## CloudFormation and IAM
 
-Commit and push the updated repository files to a branch matched by the existing workflow (`feature/**` or `main`), or start the workflow with **Actions → MediSlot CI/CD → Run workflow**.
+- `cloudformation/api-stack.yaml` creates the SNS topic and injects `SNS_TOPIC_ARN` into the API Lambda.
+- `cloudformation/authentication.yaml` injects the same topic ARN into the registration Lambda.
+- `cloudformation/iam-stack.yaml` grants `sns:Subscribe` to the registration role and `sns:Publish` plus `sns:Subscribe` to the API role. The deployment role can manage the topic.
+- `cloudformation/network-stack.yaml` creates an SNS interface VPC endpoint. MediSlot Lambda functions run in private subnets without a NAT Gateway.
+- The GitHub Actions workflow no longer expects `MEDISLOT_SES_FROM_EMAIL`.
 
-The API deployment job checks that `MEDISLOT_SES_FROM_EMAIL` is present. It passes the value to the `SesFromEmail` CloudFormation parameter; the workflow does not print the value.
+## CloudWatch log events
 
-## 4. Verify the sender mailbox in SES
+- `SNS_PATIENT_EMAIL_SUBSCRIPTION_REQUESTED`: registration requested the email subscription.
+- `SNS_PATIENT_EMAIL_SUBSCRIPTION_FAILED`: registration could not request the subscription; account creation remains successful.
+- `SNS_EMAIL_CONFIRMATION_REQUIRED`: SNS reports that the endpoint is still pending confirmation.
+- `SNS_EMAIL_PUBLISH_ACCEPTED`: SNS accepted the notification publish request. It does not prove final inbox delivery.
+- `SNS_EMAIL_PUBLISH_FAILED`: SNS publish or subscription setup failed.
+- `PATIENT_IN_APP_NOTIFICATION_SAVED`: RDS in-app notification was persisted.
+- `PATIENT_NOTIFICATION_PERSIST_FAILED`: the in-app notification write failed independently of email delivery.
 
-After the API stack creates `MediSlotSesSenderIdentity`, Amazon SES sends a verification email to the sender mailbox. Open that mailbox and click the SES verification link. The identity must show as verified in SES in **Asia Pacific (Mumbai), `ap-south-1`**.
+## Important SNS behavior
 
-Useful read-only check:
+SNS email subscriptions require an explicit confirmation click. Until confirmed, the address will not receive topic notifications. SNS email uses its standard notification format and does not support custom HTML templates or a custom sender domain. SNS email throughput and delivery quotas apply.
 
-```powershell
-aws sesv2 get-email-identity --email-identity $env:MEDISLOT_SES_FROM_EMAIL --region ap-south-1
-```
-
-Set `$env:MEDISLOT_SES_FROM_EMAIL` locally only if you want to run this check from PowerShell; do not save the address in a source file.
-
-## 5. Request SES production access
-
-The account's last reported SES status was `ProductionAccessEnabled: false` (SES sandbox). While the account remains in the sandbox, SES only sends to verified recipient identities (or the SES mailbox simulator). This means ordinary patients cannot all receive email until AWS approves production access.
-
-In SES for `ap-south-1`, request production access and describe the use case as transactional appointment booking, confirmation, and cancellation notifications sent only to the email address registered by the patient. Include how users opt in, how addresses are collected, and how bounces/complaints are handled. Do not send marketing mail through this flow.
-
-## 6. Expected runtime behavior and logs
-
-- `SES_EMAIL_ACCEPTED`: SES accepted the send request; this does not by itself prove final inbox delivery.
-- `SES_EMAIL_FAILED`: the Lambda logs the SES/SSM exception. Check sender verification, sandbox recipient verification, IAM permission, endpoint connectivity, and SES account status.
-- `SES_EMAIL_SKIPPED ... registered_email_missing`: the patient record did not provide a registered email address.
-- `PATIENT_NOTIFICATION_PERSIST_FAILED`: the in-app notification write failed independently of SES.
-
-The recipient continues to be the patient's registered email address looked up by the existing booking/cancellation code. The sender is the configured MediSlot mailbox.
-
-## Important
-
-The ZIP contains the source and deployment configuration; it cannot verify the mailbox or obtain SES production approval on your behalf. Email delivery to arbitrary patient addresses is ready only after the sender verification and SES production-access prerequisites above are completed.
+Existing patients who registered before this change will be subscribed the next time MediSlot attempts to send them a notification; they must confirm the SNS email before later notifications can be delivered.

@@ -54,6 +54,7 @@ MAX_UNSIGNED_BIGINT = 18446744073709551615
 # ---------------------------------------------------------
 
 _ssm = None
+_sns = None
 
 
 def get_ssm_client():
@@ -72,6 +73,38 @@ def get_ssm_client():
 
     return _ssm
 
+
+
+def get_sns_client():
+    """Create the SNS client lazily so importing this module makes no AWS calls."""
+    global _sns
+    if _sns is None:
+        _sns = boto3.client("sns", region_name=AWS_REGION)
+    return _sns
+
+
+def subscribe_patient_email(user_id, email):
+    """Subscribe one patient email to the shared topic with a patientId filter."""
+    topic_arn = os.getenv("SNS_TOPIC_ARN")
+    if not topic_arn:
+        raise RuntimeError("SNS_TOPIC_ARN is not configured")
+    response = get_sns_client().subscribe(
+        TopicArn=topic_arn,
+        Protocol="email",
+        Endpoint=email,
+        Attributes={
+            "FilterPolicy": json.dumps({"patientId": [str(int(user_id))]}),
+            "FilterPolicyScope": "MessageAttributes",
+        },
+        ReturnSubscriptionArn=True,
+    )
+    subscription_arn = response.get("SubscriptionArn", "pending confirmation")
+    logger.info(
+        "SNS_PATIENT_EMAIL_SUBSCRIPTION_REQUESTED patientId=%s subscriptionState=%s",
+        user_id,
+        "pending_confirmation" if subscription_arn == "pending confirmation" else "created_or_existing",
+    )
+    return subscription_arn
 
 def get_parameter(parameter_name):
     """
@@ -368,6 +401,17 @@ def register_user(data):
                 )
 
             connection.commit()
+
+            if role == "patient":
+                try:
+                    subscribe_patient_email(user_id, email)
+                except Exception:
+                    # Registration is already committed. Notification setup must not
+                    # roll back or falsely fail creation of the patient account.
+                    logger.exception(
+                        "SNS_PATIENT_EMAIL_SUBSCRIPTION_FAILED patientId=%s",
+                        user_id,
+                    )
 
             logger.info(
                 "Registration successful: user_id=%s, role=%s",

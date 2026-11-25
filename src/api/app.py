@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import html as html_lib
 import json
 import logging
 import os
@@ -2354,6 +2353,69 @@ def _book_appointment(event, user_id, role):
     conn = None
 
     try:
+        # Read the slot's doctor before reserving capacity. The patient row lock
+        # serializes all booking attempts for this patient across every doctor.
+        initial_slot = slots.get_item(Key={"slotId": slot_id}, ConsistentRead=True).get("Item")
+        if not initial_slot:
+            raise ValueError("Slot does not exist")
+        doctor_id = initial_slot.get("doctorId")
+        if not doctor_id:
+            raise ValueError("Slot does not identify a doctor")
+
+        conn = _db_connection()
+        with conn.cursor() as policy_cur:
+            policy_cur.execute(
+                "SELECT user_id FROM users WHERE user_id=%s AND role='patient' FOR UPDATE",
+                (int(patient_id),),
+            )
+            if not policy_cur.fetchone():
+                conn.rollback()
+                _delete_idempotency_record(idem_table, idem_key)
+                return _response(404, {"message": "Patient account was not found"})
+
+            policy_cur.execute(
+                """
+                SELECT COUNT(*) AS active_count
+                FROM appointments
+                WHERE patient_user_id=%s
+                  AND status IN ('booked', 'confirmed')
+                """,
+                (int(patient_id),),
+            )
+            active_count = int((policy_cur.fetchone() or {}).get("active_count", 0))
+            if active_count >= 3:
+                conn.rollback()
+                _delete_idempotency_record(idem_table, idem_key)
+                logger.info(
+                    "BOOKING_REJECTED_PATIENT_ACTIVE_LIMIT patientId=%s activeCount=%s limit=3",
+                    patient_id, active_count,
+                )
+                return _response(409, {
+                    "message": "You can have a maximum of 3 active appointments across all doctors. Cancel or complete an appointment before booking another."
+                })
+
+            policy_cur.execute(
+                """
+                SELECT COUNT(*) AS doctor_active_count
+                FROM appointments
+                WHERE patient_user_id=%s
+                  AND doctor_user_id=%s
+                  AND status IN ('booked', 'confirmed')
+                """,
+                (int(patient_id), int(doctor_id)),
+            )
+            doctor_active_count = int((policy_cur.fetchone() or {}).get("doctor_active_count", 0))
+            if doctor_active_count >= 1:
+                conn.rollback()
+                _delete_idempotency_record(idem_table, idem_key)
+                logger.info(
+                    "BOOKING_REJECTED_DUPLICATE_DOCTOR patientId=%s doctorId=%s",
+                    patient_id, doctor_id,
+                )
+                return _response(409, {
+                    "message": "You already have an active appointment with this doctor. You can book another appointment with this doctor after the existing appointment is completed or cancelled."
+                })
+
         # OCC on the slot item. Every competing writer must present the version
         # it observed; successful writes increment it atomically. The bounded
         # retry loop re-reads strongly consistently and never serialises callers.
@@ -2402,7 +2464,6 @@ def _book_appointment(event, user_id, role):
         if not re.fullmatch(r"[1-9][0-9]{0,19}", consultation_id):
             raise ValueError("Slot contains an invalid numeric consultationTypeId")
 
-        conn = _db_connection()
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -2679,10 +2740,11 @@ def _patient_profile(user_id, method, event):
 
 
 
-def _ses_client():
+def _sns_client():
+    """Create the SNS client in the configured AWS region."""
     from botocore.config import Config
     return boto3.client(
-        "ses",
+        "sns",
         region_name=os.environ.get("AWS_REGION", "ap-south-1"),
         config=Config(connect_timeout=2, read_timeout=4, retries={"max_attempts": 1}),
     )
@@ -2698,12 +2760,16 @@ def _save_patient_notification(cur, patient_id, notification_type, title, messag
 
 
 def _notify_patient(patient_id, appointment_id, notification_type, title, message, email):
-    """Persist in-app notification and send transactional email directly through SES."""
+    """Persist the in-app notification and publish an email notification through SNS."""
     conn = _db_connection()
     try:
         with conn.cursor() as cur:
             _save_patient_notification(cur, patient_id, notification_type, title, message, appointment_id)
         conn.commit()
+        logger.info(
+            "PATIENT_IN_APP_NOTIFICATION_SAVED patientId=%s appointmentId=%s type=%s",
+            patient_id, appointment_id, notification_type,
+        )
     except Exception:
         conn.rollback()
         logger.exception("PATIENT_NOTIFICATION_PERSIST_FAILED patientId=%s", patient_id)
@@ -2711,46 +2777,62 @@ def _notify_patient(patient_id, appointment_id, notification_type, title, messag
         conn.close()
 
     if not email:
-        logger.warning("SES_EMAIL_SKIPPED patientId=%s reason=registered_email_missing", patient_id)
+        logger.warning(
+            "SNS_EMAIL_SKIPPED patientId=%s appointmentId=%s reason=registered_email_missing",
+            patient_id, appointment_id,
+        )
         return
 
-    sender_parameter = os.environ.get(
-        "SES_FROM_EMAIL_PARAMETER",
-        f"/medislot/{os.environ.get('ENVIRONMENT', 'dev')}/notifications/from-email",
-    )
+    topic_arn = os.environ.get("SNS_TOPIC_ARN")
+    if not topic_arn:
+        logger.error(
+            "SNS_EMAIL_FAILED patientId=%s appointmentId=%s reason=SNS_TOPIC_ARN_not_configured",
+            patient_id, appointment_id,
+        )
+        return
+
     try:
-        # GitHub Actions supplies the sender through a NoEcho CloudFormation
-        # parameter. Keep the SSM lookup as a backwards-compatible fallback.
-        sender = os.environ.get("SES_FROM_EMAIL", "").strip()
-        if not sender:
-            sender = _parameter(sender_parameter, decrypt=False)
-        result = _ses_client().send_email(
-            Source=sender,
-            Destination={"ToAddresses": [email]},
-            Message={
-                "Subject": {"Data": title, "Charset": "UTF-8"},
-                "Body": {
-                    "Text": {"Data": message, "Charset": "UTF-8"},
-                    "Html": {
-                        "Data": (
-                            "<html><body style='font-family:Arial,sans-serif;color:#18313b'>"
-                            f"<h2>{html_lib.escape(title)}</h2><p>{html_lib.escape(message)}</p>"
-                            "<p>MediSlot – Your care, made simpler.</p>"
-                            "</body></html>"
-                        ),
-                        "Charset": "UTF-8",
-                    },
-                },
+        sns = _sns_client()
+        # Subscribe is idempotent for an existing endpoint/topic pair. This also
+        # onboards patients who registered before SNS notifications were enabled.
+        subscription = sns.subscribe(
+            TopicArn=topic_arn,
+            Protocol="email",
+            Endpoint=email.strip().lower(),
+            Attributes={
+                "FilterPolicy": json.dumps({"patientId": [str(int(patient_id))]}),
+                "FilterPolicyScope": "MessageAttributes",
+            },
+            ReturnSubscriptionArn=True,
+        )
+        subscription_arn = subscription.get("SubscriptionArn", "pending confirmation")
+        if subscription_arn == "pending confirmation":
+            logger.info(
+                "SNS_EMAIL_CONFIRMATION_REQUIRED patientId=%s endpoint=%s",
+                patient_id, email.strip().lower(),
+            )
+
+        result = sns.publish(
+            TopicArn=topic_arn,
+            Subject=str(title)[:100],
+            Message=f"{title}\\n\\n{message}\\n\\nMediSlot – Your care, made simpler.",
+            MessageAttributes={
+                "patientId": {
+                    "DataType": "String",
+                    "StringValue": str(int(patient_id)),
+                }
             },
         )
         logger.info(
-            "SES_EMAIL_ACCEPTED patientId=%s appointmentId=%s type=%s messageId=%s",
-            patient_id, appointment_id, notification_type, result.get("MessageId"),
+            "SNS_EMAIL_PUBLISH_ACCEPTED patientId=%s appointmentId=%s type=%s messageId=%s subscriptionState=%s",
+            patient_id, appointment_id, notification_type,
+            result.get("MessageId"),
+            "pending_confirmation" if subscription_arn == "pending confirmation" else "subscribed_or_pending_delivery",
         )
     except Exception:
-        # Email failure must not undo an already committed booking/cancellation.
+        # Notification delivery must never undo an already committed booking/cancellation.
         logger.exception(
-            "SES_EMAIL_FAILED patientId=%s appointmentId=%s type=%s",
+            "SNS_EMAIL_PUBLISH_FAILED patientId=%s appointmentId=%s type=%s",
             patient_id, appointment_id, notification_type,
         )
 

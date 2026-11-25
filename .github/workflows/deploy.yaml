@@ -984,15 +984,8 @@ jobs:
 
       - name: Deploy API stack using Change Set
         shell: bash
-        env:
-          SES_FROM_EMAIL: ${{ secrets.MEDISLOT_SES_FROM_EMAIL }}
         run: |
           set -euo pipefail
-
-          if [[ -z "${SES_FROM_EMAIL:-}" ]]; then
-            echo "::error::Missing GitHub Actions secret MEDISLOT_SES_FROM_EMAIL. Add it under repository Settings > Secrets and variables > Actions."
-            exit 1
-          fi
 
           APP_STACK="$API_STACK"
 
@@ -1032,7 +1025,6 @@ jobs:
             --template-body file:///tmp/api-packaged.yaml \
             --parameters \
               ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
-              ParameterKey=SesFromEmail,ParameterValue="$SES_FROM_EMAIL" \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
             --description "GitHub Actions run ${GITHUB_RUN_ID}"
 

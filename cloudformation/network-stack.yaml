@@ -305,11 +305,11 @@ Resources:
         - Key: Name
           Value: !Sub medislot-${Environment}-eventbridge-endpoint
 
-  SESInterfaceEndpoint:
+  SNSInterfaceEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
       VpcId: !Ref MediSlotVPC
-      ServiceName: !Sub com.amazonaws.${AWS::Region}.email
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.sns
       VpcEndpointType: Interface
       PrivateDnsEnabled: true
       SubnetIds:
@@ -319,7 +319,7 @@ Resources:
         - !Ref AwsServicesEndpointSecurityGroup
       Tags:
         - Key: Name
-          Value: !Sub medislot-${Environment}-ses-endpoint
+          Value: !Sub medislot-${Environment}-sns-endpoint
 
   # Dedicated destination for S3 server access logs.
   # This bucket intentionally does not log to itself.
@@ -498,8 +498,8 @@ Outputs:
     Export:
       Name: !Sub medislot-${Environment}-EventBridgeInterfaceEndpointId
 
-  SESInterfaceEndpointId:
-    Description: Private SES API interface endpoint ID
-    Value: !Ref SESInterfaceEndpoint
+  SNSInterfaceEndpointId:
+    Description: Private SNS interface endpoint ID
+    Value: !Ref SNSInterfaceEndpoint
     Export:
-      Name: !Sub medislot-${Environment}-SESInterfaceEndpointId
+      Name: !Sub medislot-${Environment}-SNSInterfaceEndpointId
