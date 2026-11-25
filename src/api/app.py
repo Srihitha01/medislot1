@@ -2372,7 +2372,7 @@ def _book_appointment(event, user_id, role):
                         "AND bookedCount < capacity AND startUtc > :now "
                         "AND (attribute_not_exists(#ver) OR #ver = :expected)"
                     ),
-                    ExpressionAttributeNames={"#st": "status", "#ver": "version"},
+                    ExpressionAttributeNames={"#st": "status", "#ver": "version", "#cap": "capacity"},
                     ExpressionAttributeValues={
                         ":zero": 0, ":one": 1, ":now": now, ":open": "OPEN",
                         ":expected": current_version, ":next": current_version + 1,
