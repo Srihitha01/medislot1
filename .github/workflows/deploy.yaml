@@ -541,10 +541,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          status=$(aws cloudformation describe-stacks \
+          # Keep the real AWS error (AccessDenied vs. does-not-exist) instead of
+          # hiding it, so a permissions problem is not reported as NOT_FOUND.
+          if status=$(aws cloudformation describe-stacks \
             --stack-name "$IAM_STACK" \
             --query 'Stacks[0].StackStatus' \
-            --output text 2>/dev/null || echo NOT_FOUND)
+            --output text 2>/tmp/iam_err); then
+            :
+          else
+            cat /tmp/iam_err
+            if grep -qi "does not exist" /tmp/iam_err; then
+              status=NOT_FOUND
+            else
+              status="LOOKUP_FAILED"
+            fi
+          fi
 
           case "$status" in
             CREATE_COMPLETE|UPDATE_COMPLETE|UPDATE_ROLLBACK_COMPLETE)
