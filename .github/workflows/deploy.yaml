@@ -541,6 +541,15 @@ jobs:
         run: |
           set -euo pipefail
 
+          echo "Pipeline is running as:"
+          aws sts get-caller-identity --query '[Account,Arn]' --output text
+          echo "Region: $AWS_REGION"
+          echo "Stacks visible in this account/region:"
+          aws cloudformation list-stacks \
+            --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE ROLLBACK_COMPLETE \
+            --query "StackSummaries[?starts_with(StackName,'medislot')].[StackName,StackStatus]" \
+            --output text || true
+
           # Keep the real AWS error (AccessDenied vs. does-not-exist) instead of
           # hiding it, so a permissions problem is not reported as NOT_FOUND.
           if status=$(aws cloudformation describe-stacks \
