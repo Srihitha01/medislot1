@@ -235,6 +235,7 @@ Resources:
               - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-authorizer-role
               - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-app-router-role
               - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-slot-scheduler-role
+              - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-slot-materializer-role
 
           - Sid: PassMediSlotLambdaRolesToCloudFormation
             Effect: Allow
@@ -248,6 +249,7 @@ Resources:
               - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-authorizer-role
               - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-app-router-role
               - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-slot-scheduler-role
+              - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-slot-materializer-role
             Condition:
               StringEquals:
                 iam:PassedToService: cloudformation.amazonaws.com
