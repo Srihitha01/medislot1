@@ -2501,10 +2501,12 @@ def _book_appointment(event, user_id, role):
             patient_email = patient_record.get("email")
         conn.commit()
         committed = True
+        details = _appointment_details_text(appointment_id)
         booking_message = (
-            f"Your MediSlot appointment #{appointment_id} is confirmed. "
-            f"Consultation fee recorded: ₹{consultation['fee_amount']}. "
-            "This application currently records fees in RDS and does not collect or transfer payments."
+            f"Your appointment #{appointment_id} is confirmed.\n\n"
+            + (f"{details}\n" if details else "")
+            + f"Consultation fee: ₹{consultation['fee_amount']}\n\n"
+            "No payment has been collected online. Please pay at the clinic."
         )
         _notify_patient(
             patient_id, appointment_id, "APPOINTMENT_BOOKED",
@@ -2775,6 +2777,50 @@ def _sns_endpoint_subscribed(sns, topic_arn, endpoint):
             return False
 
 
+def _appointment_details_text(appointment_id):
+    """Readable doctor / consultation / date-time lines for notification emails.
+    Never raises: a lookup failure must not block the notification."""
+    try:
+        conn = _db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT d.full_name AS doctor_name, sp.name AS specialisation,
+                              h.name AS hospital, ct.name AS consultation_type,
+                              a.slot_start_utc, a.slot_end_utc
+                       FROM appointments a
+                       JOIN doctors d ON d.user_id = a.doctor_user_id
+                       LEFT JOIN specialisations sp ON sp.specialisation_id = d.specialisation_id
+                       LEFT JOIN hospitals h ON h.hospital_id = d.hospital_id
+                       LEFT JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+                       WHERE a.appointment_id = %s""",
+                    (int(appointment_id),),
+                )
+                row = cur.fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return ""
+        start = row["slot_start_utc"].replace(tzinfo=timezone.utc).astimezone(IST)
+        end = row["slot_end_utc"].replace(tzinfo=timezone.utc).astimezone(IST)
+        doctor = str(row.get("doctor_name") or "").strip()
+        if doctor and not doctor.lower().startswith("dr"):
+            doctor = f"Dr. {doctor}"
+        lines = [f"Doctor: {doctor}"]
+        if row.get("specialisation"):
+            lines.append(f"Specialisation: {row['specialisation']}")
+        if row.get("hospital"):
+            lines.append(f"Hospital: {row['hospital']}")
+        if row.get("consultation_type"):
+            lines.append(f"Consultation type: {row['consultation_type']}")
+        lines.append(f"Date: {start.strftime('%A, %d %B %Y')}")
+        lines.append(f"Time: {start.strftime('%I:%M %p').lstrip('0')} - {end.strftime('%I:%M %p').lstrip('0')} IST")
+        return "\n".join(lines)
+    except Exception:
+        logger.exception("APPOINTMENT_DETAILS_LOOKUP_FAILED appointmentId=%s", appointment_id)
+        return ""
+
+
 def _notify_patient(patient_id, appointment_id, notification_type, title, message, email):
     """Persist the in-app notification and publish an email notification through SNS."""
     conn = _db_connection()
@@ -2948,7 +2994,15 @@ def _cancel_patient_appointment(appointment_id, patient_id):
         if not released:
             # The slot list reconciles against RDS and repairs this on the next read.
             logger.error("SLOT_SEAT_RELEASE_GAVE_UP appointmentId=%s slotId=%s", appointment_id, slot_id)
-        msg = f"Your MediSlot appointment #{appointment_id} has been cancelled. Refund recorded: {percent}% (₹{refund}) of the consultation fee ₹{fee}. This is a ledger record; no money has been transferred because no payment gateway is connected."
+        details = _appointment_details_text(appointment_id)
+        msg = (
+            f"Your appointment #{appointment_id} has been cancelled.\n\n"
+            + (f"{details}\n" if details else "")
+            + f"Consultation fee: ₹{fee}\n"
+            f"Refund: {percent}% (₹{refund})\n\n"
+            "No online payment was taken, so no money was transferred. "
+            "Any refund will be handled by the clinic."
+        )
         _notify_patient(patient_id, appointment_id, "APPOINTMENT_CANCELLED", "Appointment cancelled", msg, patient_email)
         _publish_medislot_event("AppointmentCancelled", {"appointmentId": int(appointment_id), "patientId": int(patient_id), "slotId": slot_id, "refundPercent": percent, "refundAmount": str(refund), "refundTier": tier})
         _put_cancellation_tier_metric(tier)
@@ -3622,4 +3676,3 @@ def lambda_handler(event, context):
     result = _lambda_handler_impl(event, context)
     _log_http_response(event or {}, context, result, started_at)
     return result
-
