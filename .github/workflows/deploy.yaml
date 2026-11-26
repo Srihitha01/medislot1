@@ -315,8 +315,19 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Secrets pasted from Windows/editors often carry a trailing CR/LF or spaces.
+          # RDS rejects control characters ("Input can't contain control characters").
+          MEDISLOT_DB_PWD="${MEDISLOT_DB_PWD%"${MEDISLOT_DB_PWD##*[![:space:]]}"}"
+          MEDISLOT_DB_PWD="${MEDISLOT_DB_PWD#"${MEDISLOT_DB_PWD%%[![:space:]]*}"}"
+
           if [[ -z "${MEDISLOT_DB_PWD:-}" ]]; then
             echo "::error::GitHub Secret MEDISLOT_DB_PWD is missing or empty. Add it to the development environment secrets."
+            exit 1
+          fi
+
+          # RDS MySQL allows printable ASCII only (no control characters, no non-ASCII).
+          if LC_ALL=C grep -q '[^[:print:]]' <<<"$MEDISLOT_DB_PWD"; then
+            echo "::error::MEDISLOT_DB_PWD contains a control or non-ASCII character. Re-create the secret with printable ASCII only."
             exit 1
           fi
 
