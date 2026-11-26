@@ -307,20 +307,53 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Verify existing SSM SecureString parameters
+      - name: Store GitHub database password in SSM SecureString and verify parameters
         id: ssm
+        env:
+          MEDISLOT_DB_PWD: ${{ secrets.MEDISLOT_DB_PWD }}
         shell: bash
         run: |
           set -euo pipefail
+
+          if [[ -z "${MEDISLOT_DB_PWD:-}" ]]; then
+            echo "::error::GitHub Secret MEDISLOT_DB_PWD is missing or empty. Add it to the development environment secrets."
+            exit 1
+          fi
+
+          if [[ ${#MEDISLOT_DB_PWD} -lt 8 || ${#MEDISLOT_DB_PWD} -gt 41 ]]; then
+            echo "::error::MEDISLOT_DB_PWD must contain between 8 and 41 characters for the configured RDS MySQL master password."
+            exit 1
+          fi
+
+          if [[ "$MEDISLOT_DB_PWD" == *"/"* || "$MEDISLOT_DB_PWD" == *"'"* || "$MEDISLOT_DB_PWD" == *'"'* || "$MEDISLOT_DB_PWD" == *"@"* || "$MEDISLOT_DB_PWD" == *" "* ]]; then
+            echo "::error::MEDISLOT_DB_PWD contains a character that is not allowed for the configured RDS MySQL master password."
+            exit 1
+          fi
+
+          DB_PASSWORD_VERSION=$(aws ssm put-parameter \\
+            --name "/medislot/${ENVIRONMENT}/db/password" \\
+            --type SecureString \\
+            --value "$MEDISLOT_DB_PWD" \\
+            --overwrite \\
+            --query 'Version' \\
+            --output text)
+
+          if [[ -z "$DB_PASSWORD_VERSION" || "$DB_PASSWORD_VERSION" == "None" ]]; then
+            echo "::error::SSM did not return a version for the database password."
+            exit 1
+          fi
+
+          echo "db_password_version=$DB_PASSWORD_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Stored GitHub database secret in /medislot/${ENVIRONMENT}/db/password (version $DB_PASSWORD_VERSION)."
 
           get_version() {
             local parameter_name="$1"
             local output_name="$2"
             local version
 
-            version=$(aws ssm get-parameter \
-              --name "$parameter_name" \
-              --query 'Parameter.Version' \
+            version=$(aws ssm get-parameter \\
+              --name "$parameter_name" \\
+              --query 'Parameter.Version' \\
               --output text)
 
             if [[ -z "$version" || "$version" == "None" ]]; then
@@ -332,16 +365,12 @@ jobs:
             echo "Verified $parameter_name (version $version)."
           }
 
-          get_version \
-            "/medislot/${ENVIRONMENT}/db/password" \
-            "db_password_version"
-
-          get_version \
-            "/medislot/${ENVIRONMENT}/db/app-password" \
+          get_version \\
+            "/medislot/${ENVIRONMENT}/db/app-password" \\
             "app_password_version"
 
-          get_version \
-            "/medislot/${ENVIRONMENT}/auth/jwt-secret" \
+          get_version \\
+            "/medislot/${ENVIRONMENT}/auth/jwt-secret" \\
             "jwt_secret_version"
 
   # ============================================================
