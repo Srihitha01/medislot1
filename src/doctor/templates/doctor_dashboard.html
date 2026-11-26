@@ -1863,6 +1863,16 @@ body{--text:#19343a;--muted:#718786}
     opacity: .45;
     cursor: not-allowed;
 }
+
+/* Six distinct appointment filters: readable, responsive, and keyboard accessible. */
+.appt-tabs{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin:8px 0 20px;padding:0 0 15px;border-bottom:1px solid var(--border)}
+.appt-tabs .btn{min-height:38px;padding:9px 15px;border-radius:9px}
+.appt-tabs .btn.active{background:var(--primary-light);color:var(--primary-dark);border:1px solid var(--primary);box-shadow:none}
+.appt-tabs .btn:focus-visible{outline:3px solid rgba(90,63,214,.3);outline-offset:2px}
+.appointment-actions{display:flex;flex-wrap:wrap;align-items:center;gap:7px;min-width:220px}
+.appointment-actions .btn-small{white-space:nowrap}
+@media(max-width:650px){.appt-tabs{gap:7px}.appt-tabs .btn{flex:1 1 auto;padding:9px 10px}}
+
 </style>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,700;9..144,800&display=swap" rel="stylesheet">
 <style id="ms-theme">
@@ -2435,11 +2445,13 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
                 <button type="button" class="btn btn-light" id="refreshAppointmentsButton">↻ Refresh</button>
             </div>
 
-            <div class="appt-tabs" id="appointmentTabs" role="tablist">
-                <button type="button" class="btn btn-light active" data-view="upcoming">Upcoming</button>
-                <button type="button" class="btn btn-light" data-view="today">Today</button>
-                <button type="button" class="btn btn-light" data-view="cancelled">Cancelled</button>
-                <button type="button" class="btn btn-light" data-view="refunds">Refunds</button>
+            <div class="appt-tabs" id="appointmentTabs" role="tablist" aria-label="Appointment status filters">
+                <button type="button" class="btn btn-light active" data-view="upcoming" role="tab" aria-selected="true">Upcoming</button>
+                <button type="button" class="btn btn-light" data-view="today" role="tab" aria-selected="false">Today</button>
+                <button type="button" class="btn btn-light" data-view="completed" role="tab" aria-selected="false">Completed</button>
+                <button type="button" class="btn btn-light" data-view="no_show" role="tab" aria-selected="false">No Show</button>
+                <button type="button" class="btn btn-light" data-view="cancelled" role="tab" aria-selected="false">Cancelled</button>
+                <button type="button" class="btn btn-light" data-view="refunds" role="tab" aria-selected="false">Refunds</button>
             </div>
 
             <div id="appointmentsListView">
@@ -3260,7 +3272,7 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
         renderPatients();
     }
 
-    // ---- Appointments tabs: Upcoming / Today / Cancelled / Refunds ----
+    // ---- Appointment filters: each terminal outcome has its own tab ----
     let appointmentView = "upcoming";
 
     function istDateKey(value) {
@@ -3270,27 +3282,40 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
             : date.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
     }
 
+    function normalizedAppointmentStatus(item) {
+        return String(item.status || "").trim().toLowerCase().replace(/[ -]+/g, "_");
+    }
+
     function appointmentsForView(items, view) {
         const now = Date.now();
         const todayKey = istDateKey(new Date());
         const active = new Set(["booked", "confirmed", "rescheduled"]);
-        const status = item => String(item.status || "").toLowerCase();
-        const start = item => new Date(item.slot_start_utc).getTime();
+        const status = normalizedAppointmentStatus;
+        const start = item => Date.parse(item.slot_start_utc);
 
         if (view === "upcoming") {
             return items
-                .filter(item => active.has(status(item)) && (start(item) > now || istDateKey(item.slot_start_utc) === todayKey))
+                .filter(item => active.has(status(item)) && Number.isFinite(start(item)) && start(item) >= now)
                 .sort((a, b) => start(a) - start(b));
         }
         if (view === "today") {
             return items
-                .filter(item => istDateKey(item.slot_start_utc) === todayKey)
+                .filter(item => istDateKey(item.slot_start_utc) === todayKey && active.has(status(item)))
                 .sort((a, b) => start(a) - start(b));
         }
-        if (view === "cancelled") {
-            return items.filter(item => status(item) === "cancelled");
+        if (view === "completed") {
+            return items.filter(item => status(item) === "completed")
+                .sort((a, b) => start(b) - start(a));
         }
-        return items;
+        if (view === "no_show") {
+            return items.filter(item => ["no_show", "noshow"].includes(status(item)))
+                .sort((a, b) => start(b) - start(a));
+        }
+        if (view === "cancelled") {
+            return items.filter(item => status(item) === "cancelled")
+                .sort((a, b) => start(b) - start(a));
+        }
+        return [];
     }
 
     function renderAppointmentView() {
@@ -3345,7 +3370,9 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
     async function setAppointmentView(view) {
         appointmentView = view;
         document.querySelectorAll("#appointmentTabs [data-view]").forEach(button => {
-            button.classList.toggle("active", button.dataset.view === view);
+            const selected = button.dataset.view === view;
+            button.classList.toggle("active", selected);
+            button.setAttribute("aria-selected", selected ? "true" : "false");
         });
         const refunds = view === "refunds";
         $("appointmentsListView").hidden = refunds;
