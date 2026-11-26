@@ -1,4 +1,4 @@
-_import pytest
+import pytest
 
 from app import _normalise_consultation_name, _validate_consultation_rules
 

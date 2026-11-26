@@ -1840,6 +1840,10 @@ body{--text:#19343a;--muted:#718786}
 .welcome h1,.welcome h2,.welcome h3,.welcome p,.welcome small{color:#f5fbff!important}
 .welcome .welcome-date{color:#eaf5f5!important}
 
+
+        .appt-tabs { display:flex; gap:10px; flex-wrap:wrap; margin:6px 0 18px; padding-bottom:16px; border-bottom:1px solid rgba(255,255,255,.08); }
+        .appt-tabs .btn.active { background: rgba(53,200,187,.15); color:#35c8bb; border-color: rgba(53,200,187,.55); }
+        .appt-subtitle { margin:4px 0 4px; }
 </style>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,700;9..144,800&display=swap" rel="stylesheet">
 <style id="ms-theme">
@@ -2406,40 +2410,59 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
         <div class="panel">
             <div class="panel-header">
                 <div>
-                    <h3>My Appointments</h3>
-                    <p>Review patient bookings and appointment details.</p>
+                    <h3>Appointments</h3>
+                    <p>Manage your patient bookings and refunds</p>
                 </div>
-                <div class="filter-row">
-                    <input type="date" id="appointmentDateFilter">
-                    <select id="appointmentStatusFilter">
-                        <option value="">All statuses</option>
-                        <option value="booked">Booked</option>
-                        <option value="confirmed">Confirmed</option>
-                        <option value="completed">Completed</option>
-                        <option value="cancelled">Cancelled</option>
-                        <option value="rescheduled">Rescheduled</option>
-                        <option value="no_show">No show</option>
-                    </select>
-                    <button type="button" class="btn btn-light" id="filterAppointmentsButton">Filter</button>
+                <button type="button" class="btn btn-light" id="refreshAppointmentsButton">↻ Refresh</button>
+            </div>
+
+            <div class="appt-tabs" id="appointmentTabs" role="tablist">
+                <button type="button" class="btn btn-light active" data-view="upcoming">Upcoming</button>
+                <button type="button" class="btn btn-light" data-view="today">Today</button>
+                <button type="button" class="btn btn-light" data-view="cancelled">Cancelled</button>
+                <button type="button" class="btn btn-light" data-view="refunds">Refunds</button>
+            </div>
+
+            <div id="appointmentsListView">
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Appointment ID</th>
+                                <th>Patient</th>
+                                <th>Consultation</th>
+                                <th>Date / Time</th>
+                                <th>Fee</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="appointmentsTable">
+                            <tr><td colspan="6" class="empty">Loading appointments...</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
 
-            <div class="table-wrap">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Appointment ID</th>
-                            <th>Patient</th>
-                            <th>Consultation</th>
-                            <th>Date / Time</th>
-                            <th>Fee</th>
-                            <th>Status</th>
-                        </tr>
-                    </thead>
-                    <tbody id="appointmentsTable">
-                        <tr><td colspan="6" class="empty">Loading appointments...</td></tr>
-                    </tbody>
-                </table>
+            <div id="refundLedgerView" hidden>
+                <h3 class="appt-subtitle">Refund ledger</h3>
+                <p class="muted-note">Refund amounts recorded for appointments with you. These are ledger records, not payment transfers.</p>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Patient</th>
+                                <th>Appointment (IST)</th>
+                                <th>Consultation fee</th>
+                                <th>Cancelled by</th>
+                                <th>Refund amount</th>
+                                <th>Recorded</th>
+                            </tr>
+                        </thead>
+                        <tbody id="refundLedgerTable">
+                            <tr><td colspan="6" class="empty">Loading refunds...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
     </section>
@@ -3208,13 +3231,110 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
 
         $("appointmentCount").textContent = result.count ?? appointmentItems.length;
 
-        renderAppointments($("appointmentsTable"), appointmentItems);
+        renderAppointmentView();
         renderAppointments(
             $("recentAppointmentsTable"),
             appointmentItems.slice(0, 5)
         );
 
         renderPatients();
+    }
+
+    // ---- Appointments tabs: Upcoming / Today / Cancelled / Refunds ----
+    let appointmentView = "upcoming";
+
+    function istDateKey(value) {
+        const date = new Date(value);
+        return Number.isNaN(date.getTime())
+            ? ""
+            : date.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+    }
+
+    function appointmentsForView(items, view) {
+        const now = Date.now();
+        const todayKey = istDateKey(new Date());
+        const active = new Set(["booked", "confirmed", "rescheduled"]);
+        const status = item => String(item.status || "").toLowerCase();
+        const start = item => new Date(item.slot_start_utc).getTime();
+
+        if (view === "upcoming") {
+            return items
+                .filter(item => active.has(status(item)) && start(item) > now)
+                .sort((a, b) => start(a) - start(b));
+        }
+        if (view === "today") {
+            return items
+                .filter(item => istDateKey(item.slot_start_utc) === todayKey)
+                .sort((a, b) => start(a) - start(b));
+        }
+        if (view === "cancelled") {
+            return items.filter(item => status(item) === "cancelled");
+        }
+        return items;
+    }
+
+    function renderAppointmentView() {
+        if (appointmentView === "refunds") return;
+        renderAppointments(
+            $("appointmentsTable"),
+            appointmentsForView(appointmentItems, appointmentView)
+        );
+    }
+
+    function formatIstDateTime(value) {
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return value ? String(value) : "—";
+        const parts = Object.fromEntries(
+            new Intl.DateTimeFormat("en-GB", {
+                timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
+                hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
+            }).formatToParts(date).map(part => [part.type, part.value])
+        );
+        return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+    }
+
+    async function loadRefundLedger() {
+        const table = $("refundLedgerTable");
+        table.innerHTML = `<tr><td colspan="6" class="empty">Loading refunds...</td></tr>`;
+        const result = await apiRequest("/doctors/me/refunds");
+        const items = result.items || [];
+
+        if (!items.length) {
+            table.innerHTML = `<tr><td colspan="6" class="empty">No refunds have been recorded yet.</td></tr>`;
+            return;
+        }
+
+        table.innerHTML = items.map(item => `
+            <tr>
+                <td>
+                    <strong>${escapeHTML(item.patientName || "Patient")}</strong><br>
+                    <span class="muted-note">${escapeHTML(item.patientEmail || "")}</span>
+                </td>
+                <td>${escapeHTML(formatIstDateTime(item.slotStartUtc))}</td>
+                <td>₹${escapeHTML(item.feeAmount)}</td>
+                <td>${escapeHTML(item.cancelledBy || "—")}</td>
+                <td>
+                    <strong>₹${escapeHTML(item.refundAmount)}</strong><br>
+                    <span class="muted-note">${escapeHTML(Number(item.refundPercent).toFixed(2))}% refund</span>
+                </td>
+                <td>${escapeHTML(formatIstDateTime(item.recordedAt))}</td>
+            </tr>
+        `).join("");
+    }
+
+    async function setAppointmentView(view) {
+        appointmentView = view;
+        document.querySelectorAll("#appointmentTabs [data-view]").forEach(button => {
+            button.classList.toggle("active", button.dataset.view === view);
+        });
+        const refunds = view === "refunds";
+        $("appointmentsListView").hidden = refunds;
+        $("refundLedgerView").hidden = !refunds;
+        if (refunds) {
+            await loadRefundLedger();
+        } else {
+            renderAppointmentView();
+        }
     }
 
     function renderAppointments(table, items) {
@@ -3531,13 +3651,21 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
         }
     });
 
-    // Appointment filters.
-    $("filterAppointmentsButton").addEventListener("click", async () => {
+    // Appointment tabs and refresh.
+    $("appointmentTabs").addEventListener("click", async event => {
+        const button = event.target.closest("[data-view]");
+        if (!button) return;
         try {
-            await loadAppointments({
-                date: $("appointmentDateFilter").value,
-                status: $("appointmentStatusFilter").value
-            });
+            await setAppointmentView(button.dataset.view);
+        } catch (error) {
+            handleError(error);
+        }
+    });
+
+    $("refreshAppointmentsButton").addEventListener("click", async () => {
+        try {
+            await loadAppointments();
+            if (appointmentView === "refunds") await loadRefundLedger();
         } catch (error) {
             handleError(error);
         }
@@ -3579,7 +3707,6 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
 
         $("scheduleDate").value = today;
         $("slotDate").value = today;
-        $("appointmentDateFilter").value = "";
 
         setCurrentDate();
 

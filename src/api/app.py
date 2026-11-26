@@ -2182,6 +2182,10 @@ def _doctor_appointments(user_id, event):
             cur.execute(sql, tuple(values))
             appointments = cur.fetchall()
 
+        for row in appointments:
+            row["slot_start_utc"] = _utc_z(row.get("slot_start_utc"))
+            row["slot_end_utc"] = _utc_z(row.get("slot_end_utc"))
+
         return _response(
             200,
             {
@@ -2680,6 +2684,69 @@ def _delete_idempotency_record(table, idem_key):
     except Exception:
         logger.exception("Unable to remove failed idempotency record")
 
+
+
+_REFUND_REASON_LABELS = {
+    "PATIENT_CANCEL": "Patient",
+    "DOCTOR_CANCEL": "Doctor",
+    "NO_SHOW": "No show",
+}
+
+
+def _refund_ledger_rows(where_sql, value):
+    """Refund ledger rows (RDS is the system of record) with appointment context."""
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""SELECT r.refund_id, r.appointment_id, r.reason, r.tier,
+                           r.refund_percent, r.fee_amount, r.refund_amount,
+                           r.created_at, a.slot_start_utc,
+                           pu.name AS patient_name, pu.email AS patient_email,
+                           d.full_name AS doctor_name, ct.name AS consultation_type
+                    FROM refund_ledger r
+                    JOIN appointments a ON a.appointment_id = r.appointment_id
+                    JOIN users pu ON pu.user_id = r.patient_user_id
+                    LEFT JOIN doctors d ON d.user_id = a.doctor_user_id
+                    LEFT JOIN consultation_types ct
+                           ON ct.consultation_type_id = a.consultation_type_id
+                    WHERE {where_sql}
+                    ORDER BY r.created_at DESC, r.refund_id DESC
+                    LIMIT 200""",
+                (int(value),),
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    items = []
+    for row in rows:
+        items.append({
+            "refundId": row["refund_id"],
+            "appointmentId": row["appointment_id"],
+            "patientName": row.get("patient_name"),
+            "patientEmail": row.get("patient_email"),
+            "doctorName": row.get("doctor_name"),
+            "consultationType": row.get("consultation_type"),
+            "slotStartUtc": _utc_z(row.get("slot_start_utc")),
+            "cancelledBy": _REFUND_REASON_LABELS.get(row.get("reason"), str(row.get("reason"))),
+            "reason": row.get("reason"),
+            "tier": row.get("tier"),
+            "refundPercent": row.get("refund_percent"),
+            "feeAmount": str(row.get("fee_amount")),
+            "refundAmount": str(row.get("refund_amount")),
+            "recordedAt": _utc_z(row.get("created_at")),
+        })
+    return _response(200, {"items": items, "count": len(items)})
+
+
+def _doctor_refunds(user_id):
+    """Ledger entries for appointments with this doctor only."""
+    return _refund_ledger_rows("a.doctor_user_id = %s", user_id)
+
+
+def _patient_refunds(user_id):
+    """Ledger entries for the authenticated patient only."""
+    return _refund_ledger_rows("r.patient_user_id = %s", user_id)
 
 
 # ---------------------------------------------------------
@@ -3472,6 +3539,12 @@ def _lambda_handler_impl(event, context):
                 return _response(403, {"message": "Only patients can cancel their appointments"})
             return _cancel_patient_appointment(int(cancel_match.group(1)), user_id)
 
+        # Patient refund ledger (strictly scoped to authenticated patient)
+        if method == "GET" and path == "/patients/me/refunds":
+            if role != "patient":
+                return _response(403, {"message": "Only patients can view their refunds"})
+            return _patient_refunds(user_id)
+
         # Patient appointment history (strictly scoped to authenticated patient)
         if method == "GET" and path == "/patients/me/appointments":
             if role != "patient":
@@ -3523,6 +3596,10 @@ def _lambda_handler_impl(event, context):
             and method == "GET"
         ):
             return _doctor_photo_url(user_id)
+
+        # Doctor refund ledger
+        if path == "/doctors/me/refunds" and role == "doctor" and method == "GET":
+            return _doctor_refunds(user_id)
 
         # Doctor appointments
         if (
