@@ -2693,28 +2693,42 @@ _REFUND_REASON_LABELS = {
 }
 
 
-def _refund_ledger_rows(where_sql, value):
+# Two complete, constant queries (no string building) so no SQL is assembled at runtime.
+_DOCTOR_REFUNDS_SQL = """SELECT r.refund_id, r.appointment_id, r.reason, r.tier,
+           r.refund_percent, r.fee_amount, r.refund_amount,
+           r.created_at, a.slot_start_utc,
+           pu.name AS patient_name, pu.email AS patient_email,
+           d.full_name AS doctor_name, ct.name AS consultation_type
+    FROM refund_ledger r
+    JOIN appointments a ON a.appointment_id = r.appointment_id
+    JOIN users pu ON pu.user_id = r.patient_user_id
+    LEFT JOIN doctors d ON d.user_id = a.doctor_user_id
+    LEFT JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+    WHERE a.doctor_user_id = %s
+    ORDER BY r.created_at DESC, r.refund_id DESC
+    LIMIT 200"""
+
+_PATIENT_REFUNDS_SQL = """SELECT r.refund_id, r.appointment_id, r.reason, r.tier,
+           r.refund_percent, r.fee_amount, r.refund_amount,
+           r.created_at, a.slot_start_utc,
+           pu.name AS patient_name, pu.email AS patient_email,
+           d.full_name AS doctor_name, ct.name AS consultation_type
+    FROM refund_ledger r
+    JOIN appointments a ON a.appointment_id = r.appointment_id
+    JOIN users pu ON pu.user_id = r.patient_user_id
+    LEFT JOIN doctors d ON d.user_id = a.doctor_user_id
+    LEFT JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+    WHERE r.patient_user_id = %s
+    ORDER BY r.created_at DESC, r.refund_id DESC
+    LIMIT 200"""
+
+
+def _refund_ledger_rows(query, user_id):
     """Refund ledger rows (RDS is the system of record) with appointment context."""
     conn = _db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                f"""SELECT r.refund_id, r.appointment_id, r.reason, r.tier,
-                           r.refund_percent, r.fee_amount, r.refund_amount,
-                           r.created_at, a.slot_start_utc,
-                           pu.name AS patient_name, pu.email AS patient_email,
-                           d.full_name AS doctor_name, ct.name AS consultation_type
-                    FROM refund_ledger r
-                    JOIN appointments a ON a.appointment_id = r.appointment_id
-                    JOIN users pu ON pu.user_id = r.patient_user_id
-                    LEFT JOIN doctors d ON d.user_id = a.doctor_user_id
-                    LEFT JOIN consultation_types ct
-                           ON ct.consultation_type_id = a.consultation_type_id
-                    WHERE {where_sql}
-                    ORDER BY r.created_at DESC, r.refund_id DESC
-                    LIMIT 200""",
-                (int(value),),
-            )
+            cur.execute(query, (int(user_id),))
             rows = cur.fetchall()
     finally:
         conn.close()
@@ -2741,12 +2755,12 @@ def _refund_ledger_rows(where_sql, value):
 
 def _doctor_refunds(user_id):
     """Ledger entries for appointments with this doctor only."""
-    return _refund_ledger_rows("a.doctor_user_id = %s", user_id)
+    return _refund_ledger_rows(_DOCTOR_REFUNDS_SQL, user_id)
 
 
 def _patient_refunds(user_id):
     """Ledger entries for the authenticated patient only."""
-    return _refund_ledger_rows("r.patient_user_id = %s", user_id)
+    return _refund_ledger_rows(_PATIENT_REFUNDS_SQL, user_id)
 
 
 # ---------------------------------------------------------
