@@ -2759,6 +2759,22 @@ def _save_patient_notification(cur, patient_id, notification_type, title, messag
     )
 
 
+def _sns_endpoint_subscribed(sns, topic_arn, endpoint):
+    """True when the email already has a subscription (confirmed or pending)."""
+    token = None
+    while True:
+        kwargs = {"TopicArn": topic_arn}
+        if token:
+            kwargs["NextToken"] = token
+        page = sns.list_subscriptions_by_topic(**kwargs)
+        for sub in page.get("Subscriptions", []):
+            if str(sub.get("Endpoint", "")).lower() == endpoint:
+                return True
+        token = page.get("NextToken")
+        if not token:
+            return False
+
+
 def _notify_patient(patient_id, appointment_id, notification_type, title, message, email):
     """Persist the in-app notification and publish an email notification through SNS."""
     conn = _db_connection()
@@ -2793,29 +2809,32 @@ def _notify_patient(patient_id, appointment_id, notification_type, title, messag
 
     try:
         sns = _sns_client()
-        # Subscribe is idempotent for an existing endpoint/topic pair. This also
-        # onboards patients who registered before SNS notifications were enabled.
-        subscription = sns.subscribe(
-            TopicArn=topic_arn,
-            Protocol="email",
-            Endpoint=email.strip().lower(),
-            Attributes={
-                "FilterPolicy": json.dumps({"patientId": [str(int(patient_id))]}),
-                "FilterPolicyScope": "MessageAttributes",
-            },
-            ReturnSubscriptionArn=True,
-        )
-        subscription_arn = subscription.get("SubscriptionArn", "pending confirmation")
-        if subscription_arn == "pending confirmation":
+        endpoint = email.strip().lower()
+        # Patients are normally subscribed at registration. Older accounts are
+        # subscribed here once. Re-calling Subscribe for a pending address would
+        # send AWS's confirmation email again on every booking, so check first.
+        subscription_state = "subscribed_or_pending_delivery"
+        if not _sns_endpoint_subscribed(sns, topic_arn, endpoint):
+            sns.subscribe(
+                TopicArn=topic_arn,
+                Protocol="email",
+                Endpoint=endpoint,
+                Attributes={
+                    "FilterPolicy": json.dumps({"patientId": [str(int(patient_id))]}),
+                    "FilterPolicyScope": "MessageAttributes",
+                },
+                ReturnSubscriptionArn=True,
+            )
+            subscription_state = "confirmation_email_sent"
             logger.info(
                 "SNS_EMAIL_CONFIRMATION_REQUIRED patientId=%s endpoint=%s",
-                patient_id, email.strip().lower(),
+                patient_id, endpoint,
             )
 
         result = sns.publish(
             TopicArn=topic_arn,
             Subject=str(title)[:100],
-            Message=f"{title}\\n\\n{message}\\n\\nMediSlot – Your care, made simpler.",
+            Message=f"{title}\n\n{message}\n\nMediSlot – Your care, made simpler.",
             MessageAttributes={
                 "patientId": {
                     "DataType": "String",
@@ -2827,7 +2846,7 @@ def _notify_patient(patient_id, appointment_id, notification_type, title, messag
             "SNS_EMAIL_PUBLISH_ACCEPTED patientId=%s appointmentId=%s type=%s messageId=%s subscriptionState=%s",
             patient_id, appointment_id, notification_type,
             result.get("MessageId"),
-            "pending_confirmation" if subscription_arn == "pending confirmation" else "subscribed_or_pending_delivery",
+            subscription_state,
         )
     except Exception:
         # Notification delivery must never undo an already committed booking/cancellation.
@@ -2908,16 +2927,25 @@ def _cancel_patient_appointment(appointment_id, patient_id):
             slot_id = row["slot_id"]
             patient_email = row["email"]
         # Release one seat only after the RDS cancellation+ledger transaction commits.
-        try:
-            _table("SLOTS_TABLE").update_item(
-                Key={"slotId": slot_id},
-                UpdateExpression="SET bookedCount = bookedCount - :one, #v = if_not_exists(#v,:zero) + :one, updatedAt=:now",
-                ConditionExpression="attribute_exists(slotId) AND bookedCount >= :one",
-                ExpressionAttributeNames={"#v": "version"},
-                ExpressionAttributeValues={":one": 1, ":zero": 0, ":now": datetime.now(timezone.utc).isoformat()},
-            )
-        except Exception:
-            logger.exception("SLOT_SEAT_RELEASE_FAILED appointmentId=%s slotId=%s", appointment_id, slot_id)
+        released = False
+        for attempt in range(3):
+            try:
+                _table("SLOTS_TABLE").update_item(
+                    Key={"slotId": slot_id},
+                    UpdateExpression="SET bookedCount = bookedCount - :one, #v = if_not_exists(#v,:zero) + :one, updatedAt=:now",
+                    ConditionExpression="attribute_exists(slotId) AND bookedCount >= :one",
+                    ExpressionAttributeNames={"#v": "version"},
+                    ExpressionAttributeValues={":one": 1, ":zero": 0, ":now": datetime.now(timezone.utc).isoformat()},
+                )
+                released = True
+                logger.info("SLOT_SEAT_RELEASED appointmentId=%s slotId=%s", appointment_id, slot_id)
+                break
+            except Exception:
+                logger.exception("SLOT_SEAT_RELEASE_FAILED appointmentId=%s slotId=%s attempt=%s", appointment_id, slot_id, attempt + 1)
+                time.sleep(0.2 * (attempt + 1))
+        if not released:
+            # The slot list reconciles against RDS and repairs this on the next read.
+            logger.error("SLOT_SEAT_RELEASE_GAVE_UP appointmentId=%s slotId=%s", appointment_id, slot_id)
         msg = f"Your MediSlot appointment #{appointment_id} has been cancelled. Refund recorded: {percent}% (₹{refund}) of the consultation fee ₹{fee}. This is a ledger record; no money has been transferred because no payment gateway is connected."
         _notify_patient(patient_id, appointment_id, "APPOINTMENT_CANCELLED", "Appointment cancelled", msg, patient_email)
         _publish_medislot_event("AppointmentCancelled", {"appointmentId": int(appointment_id), "patientId": int(patient_id), "slotId": slot_id, "refundPercent": percent, "refundAmount": str(refund), "refundTier": tier})
@@ -3113,6 +3141,59 @@ def _public_doctor(doctor_id):
         conn.close()
 
 
+def _active_booking_counts(doctor_id, now_utc):
+    """Active (booked/confirmed) appointments per slot, straight from RDS."""
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT slot_id, COUNT(*) AS active_count
+                   FROM appointments
+                   WHERE doctor_user_id=%s AND status IN ('booked','confirmed')
+                     AND slot_start_utc > %s
+                   GROUP BY slot_id""",
+                (int(doctor_id), now_utc.replace(tzinfo=None)),
+            )
+            return {row["slot_id"]: int(row["active_count"]) for row in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+def _seconds_since(value, now_utc):
+    """Age of a slot's updatedAt (ISO string or epoch number); large if unknown."""
+    try:
+        if isinstance(value, (int, float, Decimal)):
+            return (now_utc - datetime.fromtimestamp(float(value), tz=timezone.utc)).total_seconds()
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return (now_utc - parsed).total_seconds()
+    except (TypeError, ValueError):
+        return 10 ** 9
+
+
+def _repair_slot_booked_count(slots, item, active_count, now_iso):
+    """Give back seats whose cancellation never reached DynamoDB."""
+    try:
+        slots.update_item(
+            Key={"slotId": item["slotId"]},
+            UpdateExpression="SET bookedCount = :active, #v = if_not_exists(#v, :zero) + :one, updatedAt = :now",
+            ConditionExpression="bookedCount = :observed",
+            ExpressionAttributeNames={"#v": "version"},
+            ExpressionAttributeValues={
+                ":active": int(active_count), ":observed": int(item.get("bookedCount", 0)),
+                ":zero": 0, ":one": 1, ":now": now_iso,
+            },
+        )
+        logger.warning(
+            "SLOT_BOOKED_COUNT_REPAIRED slotId=%s from=%s to=%s",
+            item["slotId"], item.get("bookedCount"), active_count,
+        )
+    except ClientError as err:
+        if err.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            logger.exception("SLOT_BOOKED_COUNT_REPAIR_FAILED slotId=%s", item.get("slotId"))
+
+
 def _public_doctor_slots(doctor_id, event):
     params = _query(event)
     # Reuse the existing DynamoDB query and response shape.
@@ -3122,15 +3203,36 @@ def _public_doctor_slots(doctor_id, event):
     copied["queryStringParameters"] = query
     result = _list_slots(copied)
     payload = json.loads(result["body"])
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-    payload["items"] = [
-        item for item in payload["items"]
-        if item.get("startUtc", "") > now
-        and int(item.get("capacity", 0)) > int(item.get("bookedCount", 0))
-    ]
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    # RDS holds the real appointments. If DynamoDB still counts a seat for an
+    # appointment that was cancelled, show (and repair) the seat as free.
+    try:
+        active_counts = _active_booking_counts(doctor_id, now_dt)
+    except Exception:
+        logger.exception("SLOT_RECONCILE_UNAVAILABLE doctorId=%s", doctor_id)
+        active_counts = None
+
+    slots_table = _table("SLOTS_TABLE")
+    visible = []
     for item in payload["items"]:
-        item["freeSeats"] = int(item["capacity"]) - int(item.get("bookedCount", 0))
-    payload["count"] = len(payload["items"])
+        if item.get("startUtc", "") <= now:
+            continue
+        booked = int(item.get("bookedCount", 0))
+        if active_counts is not None:
+            active = active_counts.get(item.get("slotId"), 0)
+            if booked > active and _seconds_since(item.get("updatedAt"), now_dt) >= 120:
+                _repair_slot_booked_count(slots_table, item, active, now)
+                booked = active
+            else:
+                booked = max(booked, active)
+            item["bookedCount"] = booked
+        if int(item.get("capacity", 0)) > booked:
+            item["freeSeats"] = int(item["capacity"]) - booked
+            visible.append(item)
+    payload["items"] = visible
+    payload["count"] = len(visible)
     return _response(200, payload)
 
 

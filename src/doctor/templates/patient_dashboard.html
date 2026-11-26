@@ -216,7 +216,7 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
   </section>
   <section class="panel" id="notificationsPanel">
     <div class="section-intro"><h2>Notifications</h2><p>Important updates about your MediSlot account.</p></div>
-    <section class="box"><div class="tip"><strong>Appointment updates</strong>Booking and cancellation updates appear here. Email updates are sent to your registered email address through Amazon SES.</div><div id="notificationResults"><p class="empty">Open Notifications to load your updates.</p></div><button class="secondary-btn" type="button" id="refreshNotifications">Refresh notifications</button></section>
+    <section class="box"><div class="tip"><strong>Appointment updates</strong>Booking and cancellation updates appear here. Email updates are sent to your registered email address through Amazon SNS. The first time, confirm the subscription email from AWS so updates can be delivered.</div><div id="notificationResults"><p class="empty">Open Notifications to load your updates.</p></div><button class="secondary-btn" type="button" id="refreshNotifications">Refresh notifications</button></section>
   </section>
   <section class="panel" id="reviewsPanel">
     <div class="section-intro"><h2>My reviews</h2><p>Share feedback about your care experience.</p></div>

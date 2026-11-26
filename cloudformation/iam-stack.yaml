@@ -778,6 +778,7 @@ Resources:
                 Action:
                   - sns:Publish
                   - sns:Subscribe
+                  - sns:ListSubscriptionsByTopic
                 Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-patient-notifications
 
         - PolicyName: PublishMediSlotLogsAndTracing
