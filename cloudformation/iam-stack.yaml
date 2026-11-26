@@ -180,6 +180,7 @@ Resources:
               - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/host
               - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/port
               - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/name
+              - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/refund/policy
 
           - Sid: ReadUbuntuDashboardAmiParameter
             Effect: Allow
@@ -700,6 +701,7 @@ Resources:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/port
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/app-password
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/jwt-secret
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/refund/policy
 
               - Effect: Allow
                 Action:
@@ -778,6 +780,27 @@ Resources:
                   - sns:Subscribe
                   - sns:ListSubscriptionsByTopic
                 Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-patient-notifications
+
+        - PolicyName: PublishMediSlotEventsAndMetrics
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: PublishDomainEvents
+                Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/default
+
+              - Sid: PublishBookingAndCancellationMetrics
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace:
+                      - MediSlot/Bookings
+                      - MediSlot/Appointments
 
         - PolicyName: PublishMediSlotLogsAndTracing
           PolicyDocument:

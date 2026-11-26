@@ -466,6 +466,19 @@ Resources:
         Project: MediSlot
         Environment: !Ref Environment
 
+  # Refund windows read by the app router at cancellation time. Tier applies when
+  # hours before the appointment are above minimumHours (or equal when inclusive).
+  RefundPolicyParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /medislot/${Environment}/refund/policy
+      Type: String
+      Value: '[{"tier":"FULL","minimumHours":48,"refundPercent":100,"inclusive":false},{"tier":"PARTIAL_75","minimumHours":24,"refundPercent":75,"inclusive":false},{"tier":"PARTIAL_50","minimumHours":2,"refundPercent":50,"inclusive":true},{"tier":"NONE","minimumHours":0,"refundPercent":0,"inclusive":true}]'
+      Description: MediSlot cancellation refund windows
+      Tags:
+        Project: MediSlot
+        Environment: !Ref Environment
+
   DBNameParameter:
     Type: AWS::SSM::Parameter
     Properties:

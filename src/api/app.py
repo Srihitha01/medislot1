@@ -1381,7 +1381,7 @@ def _doctor_collection(
                             },
                         )
 
-                    name = str(data["name"]).strip().lower()
+                    name = _normalise_consultation_name(data["name"])
                     duration = int(data["durationMin"])
                     fee = Decimal(str(data["feeAmount"]))
                     capacity = int(data["capacity"])
@@ -1405,6 +1405,8 @@ def _doctor_collection(
                         raise ValueError(
                             "capacity must be between 1 and 50"
                         )
+
+                    _validate_consultation_rules(name, duration, capacity)
 
                     cur.execute(
                         """
@@ -1460,7 +1462,7 @@ def _doctor_collection(
 
                     cur.execute(
                         """
-                        SELECT consultation_type_id
+                        SELECT consultation_type_id, name, duration_min, capacity
                         FROM consultation_types
                         WHERE consultation_type_id = %s
                           AND doctor_user_id = %s
@@ -1468,7 +1470,8 @@ def _doctor_collection(
                         (resource_id, user_id),
                     )
 
-                    if not cur.fetchone():
+                    current_type = cur.fetchone()
+                    if not current_type:
                         return _response(
                             404,
                             {"message": "Consultation type not found"},
@@ -1505,7 +1508,7 @@ def _doctor_collection(
                     values = {}
 
                     if "name" in data:
-                        value = str(data["name"]).strip().lower()
+                        value = _normalise_consultation_name(data["name"])
 
                         if not value or len(value) > 40:
                             raise ValueError(
@@ -1551,6 +1554,15 @@ def _doctor_collection(
                             )
 
                         values["isActive"] = int(data["isActive"])
+
+                    # Validate the final combination, not just the changed field:
+                    # e.g. renaming a type to Health Camp Session must also satisfy
+                    # its 60-minute / 2-10 seat rules.
+                    _validate_consultation_rules(
+                        values.get("name", current_type["name"]),
+                        int(values.get("durationMin", current_type["duration_min"])),
+                        int(values.get("capacity", current_type["capacity"])),
+                    )
 
                     for key, value in values.items():
                         cur.execute(
@@ -2243,31 +2255,84 @@ def _put_cancellation_tier_metric(tier):
         logger.exception("Unable to publish CancellationsByTier metric")
 
 
+HEALTH_CAMP_NAME = "health camp session"
+HEALTH_CAMP_DURATION_MIN = 60
+HEALTH_CAMP_MIN_CAPACITY = 2
+HEALTH_CAMP_MAX_CAPACITY = 10
+
+
+def _normalise_consultation_name(name):
+    return " ".join(str(name).split()).lower()
+
+
+def _validate_consultation_rules(name, duration, capacity):
+    """Health Camp Session is a 60-minute group session for 2 to 10 patients."""
+    if _normalise_consultation_name(name) == HEALTH_CAMP_NAME:
+        if duration != HEALTH_CAMP_DURATION_MIN:
+            raise ValueError("Health Camp Session must be exactly 60 minutes")
+        if not HEALTH_CAMP_MIN_CAPACITY <= capacity <= HEALTH_CAMP_MAX_CAPACITY:
+            raise ValueError("Health Camp Session capacity must be between 2 and 10")
+
+
+_REFUND_POLICY_CACHE = {}
+_REFUND_POLICY_TTL_SECONDS = 60
+
+# Approved policy. Tier applies when hours-before-start is above minimumHours,
+# or equal to it when "inclusive" is true:
+#   > 48h = 100%   |   > 24h up to 48h = 75%   |   2h up to 24h = 50%   |   < 2h = 0%
+_DEFAULT_REFUND_POLICY = [
+    {"tier": "FULL", "minimumHours": 48, "refundPercent": 100, "inclusive": False},
+    {"tier": "PARTIAL_75", "minimumHours": 24, "refundPercent": 75, "inclusive": False},
+    {"tier": "PARTIAL_50", "minimumHours": 2, "refundPercent": 50, "inclusive": True},
+    {"tier": "NONE", "minimumHours": 0, "refundPercent": 0, "inclusive": True},
+]
+
+
+def _validate_refund_policy(parsed):
+    if not isinstance(parsed, list) or not parsed:
+        raise ValueError("Refund policy must be a non-empty JSON array")
+    rows = []
+    for row in parsed:
+        percent = int(row["refundPercent"])
+        if not 0 <= percent <= 100:
+            raise ValueError("refundPercent must be between 0 and 100")
+        hours = float(row["minimumHours"])
+        if hours < 0:
+            raise ValueError("minimumHours must not be negative")
+        rows.append({
+            "tier": str(row["tier"]),
+            "minimumHours": hours,
+            "refundPercent": percent,
+            "inclusive": bool(row.get("inclusive", False)),
+        })
+    rows.sort(key=lambda r: r["minimumHours"], reverse=True)
+    # The lowest window must catch everything, otherwise a late cancellation has no tier.
+    if rows[-1]["minimumHours"] != 0 or not rows[-1]["inclusive"]:
+        raise ValueError("Refund policy needs a final tier with minimumHours 0 and inclusive true")
+    return rows
+
+
 def _refund_policy():
-    """Read JSON policy from SSM; safe defaults match the approved milestone policy."""
+    """Refund windows from SSM (cached 60s); falls back to the approved defaults."""
     parameter_name = os.environ.get(
         "REFUND_POLICY_PARAMETER",
         f"/medislot/{os.environ.get('ENVIRONMENT', 'dev')}/refund/policy",
     )
-    default = [
-        {"tier": "FULL", "minimumHours": 48, "refundPercent": 100},
-        {"tier": "PARTIAL_75", "minimumHours": 24, "refundPercent": 75},
-        {"tier": "PARTIAL_50", "minimumHours": 2, "refundPercent": 50},
-        {"tier": "NONE", "minimumHours": 0, "refundPercent": 0},
-    ]
+    cached = _REFUND_POLICY_CACHE.get(parameter_name)
+    if cached and cached[0] > time.monotonic():
+        return cached[1]
     try:
-        raw = _parameter(parameter_name, decrypt=False)
-        parsed = json.loads(raw)
-        if not isinstance(parsed, list) or not parsed:
-            raise ValueError("Refund policy must be a non-empty JSON array")
-        return sorted(parsed, key=lambda row: float(row["minimumHours"]), reverse=True)
+        policy = _validate_refund_policy(json.loads(_parameter(parameter_name, decrypt=False)))
+        logger.info("REFUND_POLICY_LOADED source=ssm parameter=%s tiers=%s", parameter_name, len(policy))
     except Exception:
-        logger.warning("Refund policy parameter unavailable/invalid; using approved defaults: %s", parameter_name)
-        return default
+        logger.warning("REFUND_POLICY_FALLBACK parameter=%s reason=unavailable_or_invalid", parameter_name, exc_info=True)
+        policy = _validate_refund_policy(_DEFAULT_REFUND_POLICY)
+    _REFUND_POLICY_CACHE[parameter_name] = (time.monotonic() + _REFUND_POLICY_TTL_SECONDS, policy)
+    return policy
 
 
-def _calculate_refund(fee_amount, slot_start_utc, now_utc=None):
-    """Boundary semantics: >48h=100%; (24h,48h]=75%; (2h,24h]=50%; <2h=0%."""
+def _calculate_refund(fee_amount, slot_start_utc, now_utc=None, policy=None):
+    """Return (tier, percent, refund_amount, hours_before_start) using the SSM windows."""
     now_utc = now_utc or datetime.now(timezone.utc)
     start = slot_start_utc
     if isinstance(start, str):
@@ -2275,14 +2340,12 @@ def _calculate_refund(fee_amount, slot_start_utc, now_utc=None):
     if start.tzinfo is None:
         start = start.replace(tzinfo=timezone.utc)
     hours = (start.astimezone(timezone.utc) - now_utc.astimezone(timezone.utc)).total_seconds() / 3600
-    if hours > 48:
-        tier, percent = "FULL", 100
-    elif hours >= 24:
-        tier, percent = "PARTIAL_75", 75
-    elif hours >= 2:
-        tier, percent = "PARTIAL_50", 50
-    else:
-        tier, percent = "NONE", 0
+    policy = policy or _refund_policy()
+    tier, percent = policy[-1]["tier"], policy[-1]["refundPercent"]
+    for row in policy:
+        if hours > row["minimumHours"] or (row["inclusive"] and hours >= row["minimumHours"]):
+            tier, percent = row["tier"], row["refundPercent"]
+            break
     fee = Decimal(str(fee_amount))
     refund = (fee * Decimal(percent) / Decimal(100)).quantize(Decimal("0.01"))
     return tier, percent, refund, hours

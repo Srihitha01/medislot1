@@ -2211,7 +2211,7 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
         <form id="consultationForm">
           <input type="hidden" id="consultationEditId" value="">
           <div class="editor-grid">
-            <div class="field"><label for="consultationName">Consultation name</label><input id="consultationName" maxlength="40" placeholder="quick, standard, detailed, video, in_person" required></div>
+            <div class="field"><label for="consultationName">Consultation name</label><input id="consultationName" maxlength="40" placeholder="quick, standard, detailed, video, in_person, health camp session" required></div>
             <div class="field"><label for="consultationDuration">Duration (minutes)</label><input id="consultationDuration" type="number" min="5" max="180" value="30" required></div>
             <div class="field"><label for="consultationFee">Fee (INR)</label><input id="consultationFee" type="number" min="0" max="99999999.99" step="0.01" value="0" required></div>
             <div class="field"><label for="consultationCapacity">Capacity</label><input id="consultationCapacity" type="number" min="1" max="50" value="1" required></div>
@@ -3053,11 +3053,29 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
         $("consultationDuration").value = item.duration_min;
         $("consultationFee").value = item.fee_amount;
         $("consultationCapacity").value = item.capacity;
+        applyConsultationLimits();
         $("consultationEditorTitle").textContent = `Edit ${consultationDisplayName(item.name)}`;
         $("saveConsultationButton").textContent = "Update consultation type";
         $("cancelConsultationEdit").hidden = false;
         $("consultationForm").scrollIntoView({behavior:"smooth", block:"center"});
     }
+
+    // Health Camp Session is a 60-minute group session for 2-10 patients.
+    function applyConsultationLimits() {
+        const isCamp = $("consultationName").value.trim().replace(/\s+/g, " ").toLowerCase() === "health camp session";
+        const capacity = $("consultationCapacity");
+        const duration = $("consultationDuration");
+        capacity.min = isCamp ? 2 : 1;
+        capacity.max = isCamp ? 10 : 50;
+        duration.min = isCamp ? 60 : 5;
+        duration.max = isCamp ? 60 : 180;
+        if (isCamp) {
+            duration.value = 60;
+            if (Number(capacity.value) < 2) capacity.value = 2;
+            if (Number(capacity.value) > 10) capacity.value = 10;
+        }
+    }
+    $("consultationName").addEventListener("input", applyConsultationLimits);
 
     function resetConsultationForm() {
         editingConsultationId = null;
@@ -3066,6 +3084,7 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
         $("consultationDuration").value = 30;
         $("consultationFee").value = 0;
         $("consultationCapacity").value = 1;
+        applyConsultationLimits();
         $("consultationEditorTitle").textContent = "Add consultation type";
         $("saveConsultationButton").textContent = "Add consultation type";
         $("cancelConsultationEdit").hidden = true;
