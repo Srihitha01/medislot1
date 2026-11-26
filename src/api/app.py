@@ -2870,6 +2870,8 @@ def _patient_notifications(user_id):
                 (int(user_id),),
             )
             rows = cur.fetchall()
+        for row in rows:
+            row["createdAt"] = _utc_z(row.get("createdAt"))
         return _response(200, {"items": rows, "count": len(rows)})
     finally:
         conn.close()
@@ -2969,6 +2971,16 @@ def _cancel_patient_appointment(appointment_id, patient_id):
         conn.close()
 
 
+def _utc_z(value):
+    """MySQL returns naive UTC datetimes; send them with an explicit Z so browsers
+    do not read them as local time (that shifted appointment times by 5h30)."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return value
+
+
 def _patient_appointments(user_id, event):
     """Return only the authenticated patient's appointment and refund history."""
     params = _query(event)
@@ -3016,6 +3028,9 @@ def _patient_appointments(user_id, event):
         with conn.cursor() as cur:
             cur.execute(sql, tuple(values))
             rows = cur.fetchall()
+        for row in rows:
+            for key in ("slotStartUtc", "slotEndUtc", "refundCreatedAt"):
+                row[key] = _utc_z(row.get(key))
         return _response(200, {"items": rows, "count": len(rows)})
     finally:
         conn.close()
@@ -3223,10 +3238,15 @@ def _public_doctor_slots(doctor_id, event):
         if active_counts is not None:
             active = active_counts.get(item.get("slotId"), 0)
             if booked > active and _seconds_since(item.get("updatedAt"), now_dt) >= 120:
+                # DynamoDB still counts a cancelled appointment's seat.
                 _repair_slot_booked_count(slots_table, item, active, now)
                 booked = active
-            else:
-                booked = max(booked, active)
+            elif booked < active:
+                # RDS has an active appointment DynamoDB does not count; without
+                # this the slot could be double booked. RDS is never ahead
+                # legitimately (booking reserves in DynamoDB first).
+                _repair_slot_booked_count(slots_table, item, active, now)
+                booked = active
             item["bookedCount"] = booked
         if int(item.get("capacity", 0)) > booked:
             item["freeSeats"] = int(item["capacity"]) - booked

@@ -128,3 +128,15 @@ def test_sns_notification_subscribes_once_and_uses_real_newlines(monkeypatch):
     message = calls["published"][0]["Message"]
     assert "\n\n" in message and "\\n" not in message
     assert calls["published"][0]["MessageAttributes"]["patientId"]["StringValue"] == "3"
+
+
+def test_slot_with_active_appointment_but_zero_count_is_hidden_and_repaired(slots_table, monkeypatch):
+    _put_slot(slots_table, "held-slot", booked=0, updated_minutes_ago=10)
+    body = _run(monkeypatch, slots_table, active_counts={"held-slot": 1})
+    assert body["items"] == []
+    assert int(slots_table.get_item(Key={"slotId": "held-slot"})["Item"]["bookedCount"]) == 1
+
+
+def test_naive_mysql_datetime_is_sent_as_utc_with_z():
+    from datetime import datetime
+    assert app._utc_z(datetime(2026, 12, 7, 15, 20)) == "2026-12-07T15:20:00Z"

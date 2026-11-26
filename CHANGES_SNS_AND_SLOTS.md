@@ -20,3 +20,12 @@
 - `src/api/tests/test_slot_reconcile_and_sns.py` (4 tests, all pass).
 - Existing failures, unchanged by this work: `test_cross_patient_id_forbidden` and
   `test_refund_at_exactly_24_hours_is_50_percent`.
+
+## Round 2 (from the DynamoDB scan and screenshots)
+- Appointment and notification times were shown 5h30 early: MySQL returns UTC
+  datetimes without a zone and the browser read them as local time (a 20:50 IST
+  appointment appeared as 03:20 pm). The API now sends them with a `Z`, and the
+  dashboard also treats zone-less timestamps as UTC.
+- Slot list repairs DynamoDB in both directions. If RDS has an active appointment
+  that DynamoDB does not count, the slot is hidden and the count is corrected
+  (prevents double booking).
