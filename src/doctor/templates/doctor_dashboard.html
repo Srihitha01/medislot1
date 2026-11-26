@@ -1844,6 +1844,25 @@ body{--text:#19343a;--muted:#718786}
         .appt-tabs { display:flex; gap:10px; flex-wrap:wrap; margin:6px 0 18px; padding-bottom:16px; border-bottom:1px solid rgba(255,255,255,.08); }
         .appt-tabs .btn.active { background: rgba(53,200,187,.15); color:#35c8bb; border-color: rgba(53,200,187,.55); }
         .appt-subtitle { margin:4px 0 4px; }
+
+
+/* Doctor appointment outcome actions */
+.appointment-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 7px;
+    min-width: 220px;
+}
+.appointment-actions .btn-small {
+    padding: 7px 10px;
+    font-size: 11px;
+    white-space: nowrap;
+}
+.appointment-actions button:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+}
 </style>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,700;9..144,800&display=swap" rel="stylesheet">
 <style id="ms-theme">
@@ -2434,10 +2453,11 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
                                 <th>Date / Time</th>
                                 <th>Fee</th>
                                 <th>Status</th>
+                                <th>Action</th>
                             </tr>
                         </thead>
                         <tbody id="appointmentsTable">
-                            <tr><td colspan="6" class="empty">Loading appointments...</td></tr>
+                            <tr><td colspan="7" class="empty">Loading appointments...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -3259,7 +3279,7 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
 
         if (view === "upcoming") {
             return items
-                .filter(item => active.has(status(item)) && start(item) > now)
+                .filter(item => active.has(status(item)) && (start(item) > now || istDateKey(item.slot_start_utc) === todayKey))
                 .sort((a, b) => start(a) - start(b));
         }
         if (view === "today") {
@@ -3339,7 +3359,7 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
 
     function renderAppointments(table, items) {
         if (!items.length) {
-            const columns = table.id === "recentAppointmentsTable" ? 4 : 6;
+            const columns = table.id === "recentAppointmentsTable" ? 4 : 7;
             table.innerHTML = `
                 <tr><td colspan="${columns}" class="empty">
                     No appointments found.
@@ -3363,9 +3383,26 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
                 `;
             }
 
+            const status = String(item.status || "").toLowerCase();
+            const active = ["booked", "confirmed", "rescheduled"].includes(status);
+            const startMs = Date.parse(item.slot_start_utc);
+            const started = Number.isFinite(startMs) && Date.now() >= startMs;
+            const outcomeDisabled = !active || !started;
+            const appointmentId = escapeHTML(item.appointment_id);
+            const actions = active ? `
+                <div class="appointment-actions">
+                    <button type="button" class="btn btn-light btn-small"
+                        data-appointment-outcome="no_show" data-id="${appointmentId}"
+                        ${outcomeDisabled ? "disabled" : ""}>No Show</button>
+                    <button type="button" class="btn btn-accent-soft btn-small"
+                        data-appointment-outcome="completed" data-id="${appointmentId}"
+                        ${outcomeDisabled ? "disabled" : ""}>Completed</button>
+                </div>
+            ` : "—";
+
             return `
                 <tr>
-                    <td>${escapeHTML(item.appointment_id)}</td>
+                    <td>${appointmentId}</td>
                     <td>
                         <strong>${escapeHTML(patient)}</strong><br>
                         <span class="muted-note">${escapeHTML(item.patient_email || "")}</span>
@@ -3374,6 +3411,7 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
                     <td>${escapeHTML(dateTime)}</td>
                     <td>₹${escapeHTML(item.fee_amount ?? "—")}</td>
                     <td>${statusBadge(item.status)}</td>
+                    <td>${actions}</td>
                 </tr>
             `;
         }).join("");
@@ -3652,6 +3690,46 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
     });
 
     // Appointment tabs and refresh.
+    // Enable outcome buttons automatically when their appointment start time arrives.
+    window.setInterval(() => {
+        const now = Date.now();
+        document.querySelectorAll("#appointmentsTable button[data-appointment-outcome]").forEach(button => {
+            const row = button.closest("tr");
+            const appointmentId = button.dataset.id;
+            const item = appointmentItems.find(value => String(value.appointment_id) === String(appointmentId));
+            if (!item) return;
+            const itemStatus = String(item.status || "").toLowerCase();
+            const startMs = Date.parse(item.slot_start_utc);
+            const stillActive = ["booked", "confirmed", "rescheduled"].includes(itemStatus);
+            button.disabled = !(stillActive && Number.isFinite(startMs) && now >= startMs);
+        });
+    }, 10000);
+
+    // Submit Completed / No Show actions through the authenticated API.
+    $("appointmentsTable").addEventListener("click", async event => {
+        const button = event.target.closest("button[data-appointment-outcome]");
+        if (!button || button.disabled) return;
+
+        const appointmentId = button.dataset.id;
+        const status = button.dataset.appointmentOutcome;
+        const label = status === "completed" ? "Completed" : "No Show";
+        if (!window.confirm(`Mark appointment #${appointmentId} as ${label}?`)) return;
+
+        button.disabled = true;
+        try {
+            await apiRequest(
+                `/doctors/me/appointments/${encodeURIComponent(appointmentId)}/status`,
+                "PATCH",
+                { status }
+            );
+            showMessage(`Appointment marked as ${label.toLowerCase()}.`, "success");
+            await loadAppointments();
+        } catch (error) {
+            handleError(error);
+            button.disabled = false;
+        }
+    });
+
     $("appointmentTabs").addEventListener("click", async event => {
         const button = event.target.closest("[data-view]");
         if (!button) return;

@@ -2198,6 +2198,134 @@ def _doctor_appointments(user_id, event):
         conn.close()
 
 
+def _doctor_update_appointment_outcome(doctor_id, appointment_id, event):
+    """Let the owning doctor mark a started appointment completed or no-show."""
+    body = _body(event)
+    requested_status = str(body.get("status") or "").strip().lower()
+
+    if requested_status not in {"completed", "no_show"}:
+        return _response(
+            400,
+            {"message": "Status must be either 'completed' or 'no_show'"},
+        )
+
+    conn = _db_connection()
+    patient_id = None
+    patient_email = None
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    a.appointment_id,
+                    a.patient_user_id,
+                    a.status,
+                    a.slot_start_utc,
+                    a.active_flag,
+                    u.email AS patient_email
+                FROM appointments a
+                INNER JOIN users u ON u.user_id = a.patient_user_id
+                WHERE a.appointment_id = %s
+                  AND a.doctor_user_id = %s
+                FOR UPDATE
+                """,
+                (int(appointment_id), int(doctor_id)),
+            )
+            appointment = cur.fetchone()
+
+            if not appointment:
+                conn.rollback()
+                return _response(404, {"message": "Appointment not found"})
+
+            current_status = str(appointment.get("status") or "").lower()
+            if current_status not in {"booked", "confirmed", "rescheduled"}:
+                conn.rollback()
+                return _response(
+                    409,
+                    {"message": f"Appointment cannot be updated from status '{current_status}'"},
+                )
+
+            start_utc = appointment.get("slot_start_utc")
+            if not isinstance(start_utc, datetime):
+                conn.rollback()
+                return _response(409, {"message": "Appointment start time is unavailable"})
+
+            # MySQL DATETIME values in this project are stored as UTC-naive.
+            if start_utc.tzinfo is None:
+                start_utc = start_utc.replace(tzinfo=timezone.utc)
+            else:
+                start_utc = start_utc.astimezone(timezone.utc)
+
+            if datetime.now(timezone.utc) < start_utc:
+                conn.rollback()
+                return _response(
+                    409,
+                    {"message": "Completed or No Show can be selected only after the appointment start time."},
+                )
+
+            cur.execute(
+                """
+                UPDATE appointments
+                SET status = %s,
+                    active_flag = NULL
+                WHERE appointment_id = %s
+                  AND doctor_user_id = %s
+                  AND status IN ('booked', 'confirmed', 'rescheduled')
+                """,
+                (requested_status, int(appointment_id), int(doctor_id)),
+            )
+
+            if cur.rowcount != 1:
+                conn.rollback()
+                return _response(
+                    409,
+                    {"message": "Appointment status has already been changed"},
+                )
+
+            patient_id = int(appointment["patient_user_id"])
+            patient_email = appointment.get("patient_email")
+
+        conn.commit()
+
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    if requested_status == "completed":
+        notification_type = "APPOINTMENT_COMPLETED"
+        title = "Appointment completed"
+        message = f"Your appointment #{int(appointment_id)} has been marked as completed by your doctor."
+    else:
+        notification_type = "APPOINTMENT_NO_SHOW"
+        title = "Appointment marked as no-show"
+        message = (
+            f"Your appointment #{int(appointment_id)} has been marked as no-show by your doctor. "
+            "Please contact the clinic if you believe this is incorrect."
+        )
+
+    # Keep the project's existing in-app + SNS notification path.
+    _notify_patient(
+        patient_id,
+        int(appointment_id),
+        notification_type,
+        title,
+        message,
+        patient_email,
+    )
+
+    return _response(
+        200,
+        {
+            "message": "Appointment marked as completed" if requested_status == "completed" else "Appointment marked as no-show",
+            "appointmentId": int(appointment_id),
+            "status": requested_status,
+        },
+    )
+
+
 # ---------------------------------------------------------
 # PATIENT APPOINTMENT BOOKING
 # ---------------------------------------------------------
@@ -3622,6 +3750,15 @@ def _lambda_handler_impl(event, context):
             and method == "GET"
         ):
             return _doctor_appointments(user_id, event)
+
+        # Doctor marks an appointment completed or no-show.
+        outcome_match = re.fullmatch(
+            r"/doctors/me/appointments/([1-9][0-9]*)/status", path
+        )
+        if outcome_match and role == "doctor" and method == "PATCH":
+            return _doctor_update_appointment_outcome(
+                user_id, int(outcome_match.group(1)), event
+            )
 
         # Doctor scheduling collections
         routes = [
