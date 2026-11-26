@@ -3676,3 +3676,4 @@ def lambda_handler(event, context):
     result = _lambda_handler_impl(event, context)
     _log_http_response(event or {}, context, result, started_at)
     return result
+

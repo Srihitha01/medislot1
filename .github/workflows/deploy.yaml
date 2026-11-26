@@ -272,7 +272,7 @@ jobs:
 
           if ! aws s3api head-bucket --bucket "$bucket" 2>/tmp/head-bucket-error.txt; then
             cat /tmp/head-bucket-error.txt
-            echo "::error::Cannot access artifact bucket $bucket. Make sure $IAM_STACK was deployed with DeploymentArtifactBucketName=$bucket."
+            echo "::error::Cannot access artifact bucket $bucket. Make sure $IAM_STACK is deployed and current (run scripts/bootstrap-iam.ps1 or scripts/bootstrap-iam.sh once with admin credentials)."
             exit 1
           fi
 
@@ -493,10 +493,8 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Verify IAM stack exists and uses the current artifact bucket
+      - name: Verify IAM stack exists and is healthy
         shell: bash
-        env:
-          ARTIFACT_BUCKET: ${{ needs.deploy_network.outputs.artifact_bucket }}
         run: |
           set -euo pipefail
 
@@ -510,22 +508,15 @@ jobs:
               echo "$IAM_STACK status: $status"
               ;;
             *)
-              echo "::error::$IAM_STACK is not healthy (status: $status). Deploy it manually with administrator credentials."
+              echo "::error::$IAM_STACK is not healthy (status: $status). Run scripts/bootstrap-iam.ps1 (Windows) or scripts/bootstrap-iam.sh once with administrator credentials, then re-run this workflow."
               exit 1
               ;;
           esac
 
-          configured=$(aws cloudformation describe-stacks \
-            --stack-name "$IAM_STACK" \
-            --query "Stacks[0].Parameters[?ParameterKey=='DeploymentArtifactBucketName'].ParameterValue | [0]" \
-            --output text)
-
-          if [[ "$configured" != "$ARTIFACT_BUCKET" ]]; then
-            echo "::error::$IAM_STACK was deployed with DeploymentArtifactBucketName='$configured' but the network stack bucket is '$ARTIFACT_BUCKET'. Redeploy the IAM stack manually: aws cloudformation deploy --stack-name $IAM_STACK --template-file cloudformation/iam-stack.yaml --capabilities CAPABILITY_NAMED_IAM --parameter-overrides Environment=$ENVIRONMENT DeploymentArtifactBucketName=$ARTIFACT_BUCKET"
-            exit 1
-          fi
-
-          echo "IAM stack is healthy and uses artifact bucket $ARTIFACT_BUCKET."
+          # The IAM stack no longer takes the artifact bucket name as a parameter:
+          # its S3 permissions match the ms-<account>-<env>-art-* prefix, so
+          # recreating the network stack (new bucket name) needs no IAM change.
+          echo "IAM stack is healthy."
 
   # ============================================================
   # 6. AUTHENTICATION STACK

@@ -37,10 +37,6 @@ Parameters:
     Type: String
     Default: "1434045145"
 
-  DeploymentArtifactBucketName:
-    Type: String
-    Description: Existing S3 bucket used for deployment artifacts
-
 Resources:
   # ---------------------------------------------------------
   # GitHub Actions deployment role
@@ -137,7 +133,9 @@ Resources:
               - s3:GetBucketLocation
               - s3:ListBucket
             Resource:
-              - !Sub arn:${AWS::Partition}:s3:::${DeploymentArtifactBucketName}
+              # Bucket is ms-<account>-<env>-art-<unique id>; the id changes if the
+              # network stack is recreated, so match the fixed prefix.
+              - !Sub arn:${AWS::Partition}:s3:::ms-${AWS::AccountId}-${Environment}-art-*
 
           - Sid: ManageMediSlotDeploymentArtifacts
             Effect: Allow
@@ -146,7 +144,7 @@ Resources:
               - s3:PutObject
               - s3:AbortMultipartUpload
             Resource:
-              - !Sub arn:${AWS::Partition}:s3:::${DeploymentArtifactBucketName}/medislot/*
+              - !Sub arn:${AWS::Partition}:s3:::ms-${AWS::AccountId}-${Environment}-art-*/medislot/*
 
           - Sid: UseMediSlotDataKeyForLambdaEnvironmentEncryption
             Effect: Allow
