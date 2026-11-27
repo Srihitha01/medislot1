@@ -1,555 +1,4287 @@
+"""MediSlot application API router.
+
+Handles doctor profiles, scheduling, slot discovery, appointment booking,
+patient waitlists and related API operations.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import logging
 import os
 import re
-import secrets
-from datetime import timedelta
-from functools import wraps
-
-import requests
-from flask import (
-    Flask,
-    flash,
-    jsonify,
-    redirect,
-    render_template,
-    request,
-    session,
-    url_for,
+import time
+from datetime import (
+    date,
+    datetime,
+    time as dt_time,
+    timedelta,
+    timezone,
 )
-from werkzeug.middleware.proxy_fix import ProxyFix
+from decimal import Decimal
+from typing import Any
+from zoneinfo import ZoneInfo
+
+import boto3
+import pymysql
+from boto3.dynamodb.conditions import Attr, Key
+from botocore.exceptions import BotoCoreError, ClientError
+from botocore.config import Config
+
+try:
+    from .availability_rules import validate_doctor_day
+except ImportError:
+    from availability_rules import validate_doctor_day
 
 
-# --------------------------------------------------
-# MediSlot API configuration
-# --------------------------------------------------
+IST = ZoneInfo("Asia/Kolkata")
 
-API_BASE_URL = os.environ.get("MEDISLOT_API_BASE_URL", "").rstrip("/")
-if not API_BASE_URL:
-    raise RuntimeError("MEDISLOT_API_BASE_URL environment variable is required")
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
-LOGIN_PATH = os.environ.get("MEDISLOT_LOGIN_PATH", "/auth/login")
-
-# Change these if your API Gateway register routes are different.
-REGISTER_DOCTOR_PATH = os.environ.get(
-    "MEDISLOT_REGISTER_DOCTOR_PATH", "/auth/register"
-)
-REGISTER_PATIENT_PATH = os.environ.get(
-    "MEDISLOT_REGISTER_PATIENT_PATH", "/auth/register"
-)
-
-EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-PHONE_PATTERN = re.compile(r"^\+?[0-9\s\-]{7,15}$")
+_DDB = None
+_SSM = None
+_EVENTS = None
+_CLOUDWATCH = None
 
 
-# --------------------------------------------------
-# Flask application
-# --------------------------------------------------
-
-app = Flask(__name__)
-
-app.wsgi_app = ProxyFix(
-    app.wsgi_app,
-    x_for=1,
-    x_proto=1,
-    x_host=1,
-)
-
-flask_secret = os.environ.get("FLASK_SECRET_KEY", "").strip()
-if not flask_secret:
-    # Local development fallback only; EC2 provides FLASK_SECRET_KEY.
-    flask_secret = secrets.token_urlsafe(48)
-
-app.secret_key = flask_secret
-
-app.config.update(
-    SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=(
-        os.environ.get("COOKIE_SECURE", "false").lower() == "true"
-    ),
-    PERMANENT_SESSION_LIFETIME=timedelta(minutes=15),
-    MAX_CONTENT_LENGTH=2 * 1024 * 1024,
-)
-
-
-# --------------------------------------------------
-# API helpers
-# --------------------------------------------------
-
-def api_url(path):
-    return f"{API_BASE_URL}/{path.lstrip('/')}"
-
-
-def load_reference(path):
-    """Fetch dropdown data. Returns [] if the API needs a token or fails."""
-    try:
-        response = requests.get(
-            api_url(path),
-            headers={"Accept": "application/json"},
-            timeout=(5, 10),
-        )
-        if response.status_code == 200:
-            return response.json().get("items", [])
-    except (requests.RequestException, ValueError):
-        app.logger.warning("Could not load reference data: %s", path)
-    return []
-
-
-def post_registration(path, payload):
+def _aws_region() -> str:
     """
-    Send a registration request to the MediSlot API.
-    Returns (success, message).
+    Resolve the deployment region from the runtime environment.
+
+    Lambda provides AWS_REGION automatically. For local development and tests,
+    AWS_DEFAULT_REGION may be supplied. No deployment region is hardcoded.
     """
-    try:
-        response = requests.post(
-            api_url(path),
-            json=payload,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            },
-            timeout=(5, 20),
+    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+    if not region:
+        raise RuntimeError(
+            "AWS region is not configured. Set AWS_REGION in Lambda or "
+            "AWS_DEFAULT_REGION for local execution."
         )
-    except requests.RequestException:
-        app.logger.exception("MediSlot register API request failed")
-        return False, "Cannot reach the MediSlot service. Please try again."
+    return region
 
-    try:
-        result = response.json()
-    except ValueError:
-        result = {}
 
-    if response.status_code in (200, 201):
-        return True, result.get(
-            "message", "Registration successful. Please log in."
+def _aws_client(service_name: str, **kwargs):
+    """Create an AWS SDK client in the explicitly configured deployment region."""
+    kwargs.setdefault("region_name", _aws_region())
+    return boto3.client(service_name, **kwargs)
+
+
+def _events_client():
+    global _EVENTS
+    if _EVENTS is None:
+        _EVENTS = _aws_client("events")
+    return _EVENTS
+
+
+def _cloudwatch_client():
+    global _CLOUDWATCH
+    if _CLOUDWATCH is None:
+        _CLOUDWATCH = _aws_client("cloudwatch")
+    return _CLOUDWATCH
+
+
+# ---------------------------------------------------------
+# AWS CLIENTS
+# ---------------------------------------------------------
+
+def _dynamodb():
+    global _DDB
+
+    if _DDB is None:
+        _DDB = boto3.resource("dynamodb", region_name=_aws_region())
+
+    return _DDB
+
+
+def _ssm():
+    global _SSM
+
+    if _SSM is None:
+        _SSM = _aws_client("ssm")
+
+    return _SSM
+
+
+def _table(env_name: str):
+    table_name = os.environ.get(env_name)
+
+    if not table_name:
+        raise RuntimeError(
+            f"Missing required environment variable: {env_name}"
         )
 
-    if response.status_code == 409:
-        return False, result.get(
-            "message", "An account with this email already exists."
-        )
+    return _dynamodb().Table(table_name)
 
-    if response.status_code >= 500:
-        return False, "The registration service had a problem. Please try again."
 
-    return False, result.get(
-        "message", "Registration failed. Please check your details."
+def _parameter(name: str, decrypt: bool = False):
+    return _ssm().get_parameter(
+        Name=name,
+        WithDecryption=decrypt,
+    )["Parameter"]["Value"]
+
+
+# ---------------------------------------------------------
+# RESPONSE AND REQUEST HELPERS
+# ---------------------------------------------------------
+
+def _json_default(value: Any):
+    if isinstance(value, Decimal):
+        return int(value) if value % 1 == 0 else float(value)
+
+    if isinstance(value, (date, datetime, dt_time)):
+        return value.isoformat()
+
+    if isinstance(value, timedelta):
+        return str(value)
+
+    raise TypeError(
+        f"Object of type {type(value).__name__} is not JSON serializable"
     )
 
 
-def validate_common(form):
-    """Checks shared by doctor and patient registration. Returns error or None."""
-    first_name = form.get("first_name", "").strip()
-    last_name = form.get("last_name", "").strip()
-    email = form.get("email", "").strip().lower()
-    password = form.get("password", "")
-    confirm = form.get("confirm_password", "")
+def _response(status: int, body: dict[str, Any]):
+    return {
+        "statusCode": status,
+        "headers": {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": (
+                "Content-Type,Authorization,Idempotency-Key,"
+                "X-Correlation-Id"
+            ),
+            "Access-Control-Allow-Methods": (
+                "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+            ),
+            "X-Content-Type-Options": "nosniff",
+        },
+        "body": json.dumps(body, default=_json_default),
+    }
 
-    if not first_name:
-        return "Please enter your first name."
-    if not last_name:
-        return "Please enter your last name."
-    if len(first_name) > 75 or len(last_name) > 75:
-        return "First name and last name must each be 75 characters or fewer."
-    if not EMAIL_PATTERN.match(email):
-        return "Please enter a valid email address."
-    if len(password) < 8:
-        return "Password must be at least 8 characters long."
-    if password != confirm:
-        return "Passwords do not match."
+
+def _body(event: dict[str, Any]) -> dict[str, Any]:
+    raw = event.get("body")
+
+    if raw in (None, ""):
+        return {}
+
+    if event.get("isBase64Encoded"):
+        raw = base64.b64decode(raw).decode("utf-8")
+
+    if isinstance(raw, dict):
+        return raw
+
+    if not isinstance(raw, str):
+        raise ValueError("Request body must be a JSON object")
+
+    result = json.loads(raw)
+
+    if not isinstance(result, dict):
+        raise ValueError("Request body must be a JSON object")
+
+    return result
+
+
+def _principal(event: dict[str, Any]):
+    authorizer = (
+        (event.get("requestContext") or {}).get("authorizer") or {}
+    )
+
+    user_id = (
+        authorizer.get("userId")
+        or authorizer.get("userid")
+    )
+
+    role = authorizer.get("role")
+
+    if user_id is not None:
+        if not re.fullmatch(r"[1-9][0-9]{0,19}", str(user_id)):
+            user_id = None
+
+    return (
+        str(user_id) if user_id else None,
+        str(role).lower() if role else None,
+    )
+
+
+def _path(event: dict[str, Any]) -> str:
+    path = event.get("path") or event.get("rawPath") or "/"
+
+    path = (
+        "/" + str(path).strip("/")
+        if str(path).strip("/")
+        else "/"
+    )
+
+    stage = os.environ.get("ENVIRONMENT", "dev")
+
+    if path.startswith(f"/{stage}/"):
+        path = path[len(stage) + 1:]
+
+    elif path == f"/{stage}":
+        path = "/"
+
+    if path != "/":
+        path = path.rstrip("/")
+
+    return path
+
+
+def _header(event: dict[str, Any], name: str):
+    """Read an HTTP header case-insensitively from API Gateway events."""
+    headers = event.get("headers") or {}
+    wanted = name.lower()
+    for key, value in headers.items():
+        if str(key).lower() == wanted and value is not None:
+            return str(value).strip()
     return None
 
 
-# --------------------------------------------------
-# Doctor authentication decorator
-# --------------------------------------------------
-
-def doctor_required(function):
-    @wraps(function)
-    def wrapped(*args, **kwargs):
-
-        if not session.get("access_token"):
-            return redirect(url_for("login"))
-
-        if session.get("role") != "doctor":
-            session.clear()
-            flash("Doctor access is required.", "error")
-            return redirect(url_for("login"))
-
-        return function(*args, **kwargs)
-
-    return wrapped
-
-
-# --------------------------------------------------
-# Security headers
-# --------------------------------------------------
-
-@app.after_request
-def security_headers(response):
-
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Referrer-Policy"] = (
-        "strict-origin-when-cross-origin"
-    )
-    response.headers["Cache-Control"] = "no-store"
-
-    return response
-
-
-# --------------------------------------------------
-# Health check
-# --------------------------------------------------
-
-@app.get("/health")
-def health():
+def _query(event: dict[str, Any]):
+    params = event.get("queryStringParameters") or {}
 
     return {
-        "status": "healthy",
-        "service": "medislot-doctor-dashboard",
-    }, 200
-
-
-# --------------------------------------------------
-# Login
-# --------------------------------------------------
-
-@app.get("/")
-def welcome():
-    return render_template("welcome.html")
-
-
-@app.route("/login", methods=["GET", "POST"])
-@app.route("/doctor/login", methods=["GET", "POST"])
-@app.route("/patient/login", methods=["GET", "POST"])
-def login():
-    requested_role = "patient" if request.path.startswith("/patient/") else (
-        "doctor" if request.path.startswith("/doctor/") else None
-    )
-
-    if session.get("access_token"):
-        return redirect(url_for("patient_dashboard" if session.get("role") == "patient" else "dashboard"))
-
-    if request.method == "POST":
-
-        email = request.form.get("email", "").strip().lower()
-        password = request.form.get("password", "")
-
-        if not email or not password:
-            flash("Please enter your email and password.", "error")
-            return render_template("login.html", requested_role=requested_role), 400
-
-        try:
-            response = requests.post(
-                api_url(LOGIN_PATH),
-                json={"email": email, "password": password},
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                },
-                timeout=(5, 20),
-            )
-
-            try:
-                result = response.json()
-            except ValueError:
-                result = {}
-
-            if response.status_code != 200:
-
-                message = result.get(
-                    "message",
-                    "Login failed. Please check your credentials.",
-                )
-
-                flash(message, "error")
-
-                return (
-                    render_template("login.html", requested_role=requested_role),
-                    502 if response.status_code >= 500
-                    else response.status_code,
-                )
-
-            if result.get("role") not in ("doctor", "patient"):
-                flash("Unsupported account role.", "error")
-                return render_template("login.html", requested_role=requested_role), 403
-            if requested_role and result["role"] != requested_role:
-                flash(f"This is not a {requested_role} account. Choose the correct login.", "error")
-                return render_template("login.html", requested_role=requested_role), 403
-
-            access_token = result.get("accessToken")
-
-            if not access_token:
-                flash(
-                    "Login service did not return an access token.",
-                    "error",
-                )
-                return render_template("login.html", requested_role=requested_role), 502
-
-            session.clear()
-            session.permanent = True
-
-            session["access_token"] = access_token
-            session["refresh_token"] = result.get("refreshToken", "")
-            session["role"] = result["role"]
-            session["user_id"] = str(result.get("userId", ""))
-            session["email"] = email
-
-            return redirect(url_for("patient_dashboard" if result["role"] == "patient" else "dashboard"))
-
-        except requests.RequestException:
-            app.logger.exception("MediSlot login API request failed")
-
-            flash(
-                "Cannot reach the MediSlot login service. Please try again.",
-                "error",
-            )
-
-            return render_template("login.html", requested_role=requested_role), 502
-
-    return render_template("login.html", requested_role=requested_role)
-
-
-# --------------------------------------------------
-# Registration
-# --------------------------------------------------
-
-@app.get("/register")
-def register():
-    return redirect(url_for("register_patient"))
-
-
-@app.route("/register/doctor", methods=["GET", "POST"])
-def register_doctor():
-
-    specialisations = load_reference("/reference/specialisations")
-    hospitals = load_reference("/reference/hospitals")
-
-    def render(status=200):
-        return (
-            render_template(
-                "register.html",
-                role="doctor",
-                form=request.form,
-                specialisations=specialisations,
-                hospitals=hospitals,
-            ),
-            status,
-        )
-
-    if request.method == "GET":
-        return render()
-
-    error = validate_common(request.form)
-
-    license_number = request.form.get("license_number", "").strip()
-    specialisation_id = request.form.get("specialisation_id", "").strip()
-    hospital_id = request.form.get("hospital_id", "").strip()
-    experience = request.form.get("years_experience", "").strip()
-
-    if not error and not license_number:
-        error = "Please enter your medical license number."
-    if not error and not specialisation_id.isdigit():
-        error = "Please select your specialisation."
-    if not error and hospital_id and not hospital_id.isdigit():
-        error = "Please select a valid hospital."
-    if not error and experience and (
-        not experience.isdigit() or int(experience) > 80
-    ):
-        error = "Years of experience must be between 0 and 80."
-
-    if error:
-        flash(error, "error")
-        return render(400)
-
-    payload = {
-        "role": "doctor",
-        "name": f"{request.form['first_name'].strip()} {request.form['last_name'].strip()}",
-        "firstName": request.form["first_name"].strip(),
-        "lastName": request.form["last_name"].strip(),
-        "email": request.form["email"].strip().lower(),
-        "password": request.form["password"],
-        "licenseNumber": license_number,
-        "specialisationId": int(specialisation_id),
-        "hospitalId": int(hospital_id) if hospital_id else None,
-        "yearsExperience": int(experience) if experience else None,
-        "qualifications": request.form.get("qualifications", "").strip(),
-        "languages": request.form.get("languages", "").strip(),
-        "timezone": "Asia/Kolkata",
+        str(key): str(value)
+        for key, value in params.items()
+        if value is not None
     }
 
-    success, message = post_registration(REGISTER_DOCTOR_PATH, payload)
 
-    if not success:
-        flash(message, "error")
-        return render(400)
-
-    flash(
-        f"{message} After logging in, upload your photo from the Profile page.",
-        "success",
-    )
-    return redirect(url_for("login"))
-
-
-@app.route("/register/patient", methods=["GET", "POST"])
-def register_patient():
-
-    def render(status=200):
-        return (
-            render_template(
-                "register.html",
-                role="patient",
-                form=request.form,
-                specialisations=[],
-                hospitals=[],
-            ),
-            status,
+def _iso_utc(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            "startUtc must be an ISO-8601 timestamp with a timezone"
         )
-
-    if request.method == "GET":
-        return render()
-
-    error = validate_common(request.form)
-
-    phone = request.form.get("phone", "").strip()
-    city = request.form.get("city", "").strip()
-
-    if not error and not PHONE_PATTERN.match(phone):
-        error = "Please enter a valid phone number."
-    if not error and not city:
-        error = "Please enter your city."
-
-    if error:
-        flash(error, "error")
-        return render(400)
-
-    payload = {
-        "role": "patient",
-        "name": f"{request.form['first_name'].strip()} {request.form['last_name'].strip()}",
-        "firstName": request.form["first_name"].strip(),
-        "lastName": request.form["last_name"].strip(),
-        "email": request.form["email"].strip().lower(),
-        "password": request.form["password"],
-        "phone": phone,
-        "city": city,
-    }
-
-    success, message = post_registration(REGISTER_PATIENT_PATH, payload)
-
-    if not success:
-        flash(message, "error")
-        return render(400)
-
-    flash(message, "success")
-    return redirect(url_for("login"))
-
-
-# --------------------------------------------------
-# Doctor dashboard
-# --------------------------------------------------
-
-@app.get("/dashboard")
-@doctor_required
-def dashboard():
-
-    return render_template(
-        "doctor_dashboard.html",
-        api_base_url=API_BASE_URL,
-        access_token=session["access_token"],
-    )
-
-
-
-def patient_or_doctor_required(function):
-    @wraps(function)
-    def wrapped(*args, **kwargs):
-        if not session.get("access_token") or session.get("role") not in ("doctor", "patient"):
-            return jsonify({"message": "Authentication required"}), 401
-        return function(*args, **kwargs)
-    return wrapped
-
-
-def patient_required(function):
-    @wraps(function)
-    def wrapped(*args, **kwargs):
-        if not session.get("access_token"):
-            return redirect(url_for("login"))
-        if session.get("role") != "patient":
-            return redirect(url_for("dashboard"))
-        return function(*args, **kwargs)
-    return wrapped
-
-
-@app.get("/patient")
-@patient_required
-def patient_dashboard():
-    return render_template("patient_dashboard.html", api_base_url=API_BASE_URL,
-                           access_token=session["access_token"])
-
-@app.get("/patient/book-appointment")
-@patient_required
-def patient_book_appointment():
-    return render_template(
-        "book_appointment.html",
-        api_base_url=API_BASE_URL,
-        access_token=session["access_token"],
-    )
-
-# --------------------------------------------------
-# Logout
-# --------------------------------------------------
-
-@app.post("/session/refresh")
-@patient_or_doctor_required
-def session_refresh():
-    refresh_token = session.get("refresh_token")
-
-    if not refresh_token:
-        return jsonify({"message": "Session expired"}), 401
 
     try:
-        api_response = requests.post(
-            f"{API_BASE_URL}/auth/refresh",
-            json={"refreshToken": refresh_token},
-            timeout=15,
+        parsed = datetime.fromisoformat(
+            value.strip().replace("Z", "+00:00")
         )
-        result = api_response.json() if api_response.content else {}
-    except (requests.RequestException, ValueError):
-        app.logger.exception("MediSlot token refresh failed")
-        return jsonify({"message": "Could not refresh session"}), 502
 
-    new_access = result.get("accessToken")
+    except ValueError as exc:
+        raise ValueError(
+            "startUtc must be a valid ISO-8601 timestamp"
+        ) from exc
 
-    if api_response.status_code >= 400 or not new_access:
-        return jsonify({"message": "Session expired"}), 401
+    if parsed.tzinfo is None:
+        raise ValueError(
+            "startUtc must include a timezone, for example Z"
+        )
 
-    session["access_token"] = new_access
-    session["refresh_token"] = result.get("refreshToken") or refresh_token
-
-    return jsonify({"accessToken": new_access})
-
-
-@app.route("/logout", methods=["GET", "POST"])
-def logout():
-    session.clear()
-    flash("You have been logged out.", "success")
-    return redirect(url_for("welcome"))
+    return (
+        parsed.astimezone(timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
 
 
-# --------------------------------------------------
-# 404 handler
-# --------------------------------------------------
+def _scan_all(table, **kwargs):
+    items = []
 
-@app.errorhandler(404)
-def not_found(error):
+    result = table.scan(**kwargs)
+    items.extend(result.get("Items", []))
 
-    return redirect(url_for("login"))
+    while result.get("LastEvaluatedKey"):
+        result = table.scan(
+            ExclusiveStartKey=result["LastEvaluatedKey"],
+            **kwargs,
+        )
+
+        items.extend(result.get("Items", []))
+
+    return items
 
 
-# --------------------------------------------------
-# Local development entry point
-# --------------------------------------------------
+# ---------------------------------------------------------
+# MYSQL CONNECTION
+# ---------------------------------------------------------
 
-if __name__ == "__main__":
+def _db_connection():
+    environment = os.environ.get("ENVIRONMENT", "dev")
 
-    app.run(host="127.0.0.1", port=8000, debug=False)
+    host_parameter = os.environ.get(
+        "DB_HOST_PARAMETER",
+        f"/medislot/{environment}/db/host",
+    )
+
+    port_parameter = os.environ.get(
+        "DB_PORT_PARAMETER",
+        f"/medislot/{environment}/db/port",
+    )
+
+    password_parameter = os.environ.get(
+        "DB_PASSWORD_PARAMETER",
+        f"/medislot/{environment}/db/app-password",
+    )
+
+    return pymysql.connect(
+        host=_parameter(host_parameter),
+        port=int(_parameter(port_parameter)),
+        user=os.environ["DB_USER"],
+        password=_parameter(password_parameter, True),
+        database=os.environ.get("DB_NAME", "medislot"),
+        connect_timeout=5,
+        read_timeout=10,
+        write_timeout=10,
+        autocommit=False,
+        cursorclass=pymysql.cursors.DictCursor,
+    )
+
+
+# ---------------------------------------------------------
+# SLOT MANAGEMENT
+# ---------------------------------------------------------
+
+def _list_slots(event):
+    table = _table("SLOTS_TABLE")
+    params = _query(event)
+
+    doctor_id = params.get("doctorId")
+    start_from = params.get("startFrom")
+    start_to = params.get("startTo")
+
+    expression = Attr("status").eq("OPEN")
+
+    if doctor_id:
+        key_expression = Key("doctorId").eq(doctor_id)
+
+        if start_from and start_to:
+            key_expression &= Key("startUtc").between(
+                _iso_utc(start_from),
+                _iso_utc(start_to),
+            )
+
+        elif start_from:
+            key_expression &= Key("startUtc").gte(
+                _iso_utc(start_from)
+            )
+
+        elif start_to:
+            key_expression &= Key("startUtc").lte(
+                _iso_utc(start_to)
+            )
+
+        result = table.query(
+            IndexName="gsi-doctor-time",
+            KeyConditionExpression=key_expression,
+            FilterExpression=expression,
+        )
+
+        items = list(result.get("Items", []))
+
+        while result.get("LastEvaluatedKey"):
+            result = table.query(
+                IndexName="gsi-doctor-time",
+                KeyConditionExpression=key_expression,
+                FilterExpression=expression,
+                ExclusiveStartKey=result["LastEvaluatedKey"],
+            )
+
+            items.extend(result.get("Items", []))
+
+    else:
+        items = _scan_all(
+            table,
+            FilterExpression=expression,
+        )
+
+        if start_from:
+            lower = _iso_utc(start_from)
+            items = [
+                item for item in items
+                if item.get("startUtc", "") >= lower
+            ]
+
+        if start_to:
+            upper = _iso_utc(start_to)
+            items = [
+                item for item in items
+                if item.get("startUtc", "") <= upper
+            ]
+
+    items.sort(
+        key=lambda item: (
+            item.get("startUtc", ""),
+            item.get("slotId", ""),
+        )
+    )
+
+    return _response(
+        200,
+        {
+            "items": items,
+            "count": len(items),
+        },
+    )
+
+
+def _create_slot(event, user_id, role):
+    if role != "doctor":
+        return _response(403, {"message": "Only doctors can create slots"})
+
+    data = _body(event)
+    try:
+        start_utc = _iso_utc(data.get("startUtc"))
+        raw_id = data.get("consultationTypeId")
+        if isinstance(raw_id, bool) or raw_id is None:
+            raise ValueError("consultationTypeId must be a positive integer")
+        raw_id = str(raw_id).strip()
+        if not re.fullmatch(r"[1-9][0-9]{0,19}", raw_id):
+            raise ValueError("consultationTypeId must be a positive integer; CUSTOM is not supported")
+        consultation_id = int(raw_id)
+    except (ValueError, TypeError) as exc:
+        return _response(400, {"message": str(exc)})
+
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT duration_min, capacity
+                FROM consultation_types
+                WHERE consultation_type_id = %s
+                  AND doctor_user_id = %s
+                  AND is_active = 1
+                """,
+                (consultation_id, int(user_id)),
+            )
+            consultation = cur.fetchone()
+        if not consultation:
+            return _response(400, {
+                "message": "Consultation type does not belong to this doctor or is inactive"
+            })
+        duration = int(consultation["duration_min"])
+        capacity = int(consultation["capacity"])
+    finally:
+        conn.close()
+
+    start_dt = datetime.fromisoformat(start_utc.replace("Z", "+00:00"))
+    end_dt = start_dt + timedelta(minutes=duration)
+    end_utc = end_dt.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    local_date = start_dt.astimezone(IST).date().isoformat()
+    slot_id = f"{user_id}#{consultation_id}#{start_utc}"
+    now = int(datetime.now(timezone.utc).timestamp())
+
+    item = {
+        "slotId": slot_id,
+        "doctorId": str(user_id),
+        "consultationTypeId": str(consultation_id),
+        "startUtc": start_utc,
+        "endUtc": end_utc,
+        "localDate": local_date,
+        "timezone": "Asia/Kolkata",
+        "durationMinutes": duration,
+        "capacity": capacity,
+        "bookedCount": 0,
+        "status": "OPEN",
+        "source": "MANUAL",
+        "expiresAt": now + 90 * 86400,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+    try:
+        _table("SLOTS_TABLE").put_item(
+            Item=item,
+            ConditionExpression=Attr("slotId").not_exists(),
+        )
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code == "ConditionalCheckFailedException":
+            return _response(409, {"message": "A slot already exists for this consultation type and start time"})
+        logger.exception("Slot creation failed")
+        return _response(500, {"message": "Unable to create slot"})
+
+    return _response(201, {"message": "Slot created successfully", "item": item})
+
+
+# ---------------------------------------------------------
+# WAITLIST
+# ---------------------------------------------------------
+
+def _join_waitlist(event, user_id, role):
+    if role != "patient":
+        return _response(
+            403,
+            {"message": "Only patients can join a waitlist"},
+        )
+
+    data = _body(event)
+
+    slot_id = data.get("slotId")
+
+    if not isinstance(slot_id, str) or not slot_id.strip():
+        return _response(400, {"message": "slotId is required"})
+
+    slot_id = slot_id.strip()
+
+    try:
+        slot_response = _table("SLOTS_TABLE").get_item(
+            Key={"slotId": slot_id},
+            ConsistentRead=True,
+        )
+
+        slot = slot_response.get("Item")
+
+        if not slot or slot.get("status") != "OPEN":
+            return _response(
+                404,
+                {"message": "Open slot not found"},
+            )
+
+        joined_at = (
+            datetime.now(timezone.utc)
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z")
+        )
+
+        waitlist_key = f"W#{joined_at}#{user_id}"
+
+        item = {
+            "slotId": slot_id,
+            "waitlistKey": waitlist_key,
+            "patientId": str(user_id),
+            "joinedAt": joined_at,
+            "status": "WAITING",
+            "type": "WAITLIST",
+        }
+
+        _table("WAITLIST_TABLE").put_item(
+            Item=item,
+            ConditionExpression=(
+                Attr("slotId").not_exists()
+                & Attr("waitlistKey").not_exists()
+            ),
+        )
+
+        return _response(
+            201,
+            {"waitlistEntry": item},
+        )
+
+    except ClientError as exc:
+        if (
+            exc.response.get("Error", {}).get("Code")
+            == "ConditionalCheckFailedException"
+        ):
+            return _response(
+                409,
+                {"message": "Waitlist entry already exists"},
+            )
+
+        logger.exception("Waitlist join failed")
+
+        return _response(
+            500,
+            {"message": "Unable to join waitlist"},
+        )
+
+    except (BotoCoreError, RuntimeError):
+        logger.exception("Waitlist join failed")
+
+        return _response(
+            500,
+            {"message": "Unable to join waitlist"},
+        )
+
+
+def _my_waitlist(user_id):
+    try:
+        table = _table("WAITLIST_TABLE")
+
+        result = table.query(
+            IndexName="gsi-patient",
+            KeyConditionExpression=Key("patientId").eq(str(user_id)),
+        )
+
+        items = list(result.get("Items", []))
+
+        while result.get("LastEvaluatedKey"):
+            result = table.query(
+                IndexName="gsi-patient",
+                KeyConditionExpression=Key("patientId").eq(str(user_id)),
+                ExclusiveStartKey=result["LastEvaluatedKey"],
+            )
+
+            items.extend(result.get("Items", []))
+
+        return _response(
+            200,
+            {
+                "items": items,
+                "count": len(items),
+            },
+        )
+
+    except (BotoCoreError, ClientError, RuntimeError):
+        logger.exception("Waitlist retrieval failed")
+
+        return _response(
+            500,
+            {"message": "Unable to retrieve waitlist"},
+        )
+
+
+def _leave_waitlist(slot_id, user_id):
+    table = _table("WAITLIST_TABLE")
+
+    try:
+        result = table.query(
+            IndexName="gsi-patient",
+            KeyConditionExpression=(
+                Key("patientId").eq(str(user_id))
+                & Key("slotId").eq(slot_id)
+            ),
+        )
+
+        removed = 0
+
+        for item in result.get("Items", []):
+            if (
+                item.get("type") == "WAITLIST"
+                and item.get("status") == "WAITING"
+            ):
+                table.delete_item(
+                    Key={
+                        "slotId": item["slotId"],
+                        "waitlistKey": item["waitlistKey"],
+                    }
+                )
+
+                removed += 1
+
+        if not removed:
+            return _response(
+                404,
+                {"message": "Active waitlist entry not found"},
+            )
+
+        return _response(
+            200,
+            {
+                "message": "Removed from waitlist",
+                "removed": removed,
+            },
+        )
+
+    except (BotoCoreError, ClientError):
+        logger.exception("Waitlist removal failed")
+
+        return _response(
+            500,
+            {"message": "Unable to leave waitlist"},
+        )
+    # ---------------------------------------------------------
+# REFERENCE DATA AND USER ACCOUNT
+# ---------------------------------------------------------
+
+def _reference_data(table_name):
+    conn = _db_connection()
+
+    try:
+        with conn.cursor() as cur:
+            if table_name == "specialisations":
+                cur.execute(
+                    """
+                    SELECT specialisation_id, name
+                    FROM specialisations
+                    ORDER BY name
+                    """
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT hospital_id, name, city, address
+                    FROM hospitals
+                    WHERE status = 'active'
+                    ORDER BY city, name
+                    """
+                )
+
+            return _response(200, {"items": cur.fetchall()})
+
+    finally:
+        conn.close()
+
+
+def _my_account(user_id):
+    conn = _db_connection()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT user_id, name, email, role, status,
+                       created_at, updated_at
+                FROM users
+                WHERE user_id = %s
+                """,
+                (user_id,),
+            )
+
+            user = cur.fetchone()
+
+            if not user:
+                return _response(404, {"message": "User not found"})
+
+            if user["role"] == "patient":
+                cur.execute(
+                    "SELECT * FROM patients WHERE user_id = %s",
+                    (user_id,),
+                )
+                user["profile"] = cur.fetchone()
+
+            elif user["role"] == "doctor":
+                cur.execute(
+                    "SELECT * FROM doctors WHERE user_id = %s",
+                    (user_id,),
+                )
+                user["profile"] = cur.fetchone()
+
+            return _response(200, {"user": user})
+
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------
+# DOCTOR PROFILE
+# ---------------------------------------------------------
+
+def _doctor_profile(user_id, method, event):
+    data = _body(event) if method in {"POST", "PUT", "PATCH"} else {}
+
+    allowed = {
+        "name",
+        "licenseNumber",
+        "specialisationId",
+        "hospitalId",
+        "yearsExperience",
+        "qualifications",
+        "languages",
+        "timezone",
+    }
+
+    if set(data) - allowed:
+        return _response(
+            400,
+            {
+                "message": "Unsupported doctor profile fields",
+                "allowedFields": sorted(allowed),
+            },
+        )
+
+    if (
+        "timezone" in data
+        and data["timezone"] != "Asia/Kolkata"
+    ):
+        return _response(
+            400,
+            {
+                "message": (
+                    "MediSlot doctor schedules use Asia/Kolkata (IST)."
+                )
+            },
+        )
+
+    conn = _db_connection()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT user_id, name, email, status
+                FROM users
+                WHERE user_id = %s
+                  AND role = 'doctor'
+                """,
+                (user_id,),
+            )
+
+            user = cur.fetchone()
+
+            if not user:
+                return _response(
+                    404,
+                    {"message": "Doctor account not found"},
+                )
+
+            cur.execute(
+                "SELECT user_id FROM doctors WHERE user_id = %s",
+                (user_id,),
+            )
+
+            exists = cur.fetchone() is not None
+
+            if method == "GET":
+                if not exists:
+                    return _response(
+                        404,
+                        {"message": "Doctor profile not found"},
+                    )
+
+                cur.execute(
+                    """
+                    SELECT
+                        u.user_id,
+                        u.name,
+                        u.email,
+                        u.status,
+                        d.license_number,
+                        d.specialisation_id,
+                        s.name AS specialisation,
+                        d.hospital_id,
+                        h.name AS hospital,
+                        d.years_experience,
+                        d.qualifications,
+                        d.languages,
+                        'Asia/Kolkata' AS timezone,
+                        d.photo_key,
+                        d.created_at,
+                        d.updated_at
+                    FROM users u
+                    JOIN doctors d
+                        ON d.user_id = u.user_id
+                    LEFT JOIN specialisations s
+                        ON s.specialisation_id = d.specialisation_id
+                    LEFT JOIN hospitals h
+                        ON h.hospital_id = d.hospital_id
+                    WHERE u.user_id = %s
+                      AND u.role = 'doctor'
+                    """,
+                    (user_id,),
+                )
+
+                profile = cur.fetchone()
+
+                return _response(200, {"profile": profile})
+
+            if method == "POST":
+                if exists:
+                    return _response(
+                        409,
+                        {
+                            "message": (
+                                "Doctor profile already exists; "
+                                "use PUT to update it."
+                            )
+                        },
+                    )
+
+                required = ("licenseNumber", "specialisationId")
+
+                if any(key not in data for key in required):
+                    return _response(
+                        400,
+                        {
+                            "message": (
+                                "licenseNumber and specialisationId "
+                                "are required"
+                            )
+                        },
+                    )
+
+                full_name = str(
+                    data.get("name") or user["name"]
+                ).strip()
+
+                if not full_name or len(full_name) > 150:
+                    return _response(
+                        400,
+                        {"message": "name must contain 1-150 characters"},
+                    )
+
+                cur.execute(
+                    """
+                    INSERT INTO doctors (
+                        user_id,
+                        full_name,
+                        license_number,
+                        specialisation_id,
+                        hospital_id,
+                        years_experience,
+                        qualifications,
+                        languages,
+                        timezone
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'Asia/Kolkata')
+                    """,
+                    (
+                        user_id,
+                        full_name,
+                        str(data["licenseNumber"]).strip(),
+                        int(data["specialisationId"]),
+                        data.get("hospitalId") or None,
+                        data.get("yearsExperience") or None,
+                        data.get("qualifications") or None,
+                        data.get("languages") or None,
+                    ),
+                )
+
+                cur.execute(
+                    """
+                    UPDATE users
+                    SET name = %s
+                    WHERE user_id = %s
+                      AND role = 'doctor'
+                    """,
+                    (full_name, user_id),
+                )
+
+                conn.commit()
+
+                return _response(
+                    201,
+                    {
+                        "message": "Doctor profile created",
+                        "userId": int(user_id),
+                        "timezone": "Asia/Kolkata",
+                    },
+                )
+
+            if not exists:
+                return _response(
+                    404,
+                    {
+                        "message": (
+                            "Doctor profile not found; "
+                            "create it with POST /doctors/me"
+                        )
+                    },
+                )
+
+            if not data:
+                return _response(
+                    400,
+                    {"message": "No profile fields supplied"},
+                )
+
+            if "name" in data:
+                name = data["name"]
+
+                if (
+                    not isinstance(name, str)
+                    or not name.strip()
+                    or len(name.strip()) > 120
+                ):
+                    return _response(
+                        400,
+                        {"message": "name must contain 1-120 characters"},
+                    )
+
+                cur.execute(
+                    """
+                    UPDATE users
+                    SET name = %s
+                    WHERE user_id = %s
+                      AND role = 'doctor'
+                    """,
+                    (name.strip(), user_id),
+                )
+
+                cur.execute(
+                    """
+                    UPDATE doctors
+                    SET full_name = %s
+                    WHERE user_id = %s
+                    """,
+                    (name.strip(), user_id),
+                )
+
+            update_statements = {
+                "licenseNumber": (
+                    "UPDATE doctors SET license_number=%s WHERE user_id=%s"
+                ),
+                "specialisationId": (
+                    "UPDATE doctors SET specialisation_id=%s WHERE user_id=%s"
+                ),
+                "hospitalId": (
+                    "UPDATE doctors SET hospital_id=%s WHERE user_id=%s"
+                ),
+                "yearsExperience": (
+                    "UPDATE doctors SET years_experience=%s WHERE user_id=%s"
+                ),
+                "qualifications": (
+                    "UPDATE doctors SET qualifications=%s WHERE user_id=%s"
+                ),
+                "languages": (
+                    "UPDATE doctors SET languages=%s WHERE user_id=%s"
+                ),
+            }
+
+            for api_name, statement in update_statements.items():
+                if api_name not in data:
+                    continue
+
+                value = data[api_name]
+
+                if api_name == "licenseNumber":
+                    value = str(value).strip()
+
+                    if not value or len(value) > 50:
+                        raise ValueError(
+                            "licenseNumber must contain 1-50 characters"
+                        )
+
+                elif api_name in {
+                    "specialisationId",
+                    "hospitalId",
+                    "yearsExperience",
+                }:
+                    value = (
+                        int(value)
+                        if value not in (None, "")
+                        else None
+                    )
+
+                    if (
+                        api_name == "yearsExperience"
+                        and value is not None
+                        and not 0 <= value <= 80
+                    ):
+                        raise ValueError(
+                            "yearsExperience must be between 0 and 80"
+                        )
+
+                    if (
+                        api_name in {"specialisationId", "hospitalId"}
+                        and value is not None
+                        and value <= 0
+                    ):
+                        raise ValueError(
+                            f"{api_name} must be a positive integer"
+                        )
+
+                if value == "":
+                    value = None
+
+                cur.execute(statement, (value, user_id))
+
+            cur.execute(
+                """
+                UPDATE doctors
+                SET timezone = 'Asia/Kolkata'
+                WHERE user_id = %s
+                """,
+                (user_id,),
+            )
+
+        conn.commit()
+
+        return _response(
+            200,
+            {
+                "message": "Doctor profile updated",
+                "timezone": "Asia/Kolkata",
+            },
+        )
+
+    except pymysql.err.IntegrityError:
+        conn.rollback()
+
+        return _response(
+            409,
+            {
+                "message": (
+                    "A license number, specialisation or hospital "
+                    "reference conflicts with an existing record"
+                )
+            },
+        )
+
+    except (KeyError, TypeError, ValueError) as exc:
+        conn.rollback()
+        return _response(400, {"message": str(exc)})
+
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------
+# DOCTOR PHOTO UPLOAD AND RETRIEVAL
+# ---------------------------------------------------------
+
+def _s3_client():
+    """Regional SigV4 client so presigned URLs work from the browser (no 307 redirect)."""
+    from botocore.config import Config as _Cfg
+
+    region = _aws_region()
+    return boto3.client(
+        "s3",
+        region_name=region,
+        config=_Cfg(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+    )
+
+
+def _presign_photo(user_id, event):
+    data = _body(event)
+    content_type = data.get("contentType")
+
+    extensions = {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/webp": "webp",
+    }
+
+    if content_type not in extensions:
+        return _response(
+            400,
+            {
+                "message": (
+                    "contentType must be image/jpeg, image/png or image/webp"
+                )
+            },
+        )
+
+    bucket = os.environ.get("DOCTOR_PHOTOS_BUCKET")
+
+    if not bucket:
+        return _response(
+            500,
+            {"message": "Photo storage is not configured"},
+        )
+
+    # Numeric timestamp key: no UUIDs.
+    key = (
+        f"doctors/{int(user_id)}/"
+        f"profile-{time.time_ns()}.{extensions[content_type]}"
+    )
+
+    s3 = _s3_client()
+
+    try:
+        upload_url = s3.generate_presigned_url(
+            "put_object",
+            Params={
+                "Bucket": bucket,
+                "Key": key,
+                "ContentType": content_type,
+            },
+            ExpiresIn=300,
+        )
+
+        return _response(
+            200,
+            {
+                "message": "Photo upload URL created",
+                "uploadUrl": upload_url,
+                "photoKey": key,
+                "expiresIn": 300,
+            },
+        )
+
+    except Exception:
+        logger.exception("Doctor photo upload URL creation failed")
+
+        return _response(
+            500,
+            {"message": "Could not prepare photo upload"},
+        )
+
+
+def _complete_photo_upload(user_id, event):
+    """Publish a photo only after verifying that the S3 PUT succeeded."""
+    data = _body(event)
+    key = data.get("photoKey")
+    bucket = os.environ.get("DOCTOR_PHOTOS_BUCKET")
+    prefix = f"doctors/{int(user_id)}/"
+    if not isinstance(key, str) or not key.startswith(prefix) or "/" in key[len(prefix):]:
+        return _response(400, {"message": "Invalid photo key"})
+    if not bucket:
+        return _response(500, {"message": "Photo storage is not configured"})
+    try:
+        obj = _s3_client().head_object(Bucket=bucket, Key=key)
+        if obj.get("ContentLength", 0) > 5 * 1024 * 1024:
+            return _response(400, {"message": "Photo exceeds 5 MB"})
+        if obj.get("ContentType") not in {"image/jpeg", "image/png", "image/webp"}:
+            return _response(400, {"message": "Unsupported photo type"})
+        conn = _db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE doctors SET photo_key = %s WHERE user_id = %s", (key, user_id))
+                if cur.rowcount == 0:
+                    conn.rollback()
+                    return _response(404, {"message": "Doctor profile not found"})
+            conn.commit()
+        finally:
+            conn.close()
+        return _response(200, {"message": "Photo saved"})
+    except Exception as exc:
+        logger.exception("Doctor photo finalization failed")
+        code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+        return _response(
+            500,
+            {
+                "message": "Could not save uploaded photo",
+                "detail": code or type(exc).__name__,
+            },
+        )
+
+
+def _doctor_photo_url(user_id):
+    bucket = os.environ.get("DOCTOR_PHOTOS_BUCKET")
+
+    if not bucket:
+        return _response(
+            500,
+            {"message": "Photo storage is not configured"},
+        )
+
+    conn = _db_connection()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT photo_key
+                FROM doctors
+                WHERE user_id = %s
+                """,
+                (user_id,),
+            )
+
+            doctor = cur.fetchone()
+
+        if not doctor:
+            return _response(
+                404,
+                {"message": "Doctor profile not found"},
+            )
+
+        photo_key = doctor.get("photo_key")
+
+    finally:
+        conn.close()
+
+    if not photo_key:
+        return _response(200, {"photoUrl": None})
+
+    try:
+        s3 = _s3_client()
+
+        photo_url = s3.generate_presigned_url(
+            "get_object",
+            Params={
+                "Bucket": bucket,
+                "Key": photo_key,
+            },
+            ExpiresIn=900,
+        )
+
+        return _response(
+            200,
+            {
+                "photoUrl": photo_url,
+                "expiresIn": 900,
+            },
+        )
+
+    except Exception:
+        logger.exception("Doctor photo URL generation failed")
+
+        return _response(
+            500,
+            {"message": "Could not retrieve doctor photo"},
+        )
+
+
+# ---------------------------------------------------------
+# DOCTOR SCHEDULE VALIDATION
+# ---------------------------------------------------------
+
+def _validate_doctor_schedule(cursor, user_id):
+    cursor.execute(
+        """
+        SELECT consultation_type_id, is_active
+        FROM consultation_types
+        WHERE doctor_user_id = %s
+        """,
+        (user_id,),
+    )
+
+    types = cursor.fetchall()
+    schedules = []
+
+    for item in types:
+        consultation_id = item["consultation_type_id"]
+
+        cursor.execute(
+            """
+            SELECT day_of_week, start_time, end_time
+            FROM availability_patterns
+            WHERE doctor_user_id = %s
+              AND consultation_type_id = %s
+            """,
+            (user_id, consultation_id),
+        )
+
+        patterns = cursor.fetchall()
+
+
+        cursor.execute(
+            """
+            SELECT blackout_date
+            FROM blackout_dates
+            WHERE doctor_user_id = %s AND is_full_day = 1
+            """,
+            (user_id,),
+        )
+
+        blackouts = [
+            row["blackout_date"]
+            for row in cursor.fetchall()
+        ]
+
+        schedules.append(
+            {
+                "user_id": str(user_id),
+                "consultation_type_id": int(consultation_id),
+                "is_active": bool(item["is_active"]),
+                "patterns": patterns,
+                "blackouts": blackouts,
+            }
+        )
+
+    first_day = datetime.now(IST).date()
+
+    dates_to_validate = {
+        first_day + timedelta(days=offset)
+        for offset in range(30)
+    }
+
+
+    for target_day in sorted(dates_to_validate):
+        validate_doctor_day(schedules, target_day)
+
+
+# ---------------------------------------------------------
+# DOCTOR CONSULTATION TYPES, AVAILABILITY AND BLACKOUTS
+# ---------------------------------------------------------
+
+def _doctor_collection(
+    table_name,
+    user_id,
+    method,
+    event,
+    resource_id=None,
+):
+    data = (
+        _body(event)
+        if method in {"POST", "PUT", "PATCH"}
+        else {}
+    )
+
+    conn = _db_connection()
+
+    try:
+        with conn.cursor() as cur:
+
+            # CONSULTATION TYPES
+            if table_name == "consultation_types":
+
+                if method == "GET":
+                    cur.execute(
+                        """
+                        SELECT *
+                        FROM consultation_types
+                        WHERE doctor_user_id = %s
+                        ORDER BY consultation_type_id
+                        """,
+                        (user_id,),
+                    )
+
+                    return _response(
+                        200,
+                        {"items": cur.fetchall()},
+                    )
+
+                if method == "POST":
+                    required = (
+                        "name",
+                        "durationMin",
+                        "feeAmount",
+                        "capacity",
+                    )
+
+                    if any(key not in data for key in required):
+                        return _response(
+                            400,
+                            {
+                                "message": (
+                                    "name, durationMin, feeAmount "
+                                    "and capacity are required"
+                                )
+                            },
+                        )
+
+                    name = _normalise_consultation_name(data["name"])
+                    duration = int(data["durationMin"])
+                    fee = Decimal(str(data["feeAmount"]))
+                    capacity = int(data["capacity"])
+
+                    if not name or len(name) > 40:
+                        raise ValueError(
+                            "name must contain 1-40 characters"
+                        )
+
+                    if not 5 <= duration <= 180:
+                        raise ValueError(
+                            "durationMin must be between 5 and 180"
+                        )
+
+                    if fee < 0 or fee > Decimal("99999999.99"):
+                        raise ValueError(
+                            "feeAmount is outside the supported range"
+                        )
+
+                    if not 1 <= capacity <= 50:
+                        raise ValueError(
+                            "capacity must be between 1 and 50"
+                        )
+
+                    _validate_consultation_rules(name, duration, capacity)
+
+                    cur.execute(
+                        """
+                        INSERT INTO consultation_types (
+                            doctor_user_id,
+                            name,
+                            duration_min,
+                            fee_amount,
+                            capacity
+                        )
+                        VALUES (%s, %s, %s, %s, %s)
+                        """,
+                        (
+                            user_id,
+                            name,
+                            duration,
+                            fee,
+                            capacity,
+                        ),
+                    )
+
+                    new_id = int(cur.lastrowid)
+                    conn.commit()
+
+                    return _response(
+                        201,
+                        {
+                            "consultationTypeId": new_id,
+                            "message": "Consultation type created",
+                        },
+                    )
+
+                if method in {"PUT", "PATCH"} and resource_id:
+                    fields = {
+                        "name",
+                        "durationMin",
+                        "feeAmount",
+                        "capacity",
+                        "isActive",
+                    }
+
+                    if not data or set(data) - fields:
+                        return _response(
+                            400,
+                            {
+                                "message": (
+                                    "Unsupported or empty consultation "
+                                    "type update"
+                                ),
+                                "allowedFields": sorted(fields),
+                            },
+                        )
+
+                    cur.execute(
+                        """
+                        SELECT consultation_type_id, name, duration_min, capacity
+                        FROM consultation_types
+                        WHERE consultation_type_id = %s
+                          AND doctor_user_id = %s
+                        """,
+                        (resource_id, user_id),
+                    )
+
+                    current_type = cur.fetchone()
+                    if not current_type:
+                        return _response(
+                            404,
+                            {"message": "Consultation type not found"},
+                        )
+
+                    statements = {
+                        "name": (
+                            "UPDATE consultation_types SET name=%s "
+                            "WHERE consultation_type_id=%s "
+                            "AND doctor_user_id=%s"
+                        ),
+                        "durationMin": (
+                            "UPDATE consultation_types SET duration_min=%s "
+                            "WHERE consultation_type_id=%s "
+                            "AND doctor_user_id=%s"
+                        ),
+                        "feeAmount": (
+                            "UPDATE consultation_types SET fee_amount=%s "
+                            "WHERE consultation_type_id=%s "
+                            "AND doctor_user_id=%s"
+                        ),
+                        "capacity": (
+                            "UPDATE consultation_types SET capacity=%s "
+                            "WHERE consultation_type_id=%s "
+                            "AND doctor_user_id=%s"
+                        ),
+                        "isActive": (
+                            "UPDATE consultation_types SET is_active=%s "
+                            "WHERE consultation_type_id=%s "
+                            "AND doctor_user_id=%s"
+                        ),
+                    }
+
+                    values = {}
+
+                    if "name" in data:
+                        value = _normalise_consultation_name(data["name"])
+
+                        if not value or len(value) > 40:
+                            raise ValueError(
+                                "name must contain 1-40 characters"
+                            )
+
+                        values["name"] = value
+
+                    if "durationMin" in data:
+                        value = int(data["durationMin"])
+
+                        if not 5 <= value <= 180:
+                            raise ValueError(
+                                "durationMin must be between 5 and 180"
+                            )
+
+                        values["durationMin"] = value
+
+                    if "feeAmount" in data:
+                        value = Decimal(str(data["feeAmount"]))
+
+                        if value < 0 or value > Decimal("99999999.99"):
+                            raise ValueError(
+                                "feeAmount is outside the supported range"
+                            )
+
+                        values["feeAmount"] = value
+
+                    if "capacity" in data:
+                        value = int(data["capacity"])
+
+                        if not 1 <= value <= 50:
+                            raise ValueError(
+                                "capacity must be between 1 and 50"
+                            )
+
+                        values["capacity"] = value
+
+                    if "isActive" in data:
+                        if not isinstance(data["isActive"], bool):
+                            raise ValueError(
+                                "isActive must be boolean"
+                            )
+
+                        values["isActive"] = int(data["isActive"])
+
+                    # Validate the final combination, not just the changed field:
+                    # e.g. renaming a type to Health Camp Session must also satisfy
+                    # its 60-minute / 2-10 seat rules.
+                    _validate_consultation_rules(
+                        values.get("name", current_type["name"]),
+                        int(values.get("durationMin", current_type["duration_min"])),
+                        int(values.get("capacity", current_type["capacity"])),
+                    )
+
+                    for key, value in values.items():
+                        cur.execute(
+                            statements[key],
+                            (value, resource_id, user_id),
+                        )
+
+                    _validate_doctor_schedule(cur, user_id)
+                    conn.commit()
+
+                    return _response(
+                        200,
+                        {"message": "Consultation type updated"},
+                    )
+
+                if method == "DELETE" and resource_id:
+                    cur.execute(
+                        """
+                        UPDATE consultation_types
+                        SET is_active = 0
+                        WHERE consultation_type_id = %s
+                          AND doctor_user_id = %s
+                        """,
+                        (resource_id, user_id),
+                    )
+
+                    if not cur.rowcount:
+                        return _response(
+                            404,
+                            {"message": "Consultation type not found"},
+                        )
+
+                    conn.commit()
+
+                    return _response(
+                        200,
+                        {"message": "Consultation type deactivated"},
+                    )
+
+            # WEEKLY AVAILABILITY PATTERNS
+            elif table_name == "availability_patterns":
+
+                if method == "GET":
+                    cur.execute(
+                        """
+                        SELECT *
+                        FROM availability_patterns
+                        WHERE doctor_user_id = %s
+                        ORDER BY day_of_week, start_time
+                        """,
+                        (user_id,),
+                    )
+
+                    return _response(
+                        200,
+                        {
+                            "items": cur.fetchall(),
+                            "timezone": "Asia/Kolkata",
+                        },
+                    )
+
+                if method in {"POST", "PUT", "PATCH"}:
+                    required = (
+                        "consultationTypeId",
+                        "dayOfWeek",
+                        "startTime",
+                        "endTime",
+                    )
+
+                    if any(key not in data for key in required):
+                        raise ValueError(
+                            "consultationTypeId, dayOfWeek, "
+                            "startTime and endTime are required"
+                        )
+
+                    day = int(data["dayOfWeek"])
+                    start_time = dt_time.fromisoformat(
+                        str(data["startTime"])
+                    )
+                    end_time = dt_time.fromisoformat(
+                        str(data["endTime"])
+                    )
+
+                    if not 1 <= day <= 7 or start_time >= end_time:
+                        raise ValueError(
+                            "Invalid weekday or time range"
+                        )
+
+                    consultation_id = int(data["consultationTypeId"])
+
+                    cur.execute(
+                        """
+                        SELECT consultation_type_id, is_active
+                        FROM consultation_types
+                        WHERE consultation_type_id = %s
+                          AND doctor_user_id = %s
+                        """,
+                        (consultation_id, user_id),
+                    )
+                    consultation_row = cur.fetchone()
+
+                    if not consultation_row:
+                        return _response(
+                            400,
+                            {"message": "Consultation type does not belong to this doctor"},
+                        )
+
+                    if not bool(consultation_row["is_active"]):
+                        # An existing pattern may still be edited while its
+                        # consultation is inactive, but an inactive type cannot
+                        # be assigned to a new pattern or substituted into one.
+                        same_existing_pattern = False
+                        if method != "POST" and resource_id:
+                            cur.execute(
+                                """
+                                SELECT pattern_id
+                                FROM availability_patterns
+                                WHERE pattern_id = %s
+                                  AND doctor_user_id = %s
+                                  AND consultation_type_id = %s
+                                """,
+                                (resource_id, user_id, consultation_id),
+                            )
+                            same_existing_pattern = cur.fetchone() is not None
+
+                        if not same_existing_pattern:
+                            return _response(
+                                400,
+                                {"message": "Choose an active consultation type"},
+                            )
+
+                    if method == "POST":
+                        cur.execute(
+                            """
+                            INSERT INTO availability_patterns (
+                                doctor_user_id,
+                                consultation_type_id,
+                                day_of_week,
+                                start_time,
+                                end_time
+                            )
+                            VALUES (%s, %s, %s, %s, %s)
+                            """,
+                            (
+                                user_id,
+                                consultation_id,
+                                day,
+                                start_time,
+                                end_time,
+                            ),
+                        )
+
+                        new_id = int(cur.lastrowid)
+
+                    else:
+                        if not resource_id:
+                            return _response(
+                                400,
+                                {"message": "patternId is required"},
+                            )
+
+                        # Check ownership/existence before UPDATE. MySQL rowcount
+                        # can be zero when the submitted values are unchanged;
+                        # that must not be mistaken for a missing pattern.
+                        cur.execute(
+                            """
+                            SELECT pattern_id
+                            FROM availability_patterns
+                            WHERE pattern_id = %s
+                              AND doctor_user_id = %s
+                            FOR UPDATE
+                            """,
+                            (resource_id, user_id),
+                        )
+                        if not cur.fetchone():
+                            return _response(
+                                404,
+                                {"message": "Availability pattern not found"},
+                            )
+
+                        cur.execute(
+                            """
+                            UPDATE availability_patterns
+                            SET consultation_type_id = %s,
+                                day_of_week = %s,
+                                start_time = %s,
+                                end_time = %s
+                            WHERE pattern_id = %s
+                              AND doctor_user_id = %s
+                            """,
+                            (
+                                consultation_id,
+                                day,
+                                start_time,
+                                end_time,
+                                resource_id,
+                                user_id,
+                            ),
+                        )
+
+                        new_id = resource_id
+
+                    _validate_doctor_schedule(cur, user_id)
+                    conn.commit()
+
+                    return _response(
+                        201 if method == "POST" else 200,
+                        {
+                            "patternId": new_id,
+                            "timezone": "Asia/Kolkata",
+                        },
+                    )
+
+                if method == "DELETE" and resource_id:
+                    cur.execute(
+                        """
+                        DELETE FROM availability_patterns
+                        WHERE pattern_id = %s
+                          AND doctor_user_id = %s
+                        """,
+                        (resource_id, user_id),
+                    )
+
+                    if not cur.rowcount:
+                        return _response(
+                            404,
+                            {
+                                "message": (
+                                    "Availability pattern not found"
+                                )
+                            },
+                        )
+
+                    conn.commit()
+
+                    return _response(
+                        200,
+                        {"message": "Availability pattern deleted"},
+                    )
+
+            # BLACKOUT DATES
+            if table_name == "blackout_dates":
+
+                if method == "GET":
+                    cur.execute(
+                        """
+                        SELECT * FROM blackout_dates
+                        WHERE doctor_user_id = %s
+                        ORDER BY blackout_date, start_time
+                        """, (user_id,)
+                    )
+                    return _response(200, {"items": cur.fetchall(), "timezone": "Asia/Kolkata"})
+
+                if method in {"POST", "PUT", "PATCH"}:
+                    day = date.fromisoformat(str(data["date"]))
+                    if day < datetime.now(IST).date():
+                        raise ValueError("Blackout date cannot be in the past")
+                    full_day = bool(data.get("fullDay", True))
+                    start = end = None
+                    if not full_day:
+                        start = dt_time.fromisoformat(str(data.get("startTime", "")))
+                        end = dt_time.fromisoformat(str(data.get("endTime", "")))
+                        if start >= end:
+                            raise ValueError("End time must be later than start time")
+                    reason = str(data.get("reason") or "").strip()[:200]
+                    # Prevent overlapping blocks and full-day/timed conflicts.
+                    cur.execute(
+                        """
+                        SELECT blackout_id, is_full_day, start_time, end_time
+                        FROM blackout_dates
+                        WHERE doctor_user_id = %s AND blackout_date = %s
+                        """, (user_id, day)
+                    )
+                    for existing in cur.fetchall():
+                        if resource_id and int(existing["blackout_id"]) == resource_id:
+                            continue
+                        if full_day or bool(existing["is_full_day"]):
+                            raise ValueError("A full-day blackout conflicts with another block on this date")
+                        def to_time(value):
+                            if hasattr(value, "total_seconds"):
+                                from datetime import datetime as dt
+                                return (dt.min + value).time()
+                            return value
+                        if start < to_time(existing["end_time"]) and to_time(existing["start_time"]) < end:
+                            raise ValueError("Timed blackout overlaps an existing block")
+                    if method == "POST":
+                        cur.execute(
+                            """
+                            INSERT INTO blackout_dates
+                              (doctor_user_id, blackout_date, reason, is_full_day, start_time, end_time)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            """, (user_id, day, reason, int(full_day), start, end)
+                        )
+                        new_id = int(cur.lastrowid)
+                    else:
+                        if not resource_id:
+                            raise ValueError("Blackout ID required")
+                        cur.execute(
+                            """
+                            UPDATE blackout_dates
+                            SET blackout_date=%s, reason=%s, is_full_day=%s,
+                                start_time=%s, end_time=%s
+                            WHERE blackout_id=%s AND doctor_user_id=%s
+                            """, (day, reason, int(full_day), start, end, resource_id, user_id)
+                        )
+                        if not cur.rowcount:
+                            return _response(404, {"message": "Blackout not found"})
+                        new_id = resource_id
+                    conn.commit()
+                    return _response(201 if method == "POST" else 200, {
+                        "blackoutId": new_id, "date": day.isoformat(),
+                        "fullDay": full_day
+                    })
+
+                if method == "DELETE" and resource_id:
+                    cur.execute(
+                        "DELETE FROM blackout_dates WHERE blackout_id=%s AND doctor_user_id=%s",
+                        (resource_id, user_id)
+                    )
+                    if not cur.rowcount:
+                        return _response(404, {"message": "Blackout not found"})
+                    conn.commit()
+                    return _response(200, {"message": "Blackout deleted"})
+
+        return _response(
+            405,
+            {"message": "Method not supported for this resource"},
+        )
+
+    except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+        conn.rollback()
+
+        return _response(
+            400,
+            {"message": f"Invalid request: {exc}"},
+        )
+
+    except pymysql.err.IntegrityError:
+        conn.rollback()
+
+        return _response(
+            409,
+            {"message": "Duplicate or invalid scheduling record"},
+        )
+
+    except Exception:
+        conn.rollback()
+        logger.exception("Doctor scheduling operation failed")
+        raise
+
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------
+# DOCTOR DAILY SCHEDULE
+# ---------------------------------------------------------
+
+def _doctor_day_schedule(user_id, event):
+    params = _query(event)
+    day_value = params.get("date")
+
+    if not day_value:
+        return _response(
+            400,
+            {
+                "message": (
+                    "date query parameter is required (YYYY-MM-DD)"
+                )
+            },
+        )
+
+    try:
+        local_day = date.fromisoformat(day_value)
+
+    except ValueError:
+        return _response(
+            400,
+            {"message": "date must be YYYY-MM-DD"},
+        )
+
+    local_start = datetime.combine(
+        local_day,
+        dt_time.min,
+        tzinfo=IST,
+    )
+
+    local_end = datetime.combine(
+        local_day + timedelta(days=1),
+        dt_time.min,
+        tzinfo=IST,
+    )
+
+    start_utc = (
+        local_start.astimezone(timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+    end_utc = (
+        local_end.astimezone(timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+    table = _table("SLOTS_TABLE")
+
+    query_args = {
+        "IndexName": "gsi-doctor-time",
+        "KeyConditionExpression": (
+            Key("doctorId").eq(str(user_id))
+            & Key("startUtc").between(start_utc, end_utc)
+        ),
+    }
+
+    items = []
+
+    result = table.query(**query_args)
+    items.extend(result.get("Items", []))
+
+    while result.get("LastEvaluatedKey"):
+        result = table.query(
+            **query_args,
+            ExclusiveStartKey=result["LastEvaluatedKey"],
+        )
+
+        items.extend(result.get("Items", []))
+
+    # Exclude next-day midnight because the upper bound is inclusive.
+    items = [
+        item for item in items
+        if item.get("localDate") == local_day.isoformat()
+    ]
+
+    items.sort(
+        key=lambda item: (
+            item.get("startUtc", ""),
+            item.get("consultationTypeId", ""),
+        )
+    )
+
+    return _response(
+        200,
+        {
+            "date": local_day.isoformat(),
+            "timezone": "Asia/Kolkata",
+            "items": items,
+            "count": len(items),
+        },
+    )
+
+
+# ---------------------------------------------------------
+# MATERIALIZER DISPATCH
+# ---------------------------------------------------------
+
+def _dispatch_materializer(
+    doctor_id=None,
+    date_from=None,
+    date_to=None,
+):
+    """Asynchronously run the slot materializer for one doctor."""
+    function_name = os.environ.get("SLOT_MATERIALIZER_FUNCTION")
+
+    if not function_name or not doctor_id:
+        return False
+
+    from botocore.config import Config as _Cfg
+
+    payload = {"doctorId": str(doctor_id)}
+
+    if date_from:
+        payload["dateFrom"] = str(date_from)
+
+    if date_to:
+        payload["dateTo"] = str(date_to)
+
+    _aws_client(
+        "lambda",
+        config=_Cfg(
+            connect_timeout=3,
+            read_timeout=5,
+            retries={"max_attempts": 1},
+        ),
+    ).invoke(
+        FunctionName=function_name,
+        InvocationType="Event",
+        Payload=json.dumps(payload).encode("utf-8"),
+    )
+
+    return True
+
+
+def _materializer_trigger(user_id=None):
+    try:
+        _dispatch_materializer(user_id)
+
+    except Exception as exc:
+        # Never fail the doctor's save; the daily schedule is the fallback.
+        logger.warning(json.dumps({
+            "event": "slot_materializer_dispatch_deferred",
+            "outcome": "primary_schedule_save_preserved",
+            "fallback": "scheduled_materializer",
+            "errorType": type(exc).__name__,
+            "reason": str(exc),
+        }))
+
+
+def _collection_and_materialize(
+    table_name, user_id, method, event, resource_id=None
+):
+    result = _doctor_collection(
+        table_name, user_id, method, event, resource_id
+    )
+
+    if method != "GET" and result.get("statusCode", 500) < 300:
+        _materializer_trigger(user_id)
+
+    return result
+
+
+# ---------------------------------------------------------
+# DOCTOR APPOINTMENTS
+# ---------------------------------------------------------
+
+def _doctor_appointments(user_id, event):
+    params = _query(event)
+
+    requested_status = params.get("status")
+    requested_date = params.get("date")
+
+    allowed_statuses = {
+        "booked",
+        "confirmed",
+        "completed",
+        "cancelled",
+        "rescheduled",
+        "no_show",
+    }
+
+    if (
+        requested_status
+        and requested_status not in allowed_statuses
+    ):
+        return _response(
+            400,
+            {
+                "message": "Invalid appointment status",
+                "allowedStatuses": sorted(allowed_statuses),
+            },
+        )
+
+    if requested_date:
+        try:
+            date.fromisoformat(requested_date)
+
+        except ValueError:
+            return _response(
+                400,
+                {"message": "date must be YYYY-MM-DD"},
+            )
+
+    sql = """
+        SELECT
+            a.appointment_id,
+            a.patient_user_id,
+            a.doctor_user_id,
+            a.consultation_type_id,
+            a.slot_id,
+            a.slot_start_utc,
+            a.slot_end_utc,
+            a.status,
+            a.active_flag,
+            a.fee_amount,
+
+            u.name AS patient_name,
+            u.email AS patient_email,
+
+            p.phone AS patient_phone,
+            p.date_of_birth AS patient_date_of_birth,
+            p.gender AS patient_gender,
+            p.city AS patient_city,
+
+            ct.name AS consultation_type,
+            ct.duration_min AS consultation_duration
+
+        FROM appointments a
+
+        INNER JOIN users u
+            ON u.user_id = a.patient_user_id
+
+        LEFT JOIN patients p
+            ON p.user_id = a.patient_user_id
+
+        LEFT JOIN consultation_types ct
+            ON ct.consultation_type_id = a.consultation_type_id
+
+        WHERE a.doctor_user_id = %s
+    """
+
+    values = [int(user_id)]
+
+    if requested_status:
+        sql += " AND a.status = %s"
+        values.append(requested_status)
+
+    if requested_date:
+        sql += " AND DATE(a.slot_start_utc) = %s"
+        values.append(requested_date)
+
+    sql += " ORDER BY a.slot_start_utc DESC LIMIT 200"
+
+    conn = _db_connection()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(values))
+            appointments = cur.fetchall()
+
+        for row in appointments:
+            row["slot_start_utc"] = _utc_z(row.get("slot_start_utc"))
+            row["slot_end_utc"] = _utc_z(row.get("slot_end_utc"))
+
+        return _response(
+            200,
+            {
+                "items": appointments,
+                "count": len(appointments),
+            },
+        )
+
+    finally:
+        conn.close()
+
+
+def _doctor_update_appointment_outcome(doctor_id, appointment_id, event):
+    """Let the owning doctor mark a started appointment completed or no-show."""
+    body = _body(event)
+    requested_status = str(body.get("status") or "").strip().lower()
+
+    if requested_status not in {"completed", "no_show"}:
+        return _response(
+            400,
+            {"message": "Status must be either 'completed' or 'no_show'"},
+        )
+
+    conn = _db_connection()
+    patient_id = None
+    patient_email = None
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    a.appointment_id,
+                    a.patient_user_id,
+                    a.status,
+                    a.slot_start_utc,
+                    a.active_flag,
+                    u.email AS patient_email
+                FROM appointments a
+                INNER JOIN users u ON u.user_id = a.patient_user_id
+                WHERE a.appointment_id = %s
+                  AND a.doctor_user_id = %s
+                FOR UPDATE
+                """,
+                (int(appointment_id), int(doctor_id)),
+            )
+            appointment = cur.fetchone()
+
+            if not appointment:
+                conn.rollback()
+                return _response(404, {"message": "Appointment not found"})
+
+            current_status = str(appointment.get("status") or "").lower()
+            if current_status not in {"booked", "confirmed", "rescheduled"}:
+                conn.rollback()
+                return _response(
+                    409,
+                    {"message": f"Appointment cannot be updated from status '{current_status}'"},
+                )
+
+            start_utc = appointment.get("slot_start_utc")
+            if not isinstance(start_utc, datetime):
+                conn.rollback()
+                return _response(409, {"message": "Appointment start time is unavailable"})
+
+            # MySQL DATETIME values in this project are stored as UTC-naive.
+            if start_utc.tzinfo is None:
+                start_utc = start_utc.replace(tzinfo=timezone.utc)
+            else:
+                start_utc = start_utc.astimezone(timezone.utc)
+
+            if datetime.now(timezone.utc) < start_utc:
+                conn.rollback()
+                return _response(
+                    409,
+                    {"message": "Completed or No Show can be selected only after the appointment start time."},
+                )
+
+            cur.execute(
+                """
+                UPDATE appointments
+                SET status = %s,
+                    active_flag = NULL
+                WHERE appointment_id = %s
+                  AND doctor_user_id = %s
+                  AND status IN ('booked', 'confirmed', 'rescheduled')
+                """,
+                (requested_status, int(appointment_id), int(doctor_id)),
+            )
+
+            if cur.rowcount != 1:
+                conn.rollback()
+                return _response(
+                    409,
+                    {"message": "Appointment status has already been changed"},
+                )
+
+            patient_id = int(appointment["patient_user_id"])
+            patient_email = appointment.get("patient_email")
+
+        conn.commit()
+
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    if requested_status == "completed":
+        notification_type = "APPOINTMENT_COMPLETED"
+        title = "Appointment completed"
+        message = f"Your appointment #{int(appointment_id)} has been marked as completed by your doctor."
+    else:
+        notification_type = "APPOINTMENT_NO_SHOW"
+        title = "Appointment marked as no-show"
+        message = (
+            f"Your appointment #{int(appointment_id)} has been marked as no-show by your doctor. "
+            "Please contact the clinic if you believe this is incorrect."
+        )
+
+    # Keep the project's existing in-app + SNS notification path.
+    _notify_patient(
+        patient_id,
+        int(appointment_id),
+        notification_type,
+        title,
+        message,
+        patient_email,
+    )
+
+    return _response(
+        200,
+        {
+            "message": "Appointment marked as completed" if requested_status == "completed" else "Appointment marked as no-show",
+            "appointmentId": int(appointment_id),
+            "status": requested_status,
+        },
+    )
+
+
+# ---------------------------------------------------------
+# PATIENT APPOINTMENT BOOKING
+# ---------------------------------------------------------
+
+
+def _publish_medislot_event(detail_type, detail):
+    """Publish a domain event. Failures are logged; callers must not undo committed SQL."""
+    bus_name = os.environ.get("EVENT_BUS_NAME", "default")
+    try:
+        result = _events_client().put_events(Entries=[{
+            "EventBusName": bus_name,
+            "Source": "medislot.appointments",
+            "DetailType": detail_type,
+            "Time": datetime.now(timezone.utc),
+            "Detail": json.dumps(detail, default=str),
+        }])
+        if result.get("FailedEntryCount", 0):
+            logger.error("EventBridge rejected %s event: %s", detail_type, result.get("Entries"))
+            return False
+        logger.info("EVENT_PUBLISHED type=%s bus=%s", detail_type, bus_name)
+        return True
+    except Exception:
+        logger.exception("EVENT_PUBLISH_FAILED type=%s", detail_type)
+        return False
+
+
+def _put_booking_retry_metric(retries):
+    try:
+        _cloudwatch_client().put_metric_data(
+            Namespace="MediSlot/Bookings",
+            MetricData=[{
+                "MetricName": "BookingConflictRetries",
+                "Dimensions": [{"Name": "Environment", "Value": os.environ.get("ENVIRONMENT", "dev")}],
+                "Unit": "Count",
+                "Value": float(retries),
+                "Timestamp": datetime.now(timezone.utc),
+            }],
+        )
+    except Exception:
+        logger.exception("Unable to publish BookingConflictRetries metric")
+
+
+def _put_booking_conditional_conflict_metric():
+    """Count every failed conditional capacity write, including full-slot conflicts."""
+    try:
+        _cloudwatch_client().put_metric_data(
+            Namespace="MediSlot/Bookings",
+            MetricData=[{
+                "MetricName": "BookingConditionalConflicts",
+                "Unit": "Count",
+                "Value": 1,
+                "Timestamp": datetime.now(timezone.utc),
+            }],
+        )
+    except Exception:
+        logger.exception("Unable to publish BookingConditionalConflicts metric")
+
+
+def _put_cancellation_tier_metric(tier):
+    try:
+        _cloudwatch_client().put_metric_data(
+            Namespace="MediSlot/Appointments",
+            MetricData=[{
+                "MetricName": "CancellationsByTier",
+                "Dimensions": [
+                    {"Name": "Environment", "Value": os.environ.get("ENVIRONMENT", "dev")},
+                    {"Name": "Tier", "Value": str(tier)},
+                ],
+                "Unit": "Count",
+                "Value": 1.0,
+                "Timestamp": datetime.now(timezone.utc),
+            }],
+        )
+    except Exception:
+        logger.exception("Unable to publish CancellationsByTier metric")
+
+
+HEALTH_CAMP_NAME = "health camp session"
+HEALTH_CAMP_DURATION_MIN = 60
+HEALTH_CAMP_MIN_CAPACITY = 2
+HEALTH_CAMP_MAX_CAPACITY = 10
+
+
+def _normalise_consultation_name(name):
+    return " ".join(str(name).split()).lower()
+
+
+def _validate_consultation_rules(name, duration, capacity):
+    """Health Camp Session is a 60-minute group session for 2 to 10 patients."""
+    if _normalise_consultation_name(name) == HEALTH_CAMP_NAME:
+        if duration != HEALTH_CAMP_DURATION_MIN:
+            raise ValueError("Health Camp Session must be exactly 60 minutes")
+        if not HEALTH_CAMP_MIN_CAPACITY <= capacity <= HEALTH_CAMP_MAX_CAPACITY:
+            raise ValueError("Health Camp Session capacity must be between 2 and 10")
+
+
+_REFUND_POLICY_CACHE = {}
+_REFUND_POLICY_TTL_SECONDS = 60
+
+# Approved policy. Tier applies when hours-before-start is above minimumHours,
+# or equal to it when "inclusive" is true:
+#   > 48h = 100%   |   > 24h up to 48h = 75%   |   2h up to 24h = 50%   |   < 2h = 0%
+_DEFAULT_REFUND_POLICY = [
+    {"tier": "FULL", "minimumHours": 48, "refundPercent": 100, "inclusive": False},
+    {"tier": "PARTIAL_75", "minimumHours": 24, "refundPercent": 75, "inclusive": False},
+    {"tier": "PARTIAL_50", "minimumHours": 2, "refundPercent": 50, "inclusive": True},
+    {"tier": "NONE", "minimumHours": 0, "refundPercent": 0, "inclusive": True},
+]
+
+
+def _validate_refund_policy(parsed):
+    if not isinstance(parsed, list) or not parsed:
+        raise ValueError("Refund policy must be a non-empty JSON array")
+    rows = []
+    for row in parsed:
+        percent = int(row["refundPercent"])
+        if not 0 <= percent <= 100:
+            raise ValueError("refundPercent must be between 0 and 100")
+        hours = float(row["minimumHours"])
+        if hours < 0:
+            raise ValueError("minimumHours must not be negative")
+        rows.append({
+            "tier": str(row["tier"]),
+            "minimumHours": hours,
+            "refundPercent": percent,
+            "inclusive": bool(row.get("inclusive", False)),
+        })
+    rows.sort(key=lambda r: r["minimumHours"], reverse=True)
+    # The lowest window must catch everything, otherwise a late cancellation has no tier.
+    if rows[-1]["minimumHours"] != 0 or not rows[-1]["inclusive"]:
+        raise ValueError("Refund policy needs a final tier with minimumHours 0 and inclusive true")
+    return rows
+
+
+def _refund_policy():
+    """Refund windows from SSM (cached 60s); falls back to the approved defaults."""
+    parameter_name = os.environ.get(
+        "REFUND_POLICY_PARAMETER",
+        f"/medislot/{os.environ.get('ENVIRONMENT', 'dev')}/refund/policy",
+    )
+    cached = _REFUND_POLICY_CACHE.get(parameter_name)
+    if cached and cached[0] > time.monotonic():
+        return cached[1]
+    try:
+        policy = _validate_refund_policy(json.loads(_parameter(parameter_name, decrypt=False)))
+        logger.info("REFUND_POLICY_LOADED source=ssm parameter=%s tiers=%s", parameter_name, len(policy))
+    except Exception:
+        logger.warning("REFUND_POLICY_FALLBACK parameter=%s reason=unavailable_or_invalid", parameter_name, exc_info=True)
+        policy = _validate_refund_policy(_DEFAULT_REFUND_POLICY)
+    _REFUND_POLICY_CACHE[parameter_name] = (time.monotonic() + _REFUND_POLICY_TTL_SECONDS, policy)
+    return policy
+
+
+def _calculate_refund(fee_amount, slot_start_utc, now_utc=None, policy=None):
+    """Return (tier, percent, refund_amount, hours_before_start) using the SSM windows."""
+    now_utc = now_utc or datetime.now(timezone.utc)
+    start = slot_start_utc
+    if isinstance(start, str):
+        start = datetime.fromisoformat(start.replace("Z", "+00:00"))
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    hours = (start.astimezone(timezone.utc) - now_utc.astimezone(timezone.utc)).total_seconds() / 3600
+    policy = policy or _refund_policy()
+    tier, percent = policy[-1]["tier"], policy[-1]["refundPercent"]
+    for row in policy:
+        if hours > row["minimumHours"] or (row["inclusive"] and hours >= row["minimumHours"]):
+            tier, percent = row["tier"], row["refundPercent"]
+            break
+    fee = Decimal(str(fee_amount))
+    refund = (fee * Decimal(percent) / Decimal(100)).quantize(Decimal("0.01"))
+    return tier, percent, refund, hours
+
+
+def _book_appointment(event, user_id, role):
+    """Book a slot with DynamoDB capacity protection and request idempotency.
+
+    The idempotency table's partition key is `idemKey`; TTL is `expiresAt`.
+    A client must send the same Idempotency-Key when retrying the same request.
+    """
+    if role != "patient":
+        return _response(403, {"message": "Only patients can book appointments"})
+
+    data = _body(event)
+    slot_id = data.get("slotId")
+    if not isinstance(slot_id, str) or not slot_id.strip():
+        return _response(400, {"message": "slotId is required"})
+    slot_id = slot_id.strip()
+
+    client_key = _header(event, "Idempotency-Key")
+    if not client_key or len(client_key) > 200:
+        return _response(400, {"message": "A valid Idempotency-Key header (1-200 characters) is required"})
+
+    patient_id = str(user_id)
+    request_hash = hashlib.sha256(
+        json.dumps({"patientId": patient_id, "slotId": slot_id}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    idem_key = hashlib.sha256(f"{patient_id}:{client_key}".encode("utf-8")).hexdigest()
+    idem_table = _table("IDEMPOTENCY_TABLE")
+    now_epoch = int(datetime.now(timezone.utc).timestamp())
+    expires_at = now_epoch + 24 * 60 * 60
+
+    try:
+        idem_table.put_item(
+            Item={
+                "idemKey": idem_key,
+                "patientId": patient_id,
+                "requestHash": request_hash,
+                "status": "IN_PROGRESS",
+                "createdAt": now_epoch,
+                "expiresAt": expires_at,
+            },
+            ConditionExpression=Attr("idemKey").not_exists(),
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            logger.exception("Unable to create idempotency record")
+            return _response(500, {"message": "Unable to start booking request"})
+        try:
+            existing = idem_table.get_item(Key={"idemKey": idem_key}, ConsistentRead=True).get("Item")
+        except Exception:
+            logger.exception("Unable to read existing idempotency record")
+            return _response(500, {"message": "Unable to verify booking request"})
+        if not existing:
+            return _response(409, {"message": "Booking request is being processed; retry with the same Idempotency-Key"})
+        if existing.get("patientId") != patient_id or existing.get("requestHash") != request_hash:
+            return _response(409, {"message": "Idempotency-Key was already used for a different booking request"})
+        if existing.get("status") == "COMPLETED":
+            saved = existing.get("response") or {}
+            return _response(int(saved.get("statusCode", 201)), saved.get("body", {}))
+        return _response(409, {"message": "This booking request is still being processed; retry with the same Idempotency-Key"})
+
+    slots = _table("SLOTS_TABLE")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    reserved = False
+    committed = False
+    conn = None
+
+    try:
+        # Read the slot's doctor before reserving capacity. The patient row lock
+        # serializes all booking attempts for this patient across every doctor.
+        initial_slot = slots.get_item(Key={"slotId": slot_id}, ConsistentRead=True).get("Item")
+        if not initial_slot:
+            raise ValueError("Slot does not exist")
+        doctor_id = initial_slot.get("doctorId")
+        if not doctor_id:
+            raise ValueError("Slot does not identify a doctor")
+
+        conn = _db_connection()
+        with conn.cursor() as policy_cur:
+            policy_cur.execute(
+                "SELECT user_id FROM users WHERE user_id=%s AND role='patient' FOR UPDATE",
+                (int(patient_id),),
+            )
+            if not policy_cur.fetchone():
+                conn.rollback()
+                _delete_idempotency_record(idem_table, idem_key)
+                return _response(404, {"message": "Patient account was not found"})
+
+            policy_cur.execute(
+                """
+                SELECT COUNT(*) AS active_count
+                FROM appointments
+                WHERE patient_user_id=%s
+                  AND status IN ('booked', 'confirmed')
+                """,
+                (int(patient_id),),
+            )
+            active_count = int((policy_cur.fetchone() or {}).get("active_count", 0))
+            if active_count >= 3:
+                conn.rollback()
+                _delete_idempotency_record(idem_table, idem_key)
+                logger.info(
+                    "BOOKING_REJECTED_PATIENT_ACTIVE_LIMIT patientId=%s activeCount=%s limit=3",
+                    patient_id, active_count,
+                )
+                return _response(409, {
+                    "message": "You can have a maximum of 3 active appointments across all doctors. Cancel or complete an appointment before booking another."
+                })
+
+            policy_cur.execute(
+                """
+                SELECT COUNT(*) AS doctor_active_count
+                FROM appointments
+                WHERE patient_user_id=%s
+                  AND doctor_user_id=%s
+                  AND status IN ('booked', 'confirmed')
+                """,
+                (int(patient_id), int(doctor_id)),
+            )
+            doctor_active_count = int((policy_cur.fetchone() or {}).get("doctor_active_count", 0))
+            if doctor_active_count >= 1:
+                conn.rollback()
+                _delete_idempotency_record(idem_table, idem_key)
+                logger.info(
+                    "BOOKING_REJECTED_DUPLICATE_DOCTOR patientId=%s doctorId=%s",
+                    patient_id, doctor_id,
+                )
+                return _response(409, {
+                    "message": "You already have an active appointment with this doctor. You can book another appointment with this doctor after the existing appointment is completed or cancelled."
+                })
+
+        # OCC on the slot item. Every competing writer must present the version
+        # it observed; successful writes increment it atomically. The bounded
+        # retry loop re-reads strongly consistently and never serialises callers.
+        max_attempts = int(os.environ.get("BOOKING_MAX_ATTEMPTS", "5"))
+        retries = 0
+        updated = None
+        for attempt in range(max_attempts):
+            current = slots.get_item(Key={"slotId": slot_id}, ConsistentRead=True).get("Item")
+            if not current:
+                raise ValueError("Slot does not exist")
+            current_version = int(current.get("version", 0))
+            try:
+                updated = slots.update_item(
+                    Key={"slotId": slot_id},
+                    UpdateExpression=("SET bookedCount = if_not_exists(bookedCount, :zero) + :one, "
+                                      "pendingReservations = if_not_exists(pendingReservations, :zero) + :one, "
+                                      "#ver = :next, updatedAt = :now"),
+                    ConditionExpression=(
+                        "attribute_exists(slotId) AND #st = :open "
+                        "AND bookedCount < #cap AND startUtc > :now "
+                        "AND (attribute_not_exists(#ver) OR #ver = :expected)"
+                    ),
+                    ExpressionAttributeNames={"#st": "status", "#ver": "version", "#cap": "capacity"},
+                    ExpressionAttributeValues={
+                        ":zero": 0, ":one": 1, ":now": now, ":open": "OPEN",
+                        ":expected": current_version, ":next": current_version + 1,
+                    },
+                    ReturnValues="ALL_NEW",
+                )["Attributes"]
+                reserved = True
+                break
+            except ClientError as conflict:
+                if conflict.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
+                _put_booking_conditional_conflict_metric()
+                latest = slots.get_item(Key={"slotId": slot_id}, ConsistentRead=True).get("Item")
+                if not latest or latest.get("status") != "OPEN" or int(latest.get("bookedCount", 0)) >= int(latest.get("capacity", 0)) or str(latest.get("startUtc", "")) <= now:
+                    _put_booking_retry_metric(retries)
+                    raise
+                if attempt == max_attempts - 1:
+                    _put_booking_retry_metric(retries)
+                    raise
+                retries += 1
+                logger.warning("BOOKING_OCC_CONFLICT slotId=%s attempt=%s retry=%s", slot_id, attempt + 1, retries)
+                time.sleep(min(0.025 * (2 ** attempt), 0.25) + (0.005 * (attempt + 1)))
+        _put_booking_retry_metric(retries)
+
+        consultation_id = str(updated.get("consultationTypeId", ""))
+        if not re.fullmatch(r"[1-9][0-9]{0,19}", consultation_id):
+            raise ValueError("Slot contains an invalid numeric consultationTypeId")
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT fee_amount
+                FROM consultation_types
+                WHERE consultation_type_id = %s
+                  AND doctor_user_id = %s
+                  AND is_active = 1
+                """,
+                (int(consultation_id), int(updated["doctorId"])),
+            )
+            consultation = cur.fetchone()
+            if not consultation:
+                raise ValueError("Consultation type is no longer active")
+
+            start = datetime.fromisoformat(updated["startUtc"].replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
+            end = datetime.fromisoformat(updated["endUtc"].replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
+            cur.execute(
+                """
+                INSERT INTO appointments (
+                    patient_user_id, doctor_user_id, consultation_type_id,
+                    slot_id, slot_start_utc, slot_end_utc, status,
+                    active_flag, fee_amount
+                ) VALUES (%s, %s, %s, %s, %s, %s, 'booked', 1, %s)
+                """,
+                (
+                    int(patient_id), int(updated["doctorId"]),
+                    int(consultation_id), slot_id, start, end,
+                    consultation["fee_amount"],
+                ),
+            )
+            appointment_id = int(cur.lastrowid)
+            cur.execute("SELECT email FROM users WHERE user_id=%s AND role='patient'", (int(patient_id),))
+            patient_record = cur.fetchone() or {}
+            patient_email = patient_record.get("email")
+        conn.commit()
+        committed = True
+        _finish_slot_reservation(slots, slot_id, now)
+        details = _appointment_details_text(appointment_id)
+        booking_message = (
+            f"Your appointment #{appointment_id} is confirmed.\n\n"
+            + (f"{details}\n" if details else "")
+            + f"Consultation fee: ₹{consultation['fee_amount']}\n\n"
+            "No payment has been collected online. Please pay at the clinic."
+        )
+        _notify_patient(
+            patient_id, appointment_id, "APPOINTMENT_BOOKED",
+            "Appointment booked", booking_message, patient_email,
+        )
+        _publish_medislot_event("AppointmentBooked", {
+            "appointmentId": appointment_id,
+            "patientId": int(patient_id),
+            "doctorId": int(updated["doctorId"]),
+            "slotId": slot_id,
+            "feeAmount": str(consultation["fee_amount"]),
+        })
+
+        response_body = {
+            "message": "Appointment booked successfully",
+            "appointmentId": appointment_id,
+            "slotId": slot_id,
+        }
+        try:
+            idem_table.update_item(
+                Key={"idemKey": idem_key},
+                UpdateExpression="SET #s = :completed, #r = :response, completedAt = :completedAt",
+                ConditionExpression="#s = :inProgress",
+                ExpressionAttributeNames={"#s": "status", "#r": "response"},
+                ExpressionAttributeValues={
+                    ":completed": "COMPLETED",
+                    ":inProgress": "IN_PROGRESS",
+                    ":response": {"statusCode": 201, "body": response_body},
+                    ":completedAt": int(datetime.now(timezone.utc).timestamp()),
+                },
+            )
+        except Exception:
+            # SQL has committed: never undo a confirmed appointment because
+            # writing the idempotency response failed. Keep the claim in place
+            # to prevent a duplicate booking and log for reconciliation.
+            logger.exception("Appointment committed but idempotency completion update failed")
+        return _response(201, response_body)
+
+    except ClientError as exc:
+        if committed:
+            logger.exception("Appointment committed; post-commit operation failed")
+            return _response(201, {
+                "message": "Appointment booked successfully",
+                "slotId": slot_id,
+                "warning": "Booking succeeded; request replay status is being reconciled",
+            })
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException" and not reserved:
+            _delete_idempotency_record(idem_table, idem_key)
+            return _response(409, {"message": "Slot is unavailable, expired or fully booked"})
+        logger.exception("Booking operation failed")
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        if reserved:
+            _release_slot_reservation(slots, slot_id, now)
+        _delete_idempotency_record(idem_table, idem_key)
+        return _response(500, {"message": "Appointment could not be confirmed; please retry with a new Idempotency-Key"})
+    except Exception:
+        if committed:
+            logger.exception("Appointment committed; post-commit operation failed")
+            return _response(201, {
+                "message": "Appointment booked successfully",
+                "slotId": slot_id,
+                "warning": "Booking succeeded; request replay status is being reconciled",
+            })
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        if reserved:
+            _release_slot_reservation(slots, slot_id, now)
+        _delete_idempotency_record(idem_table, idem_key)
+        logger.exception("Appointment persistence failed")
+        return _response(409, {"message": "Appointment could not be confirmed; slot reservation was released when possible"})
+    finally:
+        if conn:
+            conn.close()
+
+
+def _finish_slot_reservation(slots, slot_id, now):
+    """Mark an RDS-persisted booking as no longer in-flight."""
+    try:
+        slots.update_item(
+            Key={"slotId": slot_id},
+            UpdateExpression="SET pendingReservations = pendingReservations - :one, updatedAt = :now, #v = if_not_exists(#v,:zero) + :one",
+            ConditionExpression="pendingReservations >= :one",
+            ExpressionAttributeNames={"#v": "version"},
+            ExpressionAttributeValues={":one": 1, ":zero": 0, ":now": now},
+        )
+    except Exception:
+        # RDS is already committed. Keep the slot fail-closed for cancellation
+        # until the pending reservation counter is reconciled.
+        logger.exception("BOOKING_PENDING_RESERVATION_RELEASE_FAILED slotId=%s; reconciliation required", slot_id)
+
+
+def _release_slot_reservation(slots, slot_id, now):
+    """Compensate a failed booking and clear its in-flight reservation marker."""
+    try:
+        slots.update_item(
+            Key={"slotId": slot_id},
+            UpdateExpression=("SET bookedCount = bookedCount - :one, "
+                              "pendingReservations = pendingReservations - :one, "
+                              "updatedAt = :now, #v = if_not_exists(#v,:zero) + :one"),
+            ConditionExpression="bookedCount >= :one AND pendingReservations >= :one",
+            ExpressionAttributeNames={"#v": "version"},
+            ExpressionAttributeValues={":one": 1, ":zero": 0, ":now": now},
+        )
+    except Exception:
+        logger.exception("Booking compensation failed; reconcile slot capacity and pendingReservations")
+
+
+def _delete_idempotency_record(table, idem_key):
+    """Remove an uncompleted idempotency claim so a failed request can retry."""
+    try:
+        table.delete_item(
+            Key={"idemKey": idem_key},
+            ConditionExpression="#s = :inProgress",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":inProgress": "IN_PROGRESS"},
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            logger.exception("Unable to remove failed idempotency record")
+    except Exception:
+        logger.exception("Unable to remove failed idempotency record")
+
+
+
+_REFUND_REASON_LABELS = {
+    "PATIENT_CANCEL": "Patient",
+    "DOCTOR_CANCEL": "Doctor",
+    "NO_SHOW": "No show",
+}
+
+
+# Two complete, constant queries (no string building) so no SQL is assembled at runtime.
+_DOCTOR_REFUNDS_SQL = """SELECT r.refund_id, r.appointment_id, r.reason, r.tier,
+           r.refund_percent, r.fee_amount, r.refund_amount,
+           r.created_at, a.slot_start_utc,
+           pu.name AS patient_name, pu.email AS patient_email,
+           d.full_name AS doctor_name, ct.name AS consultation_type
+    FROM refund_ledger r
+    JOIN appointments a ON a.appointment_id = r.appointment_id
+    JOIN users pu ON pu.user_id = r.patient_user_id
+    LEFT JOIN doctors d ON d.user_id = a.doctor_user_id
+    LEFT JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+    WHERE a.doctor_user_id = %s
+    ORDER BY r.created_at DESC, r.refund_id DESC
+    LIMIT 200"""
+
+_PATIENT_REFUNDS_SQL = """SELECT r.refund_id, r.appointment_id, r.reason, r.tier,
+           r.refund_percent, r.fee_amount, r.refund_amount,
+           r.created_at, a.slot_start_utc,
+           pu.name AS patient_name, pu.email AS patient_email,
+           d.full_name AS doctor_name, ct.name AS consultation_type
+    FROM refund_ledger r
+    JOIN appointments a ON a.appointment_id = r.appointment_id
+    JOIN users pu ON pu.user_id = r.patient_user_id
+    LEFT JOIN doctors d ON d.user_id = a.doctor_user_id
+    LEFT JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+    WHERE r.patient_user_id = %s
+    ORDER BY r.created_at DESC, r.refund_id DESC
+    LIMIT 200"""
+
+
+def _refund_ledger_rows(query, user_id):
+    """Refund ledger rows (RDS is the system of record) with appointment context."""
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, (int(user_id),))
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    items = []
+    for row in rows:
+        items.append({
+            "refundId": row["refund_id"],
+            "appointmentId": row["appointment_id"],
+            "patientName": row.get("patient_name"),
+            "patientEmail": row.get("patient_email"),
+            "doctorName": row.get("doctor_name"),
+            "consultationType": row.get("consultation_type"),
+            "slotStartUtc": _utc_z(row.get("slot_start_utc")),
+            "cancelledBy": _REFUND_REASON_LABELS.get(row.get("reason"), str(row.get("reason"))),
+            "reason": row.get("reason"),
+            "tier": row.get("tier"),
+            "refundPercent": row.get("refund_percent"),
+            "feeAmount": str(row.get("fee_amount")),
+            "refundAmount": str(row.get("refund_amount")),
+            "recordedAt": _utc_z(row.get("created_at")),
+        })
+    return _response(200, {"items": items, "count": len(items)})
+
+
+def _doctor_refunds(user_id):
+    """Ledger entries for appointments with this doctor only."""
+    return _refund_ledger_rows(_DOCTOR_REFUNDS_SQL, user_id)
+
+
+def _patient_refunds(user_id):
+    """Ledger entries for the authenticated patient only."""
+    return _refund_ledger_rows(_PATIENT_REFUNDS_SQL, user_id)
+
+
+def _cancel_doctor_slot(slot_id, doctor_id):
+    """Close a slot, drain in-flight bookings, then cancel appointments with full ledger refunds."""
+    if not isinstance(slot_id, str) or not slot_id.strip() or len(slot_id) > 100:
+        return _response(400, {"message": "A valid slotId is required"})
+    slot_id = slot_id.strip()
+    slots = _table("SLOTS_TABLE")
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    # Fail closed before touching RDS. Booking reservations require status OPEN.
+    try:
+        current = slots.get_item(Key={"slotId": slot_id}, ConsistentRead=True).get("Item")
+        if not current:
+            return _response(404, {"message": "Slot was not found"})
+        if str(current.get("doctorId")) != str(doctor_id):
+            return _response(403, {"message": "You can only cancel your own slot"})
+        if current.get("status") == "CANCELLED":
+            return _response(200, {"message": "Slot is already cancelled", "slotId": slot_id, "cancelledAppointments": 0})
+        if current.get("status") == "OPEN":
+            slots.update_item(
+                Key={"slotId": slot_id},
+                UpdateExpression="SET #st=:cancelling, pendingReservations=if_not_exists(pendingReservations,:zero), updatedAt=:now, #v=if_not_exists(#v,:zero)+:one",
+                ConditionExpression="#st=:open AND doctorId=:doctor",
+                ExpressionAttributeNames={"#st": "status", "#v": "version"},
+                ExpressionAttributeValues={
+                    ":cancelling": "CANCELLING", ":open": "OPEN", ":now": now_iso,
+                    ":zero": 0, ":one": 1, ":doctor": str(doctor_id),
+                },
+            )
+        elif current.get("status") != "CANCELLING":
+            return _response(409, {"message": f"Slot cannot be cancelled from status {current.get('status')}"})
+
+        deadline = time.monotonic() + float(os.environ.get("SLOT_CANCELLATION_DRAIN_SECONDS", "20"))
+        while True:
+            latest = slots.get_item(Key={"slotId": slot_id}, ConsistentRead=True).get("Item") or {}
+            pending = int(latest.get("pendingReservations", 0))
+            if pending == 0:
+                break
+            if time.monotonic() >= deadline:
+                logger.error("DOCTOR_SLOT_CANCELLATION_DRAIN_TIMEOUT slotId=%s pendingReservations=%s", slot_id, pending)
+                return _response(409, {
+                    "message": "Slot is closed to new bookings, but existing booking requests are still finishing. Retry cancellation shortly.",
+                    "slotId": slot_id, "pendingReservations": pending,
+                    "slotStatus": "CANCELLING", "requiresReconciliation": True,
+                })
+            time.sleep(0.2)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return _response(409, {"message": "Slot status changed; refresh and retry cancellation"})
+        logger.exception("DOCTOR_SLOT_CANCELLATION_START_FAILED slotId=%s doctorId=%s", slot_id, doctor_id)
+        return _response(500, {"message": "Unable to close slot for cancellation"})
+    except Exception:
+        logger.exception("DOCTOR_SLOT_CANCELLATION_START_FAILED slotId=%s doctorId=%s", slot_id, doctor_id)
+        return _response(500, {"message": "Unable to close slot for cancellation"})
+
+    conn = _db_connection()
+    cancelled = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT appointment_id, patient_user_id, doctor_user_id, slot_id,
+                          slot_start_utc, fee_amount
+                   FROM appointments
+                   WHERE slot_id=%s AND doctor_user_id=%s
+                     AND status IN ('booked','confirmed')
+                   ORDER BY appointment_id FOR UPDATE""",
+                (slot_id, int(doctor_id)),
+            )
+            appointments = cur.fetchall()
+            if any(row["slot_start_utc"].replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc) for row in appointments):
+                conn.rollback()
+                try:
+                    slots.update_item(
+                        Key={"slotId": slot_id},
+                        UpdateExpression="SET #st=:open, updatedAt=:now, #v=if_not_exists(#v,:zero)+:one",
+                        ConditionExpression="#st=:cancelling AND pendingReservations=:zero",
+                        ExpressionAttributeNames={"#st": "status", "#v": "version"},
+                        ExpressionAttributeValues={
+                            ":open": "OPEN", ":cancelling": "CANCELLING",
+                            ":now": datetime.now(timezone.utc).isoformat(), ":zero": 0, ":one": 1,
+                        },
+                    )
+                except Exception:
+                    logger.exception("Unable to restore slot after started-appointment cancellation rejection slotId=%s", slot_id)
+                return _response(409, {"message": "A slot containing a started appointment cannot be cancelled", "slotStatus": "OPEN"})
+            for row in appointments:
+                aid, pid = int(row["appointment_id"]), int(row["patient_user_id"])
+                fee = Decimal(str(row["fee_amount"]))
+                cur.execute(
+                    """UPDATE appointments SET status='cancelled', active_flag=NULL,
+                              updated_at=CURRENT_TIMESTAMP(3)
+                       WHERE appointment_id=%s AND doctor_user_id=%s
+                         AND status IN ('booked','confirmed')""",
+                    (aid, int(doctor_id)),
+                )
+                if cur.rowcount != 1:
+                    raise RuntimeError(f"Appointment {aid} changed during doctor slot cancellation")
+                cur.execute(
+                    """INSERT INTO refund_ledger
+                       (appointment_id, patient_user_id, reason, tier, refund_percent, fee_amount, refund_amount)
+                       VALUES (%s,%s,'DOCTOR_CANCEL','DOCTOR_FULL',100,%s,%s)""",
+                    (aid, pid, fee, fee),
+                )
+                cur.execute("SELECT email FROM users WHERE user_id=%s AND role='patient'", (pid,))
+                patient = cur.fetchone() or {}
+                cancelled.append({"appointmentId": aid, "patientId": pid, "email": patient.get("email"), "fee": fee})
+            conn.commit()
+
+        slots.update_item(
+            Key={"slotId": slot_id},
+            UpdateExpression="SET #st=:cancelled, updatedAt=:now, #v=if_not_exists(#v,:zero)+:one",
+            ConditionExpression="#st=:cancelling AND doctorId=:doctor AND pendingReservations=:zero",
+            ExpressionAttributeNames={"#st": "status", "#v": "version"},
+            ExpressionAttributeValues={
+                ":cancelled": "CANCELLED", ":cancelling": "CANCELLING",
+                ":now": datetime.now(timezone.utc).isoformat(), ":zero": 0,
+                ":one": 1, ":doctor": str(doctor_id),
+            },
+        )
+        _publish_medislot_event("SlotCancelled", {
+            "slotId": slot_id, "doctorId": int(doctor_id),
+            "cancelledAppointments": len(cancelled), "cancelledBy": "DOCTOR",
+        })
+        for item in cancelled:
+            # Required domain event: the appointment's reservation is released,
+            # but the slot itself remains closed and has zero bookable seats.
+            _publish_medislot_event("SlotSeatFreed", {
+                "slotId": slot_id, "appointmentId": item["appointmentId"],
+                "patientId": item["patientId"], "doctorId": int(doctor_id),
+                "availableSeatsIncremented": 0, "slotStatus": "CANCELLED",
+                "reason": "DOCTOR_SLOT_CANCELLED",
+            })
+            aid, pid, fee = item["appointmentId"], item["patientId"], item["fee"]
+            _publish_medislot_event("AppointmentCancelled", {
+                "appointmentId": aid, "patientId": pid, "doctorId": int(doctor_id),
+                "slotId": slot_id, "refundPercent": 100, "refundAmount": str(fee),
+                "refundTier": "DOCTOR_FULL", "cancelledBy": "DOCTOR",
+            })
+            _put_cancellation_tier_metric("DOCTOR_FULL")
+            message = (
+                f"Your appointment #{aid} was cancelled by the doctor. "
+                f"A full refund of ₹{fee} has been recorded. No online payment was taken, "
+                "so this is a ledger record, not a payment transfer."
+            )
+            _notify_patient(pid, aid, "APPOINTMENT_CANCELLED", "Appointment cancelled by doctor", message, item["email"])
+        return _response(200, {
+            "message": "Doctor slot cancelled; all affected appointments received full refund ledger entries",
+            "slotId": slot_id, "cancelledAppointments": len(cancelled), "refundPercent": 100,
+            "refundTotal": str(sum((x["fee"] for x in cancelled), Decimal("0.00"))),
+            "paymentStatus": "LEDGER_ONLY_NO_PAYMENT_GATEWAY", "slotStatus": "CANCELLED",
+        })
+    except pymysql.err.IntegrityError:
+        conn.rollback()
+        logger.exception("DOCTOR_SLOT_REFUND_LEDGER_CONFLICT slotId=%s", slot_id)
+        return _response(409, {"message": "A refund ledger entry already exists; slot remains closed for reconciliation", "slotStatus": "CANCELLING", "requiresReconciliation": True})
+    except Exception:
+        conn.rollback()
+        logger.exception("DOCTOR_SLOT_CANCELLATION_FAILED slotId=%s doctorId=%s", slot_id, doctor_id)
+        return _response(500, {"message": "Doctor slot cancellation needs reconciliation; slot remains closed to new bookings", "slotStatus": "CANCELLING", "requiresReconciliation": True})
+    finally:
+        conn.close()
+
+
+# PATIENT PORTAL: PROFILE AND PUBLIC DOCTOR DISCOVERY
+# ---------------------------------------------------------
+
+_PATIENT_FIELDS = {
+    "phone": "phone",
+    "city": "city",
+    "dateOfBirth": "date_of_birth",
+    "gender": "gender",
+    "emergencyContactName": "emergency_contact_name",
+    "emergencyContactPhone": "emergency_contact_phone",
+}
+
+
+def _patient_profile(user_id, method, event):
+    """Patient profile data is owned by the authenticated patient only."""
+    if method not in {"GET", "PATCH", "PUT", "DELETE"}:
+        return _response(405, {"message": "Method not supported"})
+
+    data = _body(event) if method in {"PATCH", "PUT"} else {}
+    if set(data) - (set(_PATIENT_FIELDS) | {"fullName"}):
+        return _response(400, {"message": "Unsupported patient profile fields"})
+
+    if method in {"PATCH", "PUT"}:
+        for key, value in data.items():
+            if value is not None and not isinstance(value, str):
+                return _response(400, {"message": f"{key} must be a string or null"})
+            if isinstance(value, str):
+                if len(value) > (150 if key == "fullName" else 255):
+                    return _response(400, {"message": f"{key} is too long"})
+                if key == "dateOfBirth" and value:
+                    try:
+                        birth = date.fromisoformat(value)
+                    except ValueError:
+                        return _response(400, {"message": "dateOfBirth must be YYYY-MM-DD"})
+                    if birth > date.today():
+                        return _response(400, {"message": "dateOfBirth cannot be in the future"})
+        if "fullName" in data and (not data["fullName"] or not data["fullName"].strip()):
+            return _response(400, {"message": "fullName cannot be empty"})
+
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT user_id, name FROM users WHERE user_id=%s AND role='patient'",
+                (user_id,),
+            )
+            account = cur.fetchone()
+            if not account:
+                return _response(404, {"message": "Patient account not found"})
+
+            # Discover optional profile columns, keeping the endpoint compatible
+            # with existing RDS installations that have older patient schemas.
+            cur.execute("SHOW COLUMNS FROM patients")
+            available = {row["Field"] for row in cur.fetchall()}
+            supported = {
+                api: column for api, column in _PATIENT_FIELDS.items()
+                if column in available
+            }
+            cur.execute("SELECT * FROM patients WHERE user_id=%s", (user_id,))
+            patient = cur.fetchone()
+
+            if method == "GET":
+                profile = {"fullName": account["name"]}
+                for api_name, column in _PATIENT_FIELDS.items():
+                    profile[api_name] = (
+                        patient.get(column) if patient and column in available else None
+                    )
+                return _response(200, {"profile": profile})
+
+            if method == "DELETE":
+                if patient:
+                    cur.execute("DELETE FROM patients WHERE user_id=%s", (user_id,))
+                conn.commit()
+                return _response(200, {"message": "Patient profile deleted"})
+
+            unsupported = set(data).intersection(_PATIENT_FIELDS) - set(supported)
+            if unsupported:
+                return _response(400, {
+                    "message": "Profile fields are not supported by the deployed database schema",
+                    "fields": sorted(unsupported),
+                })
+
+            if "fullName" in data:
+                cur.execute(
+                    "UPDATE users SET name=%s WHERE user_id=%s AND role='patient'",
+                    (data["fullName"].strip(), user_id),
+                )
+
+            updates = [(column, data[api]) for api, column in supported.items() if api in data]
+            if updates and not patient:
+                # Existing patient schemas may require full_name on INSERT.
+                profile_name = (data.get("fullName") or account["name"]).strip()
+                cur.execute(
+                    "INSERT INTO patients (user_id, full_name) VALUES (%s, %s)",
+                    (user_id, profile_name),
+                )
+            if "fullName" in data and "full_name" in available and (patient or updates):
+                cur.execute(
+                    "UPDATE patients SET full_name=%s WHERE user_id=%s",
+                    (data["fullName"].strip(), user_id),
+                )
+            update_statements = {
+                "phone": "UPDATE patients SET phone=%s WHERE user_id=%s",
+                "city": "UPDATE patients SET city=%s WHERE user_id=%s",
+                "date_of_birth": "UPDATE patients SET date_of_birth=%s WHERE user_id=%s",
+                "gender": "UPDATE patients SET gender=%s WHERE user_id=%s",
+                "emergency_contact_name": "UPDATE patients SET emergency_contact_name=%s WHERE user_id=%s",
+                "emergency_contact_phone": "UPDATE patients SET emergency_contact_phone=%s WHERE user_id=%s",
+            }
+            for column, value in updates:
+                cur.execute(update_statements[column], (value, user_id))
+            conn.commit()
+            return _response(200, {"message": "Patient profile saved"})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+
+
+def _sns_client():
+    """Create the SNS client in the configured AWS region."""
+    from botocore.config import Config
+    return _aws_client(
+        "sns",
+        config=Config(connect_timeout=2, read_timeout=4, retries={"max_attempts": 1}),
+    )
+
+
+def _save_patient_notification(cur, patient_id, notification_type, title, message, appointment_id=None):
+    cur.execute(
+        """INSERT INTO patient_notifications
+           (patient_user_id, appointment_id, notification_type, title, message)
+           VALUES (%s, %s, %s, %s, %s)""",
+        (int(patient_id), appointment_id, notification_type, title, message),
+    )
+
+
+def _sns_endpoint_subscribed(sns, topic_arn, endpoint):
+    """True when the email already has a subscription (confirmed or pending)."""
+    token = None
+    while True:
+        kwargs = {"TopicArn": topic_arn}
+        if token:
+            kwargs["NextToken"] = token
+        page = sns.list_subscriptions_by_topic(**kwargs)
+        for sub in page.get("Subscriptions", []):
+            if str(sub.get("Endpoint", "")).lower() == endpoint:
+                return True
+        token = page.get("NextToken")
+        if not token:
+            return False
+
+
+def _appointment_details_text(appointment_id):
+    """Readable doctor / consultation / date-time lines for notification emails.
+    Never raises: a lookup failure must not block the notification."""
+    try:
+        conn = _db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT d.full_name AS doctor_name, sp.name AS specialisation,
+                              h.name AS hospital, ct.name AS consultation_type,
+                              a.slot_start_utc, a.slot_end_utc
+                       FROM appointments a
+                       JOIN doctors d ON d.user_id = a.doctor_user_id
+                       LEFT JOIN specialisations sp ON sp.specialisation_id = d.specialisation_id
+                       LEFT JOIN hospitals h ON h.hospital_id = d.hospital_id
+                       LEFT JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+                       WHERE a.appointment_id = %s""",
+                    (int(appointment_id),),
+                )
+                row = cur.fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return ""
+        start = row["slot_start_utc"].replace(tzinfo=timezone.utc).astimezone(IST)
+        end = row["slot_end_utc"].replace(tzinfo=timezone.utc).astimezone(IST)
+        doctor = str(row.get("doctor_name") or "").strip()
+        if doctor and not doctor.lower().startswith("dr"):
+            doctor = f"Dr. {doctor}"
+        lines = [f"Doctor: {doctor}"]
+        if row.get("specialisation"):
+            lines.append(f"Specialisation: {row['specialisation']}")
+        if row.get("hospital"):
+            lines.append(f"Hospital: {row['hospital']}")
+        if row.get("consultation_type"):
+            lines.append(f"Consultation type: {row['consultation_type']}")
+        lines.append(f"Date: {start.strftime('%A, %d %B %Y')}")
+        lines.append(f"Time: {start.strftime('%I:%M %p').lstrip('0')} - {end.strftime('%I:%M %p').lstrip('0')} IST")
+        return "\n".join(lines)
+    except Exception:
+        logger.exception("APPOINTMENT_DETAILS_LOOKUP_FAILED appointmentId=%s", appointment_id)
+        return ""
+
+
+def _notify_patient(patient_id, appointment_id, notification_type, title, message, email):
+    """Persist the in-app notification and publish an email notification through SNS."""
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            _save_patient_notification(cur, patient_id, notification_type, title, message, appointment_id)
+        conn.commit()
+        logger.info(
+            "PATIENT_IN_APP_NOTIFICATION_SAVED patientId=%s appointmentId=%s type=%s",
+            patient_id, appointment_id, notification_type,
+        )
+    except Exception:
+        conn.rollback()
+        logger.exception("PATIENT_NOTIFICATION_PERSIST_FAILED patientId=%s", patient_id)
+    finally:
+        conn.close()
+
+    if not email:
+        logger.warning(
+            "SNS_EMAIL_SKIPPED patientId=%s appointmentId=%s reason=registered_email_missing",
+            patient_id, appointment_id,
+        )
+        return
+
+    topic_arn = os.environ.get("SNS_TOPIC_ARN")
+    if not topic_arn:
+        logger.error(
+            "SNS_EMAIL_FAILED patientId=%s appointmentId=%s reason=SNS_TOPIC_ARN_not_configured",
+            patient_id, appointment_id,
+        )
+        return
+
+    try:
+        sns = _sns_client()
+        endpoint = email.strip().lower()
+        # Patients are normally subscribed at registration. Older accounts are
+        # subscribed here once. Re-calling Subscribe for a pending address would
+        # send AWS's confirmation email again on every booking, so check first.
+        subscription_state = "subscribed_or_pending_delivery"
+        if not _sns_endpoint_subscribed(sns, topic_arn, endpoint):
+            sns.subscribe(
+                TopicArn=topic_arn,
+                Protocol="email",
+                Endpoint=endpoint,
+                Attributes={
+                    "FilterPolicy": json.dumps({"patientId": [str(int(patient_id))]}),
+                    "FilterPolicyScope": "MessageAttributes",
+                },
+                ReturnSubscriptionArn=True,
+            )
+            subscription_state = "confirmation_email_sent"
+            logger.info(
+                "SNS_EMAIL_CONFIRMATION_REQUIRED patientId=%s endpoint=%s",
+                patient_id, endpoint,
+            )
+
+        result = sns.publish(
+            TopicArn=topic_arn,
+            Subject=str(title)[:100],
+            Message=f"{title}\n\n{message}\n\nMediSlot – Your care, made simpler.",
+            MessageAttributes={
+                "patientId": {
+                    "DataType": "String",
+                    "StringValue": str(int(patient_id)),
+                }
+            },
+        )
+        logger.info(
+            "SNS_EMAIL_PUBLISH_ACCEPTED patientId=%s appointmentId=%s type=%s messageId=%s subscriptionState=%s",
+            patient_id, appointment_id, notification_type,
+            result.get("MessageId"),
+            subscription_state,
+        )
+    except Exception:
+        # Notification delivery must never undo an already committed booking/cancellation.
+        logger.exception(
+            "SNS_EMAIL_PUBLISH_FAILED patientId=%s appointmentId=%s type=%s",
+            patient_id, appointment_id, notification_type,
+        )
+
+
+def _patient_notifications(user_id):
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT notification_id AS notificationId, appointment_id AS appointmentId,
+                          notification_type AS type, title, message, is_read AS isRead,
+                          created_at AS createdAt
+                   FROM patient_notifications
+                   WHERE patient_user_id=%s
+                   ORDER BY created_at DESC, notification_id DESC LIMIT 100""",
+                (int(user_id),),
+            )
+            rows = cur.fetchall()
+        for row in rows:
+            row["createdAt"] = _utc_z(row.get("createdAt"))
+        return _response(200, {"items": rows, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+def _cancel_patient_appointment(appointment_id, patient_id):
+    """Cancel only the caller's future booked appointment and create a refund ledger entry."""
+    conn = _db_connection()
+    slot_id = None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT a.appointment_id, a.patient_user_id, a.doctor_user_id,
+                          a.slot_id, a.slot_start_utc, a.fee_amount, u.email,
+                          u.name AS patient_name
+                   FROM appointments a
+                   JOIN users u ON u.user_id=a.patient_user_id
+                   WHERE a.appointment_id=%s AND a.patient_user_id=%s
+                   FOR UPDATE""",
+                (int(appointment_id), int(patient_id)),
+            )
+            row = cur.fetchone()
+            if not row:
+                conn.rollback()
+                return _response(404, {"message": "Appointment not found"})
+            if row["slot_start_utc"].replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc):
+                conn.rollback()
+                return _response(409, {"message": "Past or started appointments cannot be cancelled"})
+            cur.execute("SELECT status FROM appointments WHERE appointment_id=%s FOR UPDATE", (int(appointment_id),))
+            current = cur.fetchone()
+            if not current or current["status"] not in ("booked", "confirmed"):
+                conn.rollback()
+                return _response(409, {"message": "Only active appointments can be cancelled"})
+            start = row["slot_start_utc"].replace(tzinfo=timezone.utc)
+            tier, percent, refund, hours = _calculate_refund(
+                row["fee_amount"], start, datetime.now(timezone.utc)
+            )
+            fee = Decimal(str(row["fee_amount"]))
+            cur.execute(
+                """UPDATE appointments SET status='cancelled', active_flag=NULL,
+                          updated_at=CURRENT_TIMESTAMP(3)
+                   WHERE appointment_id=%s AND patient_user_id=%s AND status IN ('booked','confirmed')""",
+                (int(appointment_id), int(patient_id)),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                return _response(409, {"message": "Appointment could not be cancelled because its status changed"})
+            cur.execute(
+                """INSERT INTO refund_ledger
+                   (appointment_id, patient_user_id, reason, tier, refund_percent, fee_amount, refund_amount)
+                   VALUES (%s,%s,'PATIENT_CANCEL',%s,%s,%s,%s)""",
+                (int(appointment_id), int(patient_id), tier, percent, fee, refund),
+            )
+            conn.commit()
+            slot_id = row["slot_id"]
+            patient_email = row["email"]
+        # Release one seat only after the RDS cancellation+ledger transaction commits.
+        released = False
+        for attempt in range(3):
+            try:
+                _table("SLOTS_TABLE").update_item(
+                    Key={"slotId": slot_id},
+                    UpdateExpression="SET bookedCount = bookedCount - :one, #v = if_not_exists(#v,:zero) + :one, updatedAt=:now",
+                    ConditionExpression="attribute_exists(slotId) AND bookedCount >= :one",
+                    ExpressionAttributeNames={"#v": "version"},
+                    ExpressionAttributeValues={":one": 1, ":zero": 0, ":now": datetime.now(timezone.utc).isoformat()},
+                )
+                released = True
+                logger.info("SLOT_SEAT_RELEASED appointmentId=%s slotId=%s", appointment_id, slot_id)
+                break
+            except Exception:
+                logger.exception("SLOT_SEAT_RELEASE_FAILED appointmentId=%s slotId=%s attempt=%s", appointment_id, slot_id, attempt + 1)
+                time.sleep(0.2 * (attempt + 1))
+        if not released:
+            # The slot list reconciles against RDS and repairs this on the next read.
+            logger.error("SLOT_SEAT_RELEASE_GAVE_UP appointmentId=%s slotId=%s", appointment_id, slot_id)
+        details = _appointment_details_text(appointment_id)
+        msg = (
+            f"Your appointment #{appointment_id} has been cancelled.\n\n"
+            + (f"{details}\n" if details else "")
+            + f"Consultation fee: ₹{fee}\n"
+            f"Refund: {percent}% (₹{refund})\n\n"
+            "No online payment was taken, so no money was transferred. "
+            "Any refund will be handled by the clinic."
+        )
+        _notify_patient(patient_id, appointment_id, "APPOINTMENT_CANCELLED", "Appointment cancelled", msg, patient_email)
+        _publish_medislot_event("AppointmentCancelled", {"appointmentId": int(appointment_id), "patientId": int(patient_id), "slotId": slot_id, "refundPercent": percent, "refundAmount": str(refund), "refundTier": tier, "cancelledBy": "PATIENT"})
+        if released:
+            _publish_medislot_event("SlotSeatFreed", {"slotId": slot_id, "appointmentId": int(appointment_id), "patientId": int(patient_id), "availableSeatsIncremented": 1})
+        _put_cancellation_tier_metric(tier)
+        return _response(200, {
+            "message": "Appointment cancelled and refund recorded",
+            "appointmentId": int(appointment_id), "refundTier": tier,
+            "refundPercent": percent, "feeAmount": str(fee),
+            "refundAmount": str(refund),
+            "paymentStatus": "LEDGER_ONLY_NO_PAYMENT_GATEWAY",
+        })
+    except pymysql.err.IntegrityError:
+        conn.rollback()
+        logger.exception("CANCELLATION_LEDGER_CONFLICT appointmentId=%s", appointment_id)
+        return _response(409, {"message": "A refund record already exists for this appointment"})
+    except Exception:
+        conn.rollback()
+        logger.exception("APPOINTMENT_CANCELLATION_FAILED appointmentId=%s", appointment_id)
+        return _response(500, {"message": "Appointment cancellation failed"})
+    finally:
+        conn.close()
+
+
+def _utc_z(value):
+    """MySQL returns naive UTC datetimes; send them with an explicit Z so browsers
+    do not read them as local time (that shifted appointment times by 5h30)."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return value
+
+
+def _patient_appointments(user_id, event):
+    """Return only the authenticated patient's appointment and refund history."""
+    params = _query(event)
+    requested_status = params.get("status")
+    allowed = {"booked", "confirmed", "completed", "cancelled", "rescheduled", "no_show"}
+    if requested_status and requested_status not in allowed:
+        return _response(400, {"message": "Invalid appointment status", "allowedStatuses": sorted(allowed)})
+
+    sql = """
+        SELECT
+            a.appointment_id AS appointmentId,
+            a.slot_start_utc AS slotStartUtc,
+            a.slot_end_utc AS slotEndUtc,
+            a.status AS status,
+            a.fee_amount AS feeAmount,
+            u.name AS doctorName,
+            sp.name AS specialisation,
+            h.name AS hospital,
+            h.city AS city,
+            ct.name AS consultationType,
+            ct.duration_min AS durationMinutes,
+            r.refund_id AS refundId,
+            r.reason AS refundReason,
+            r.tier AS refundTier,
+            r.refund_percent AS refundPercent,
+            r.refund_amount AS refundAmount,
+            r.created_at AS refundCreatedAt
+        FROM appointments a
+        INNER JOIN users u ON u.user_id = a.doctor_user_id AND u.role = 'doctor'
+        LEFT JOIN doctors d ON d.user_id = a.doctor_user_id
+        LEFT JOIN specialisations sp ON sp.specialisation_id = d.specialisation_id
+        LEFT JOIN hospitals h ON h.hospital_id = d.hospital_id
+        LEFT JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
+        LEFT JOIN refund_ledger r ON r.appointment_id = a.appointment_id
+        WHERE a.patient_user_id = %s
+    """
+    values = [int(user_id)]
+    if requested_status:
+        sql += " AND a.status = %s"
+        values.append(requested_status)
+    sql += " ORDER BY a.slot_start_utc DESC, a.appointment_id DESC LIMIT 200"
+
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(values))
+            rows = cur.fetchall()
+        for row in rows:
+            for key in ("slotStartUtc", "slotEndUtc", "refundCreatedAt"):
+                row[key] = _utc_z(row.get(key))
+        return _response(200, {"items": rows, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+def _appointment_detail(appointment_id, user_id, role):
+    """Fetch one appointment only when the authenticated patient or doctor owns it."""
+    if role not in {"patient", "doctor"}:
+        return _response(403, {"message": "Only patients and doctors can view appointment details"})
+    # Keep SQL identifiers static. Values remain parameterized in execute().
+    if role == "patient":
+        sql = """SELECT a.appointment_id AS appointmentId, a.patient_user_id AS patientId,
+                         a.doctor_user_id AS doctorId, a.slot_id AS slotId,
+                         a.slot_start_utc AS slotStartUtc, a.slot_end_utc AS slotEndUtc,
+                         a.status, a.fee_amount AS feeAmount,
+                         r.refund_id AS refundId, r.reason AS refundReason,
+                         r.tier AS refundTier, r.refund_percent AS refundPercent,
+                         r.refund_amount AS refundAmount, r.created_at AS refundCreatedAt
+                  FROM appointments a LEFT JOIN refund_ledger r ON r.appointment_id=a.appointment_id
+                  WHERE a.appointment_id=%s AND a.patient_user_id=%s LIMIT 1"""
+    else:
+        sql = """SELECT a.appointment_id AS appointmentId, a.patient_user_id AS patientId,
+                         a.doctor_user_id AS doctorId, a.slot_id AS slotId,
+                         a.slot_start_utc AS slotStartUtc, a.slot_end_utc AS slotEndUtc,
+                         a.status, a.fee_amount AS feeAmount,
+                         r.refund_id AS refundId, r.reason AS refundReason,
+                         r.tier AS refundTier, r.refund_percent AS refundPercent,
+                         r.refund_amount AS refundAmount, r.created_at AS refundCreatedAt
+                  FROM appointments a LEFT JOIN refund_ledger r ON r.appointment_id=a.appointment_id
+                  WHERE a.appointment_id=%s AND a.doctor_user_id=%s LIMIT 1"""
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, (int(appointment_id), int(user_id)))
+            row = cur.fetchone()
+        if not row:
+            return _response(404, {"message": "Appointment not found"})
+        for key in ("slotStartUtc", "slotEndUtc", "refundCreatedAt"):
+            row[key] = _utc_z(row.get(key))
+        for key in ("feeAmount", "refundAmount"):
+            if row.get(key) is not None:
+                row[key] = str(row[key])
+        return _response(200, {"appointment": row})
+    finally:
+        conn.close()
+
+
+def _pagination(params):
+    try:
+        page = int(params.get("page", "1"))
+        page_size = int(params.get("pageSize", "10"))
+    except ValueError as exc:
+        raise ValueError("page and pageSize must be integers") from exc
+    if page < 1 or not 1 <= page_size <= 50:
+        raise ValueError("page must be positive and pageSize must be 1-50")
+    return page, page_size
+
+
+def _doctor_search(event):
+    params = _query(event)
+    page, page_size = _pagination(params)
+    conditions = ["u.role = 'doctor'", "u.status = 'active'"]
+    values = []
+    for key, expression in (
+        ("name", "u.name"),
+        ("specialisation", "sp.name"),
+        ("hospital", "h.name"),
+        ("city", "h.city"),
+    ):
+        value = params.get(key, "").strip()
+        if value:
+            if len(value) > 150:
+                raise ValueError(f"{key} filter is too long")
+            conditions.append(f"{expression} LIKE %s")
+            values.append("%" + value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
+    where = " AND ".join(conditions)
+    joins = """
+        FROM doctors d
+        JOIN users u ON u.user_id = d.user_id
+        LEFT JOIN specialisations sp ON sp.specialisation_id = d.specialisation_id
+        LEFT JOIN hospitals h ON h.hospital_id = d.hospital_id
+    """
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) AS total {joins} WHERE {where}", tuple(values))
+            total = int(cur.fetchone()["total"])
+            cur.execute(
+                f"""SELECT d.user_id AS doctorId, u.name AS name,
+                    sp.name AS specialisation, h.name AS hospital, h.city AS city,
+                    d.qualifications AS qualifications,
+                    d.years_experience AS yearsExperience,
+                    d.photo_key AS photoKey
+                    {joins} WHERE {where}
+                    ORDER BY u.name, d.user_id LIMIT %s OFFSET %s""",
+                tuple(values) + (page_size, (page - 1) * page_size),
+            )
+            items = cur.fetchall()
+        photo_bucket = os.environ.get("DOCTOR_PHOTOS_BUCKET")
+        for item in items:
+            photo_key = item.pop("photoKey", None)
+            item["photoUrl"] = None
+            if photo_key and photo_bucket:
+                try:
+                    item["photoUrl"] = _s3_client().generate_presigned_url(
+                        "get_object",
+                        Params={"Bucket": photo_bucket, "Key": photo_key},
+                        ExpiresIn=900,
+                    )
+                except Exception:
+                    logger.exception("Doctor search photo URL generation failed")
+        return _response(200, {
+            "items": items, "page": page, "pageSize": page_size,
+            "total": total, "totalPages": (total + page_size - 1) // page_size,
+        })
+    finally:
+        conn.close()
+
+
+def _public_doctor(doctor_id):
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT d.user_id AS doctorId, u.name AS name,
+                    sp.name AS specialisation, h.name AS hospital, h.city AS city,
+                    d.photo_key AS photoKey
+                    FROM doctors d JOIN users u ON u.user_id=d.user_id
+                    LEFT JOIN specialisations sp ON sp.specialisation_id=d.specialisation_id
+                    LEFT JOIN hospitals h ON h.hospital_id=d.hospital_id
+                    WHERE d.user_id=%s AND u.role='doctor' AND u.status='active'""",
+                (doctor_id,),
+            )
+            doctor = cur.fetchone()
+            if not doctor:
+                return _response(404, {"message": "Doctor not found"})
+            cur.execute(
+                """SELECT consultation_type_id AS consultationTypeId,
+                    name, duration_min AS durationMinutes, fee_amount AS fee
+                    FROM consultation_types
+                    WHERE doctor_user_id=%s AND is_active=1
+                    ORDER BY name""",
+                (doctor_id,),
+            )
+            doctor["consultationTypes"] = cur.fetchall()
+
+        # Return a short-lived read URL for the mandatory doctor profile photo.
+        photo_key = doctor.pop("photoKey", None)
+        bucket = os.environ.get("DOCTOR_PHOTOS_BUCKET")
+        if photo_key and bucket:
+            try:
+                doctor["photoUrl"] = _s3_client().generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": bucket, "Key": photo_key},
+                    ExpiresIn=900,
+                )
+            except Exception:
+                logger.exception("Public doctor photo URL generation failed")
+                doctor["photoUrl"] = None
+        else:
+            doctor["photoUrl"] = None
+
+        return _response(200, {"doctor": doctor})
+    finally:
+        conn.close()
+
+
+def _active_booking_counts(doctor_id, now_utc):
+    """Active (booked/confirmed) appointments per slot, straight from RDS."""
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT slot_id, COUNT(*) AS active_count
+                   FROM appointments
+                   WHERE doctor_user_id=%s AND status IN ('booked','confirmed')
+                     AND slot_start_utc > %s
+                   GROUP BY slot_id""",
+                (int(doctor_id), now_utc.replace(tzinfo=None)),
+            )
+            return {row["slot_id"]: int(row["active_count"]) for row in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+def _seconds_since(value, now_utc):
+    """Age of a slot's updatedAt (ISO string or epoch number); large if unknown."""
+    try:
+        if isinstance(value, (int, float, Decimal)):
+            return (now_utc - datetime.fromtimestamp(float(value), tz=timezone.utc)).total_seconds()
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return (now_utc - parsed).total_seconds()
+    except (TypeError, ValueError):
+        return 10 ** 9
+
+
+def _repair_slot_booked_count(slots, item, active_count, now_iso):
+    """Give back seats whose cancellation never reached DynamoDB."""
+    try:
+        slots.update_item(
+            Key={"slotId": item["slotId"]},
+            UpdateExpression="SET bookedCount = :active, #v = if_not_exists(#v, :zero) + :one, updatedAt = :now",
+            ConditionExpression="bookedCount = :observed",
+            ExpressionAttributeNames={"#v": "version"},
+            ExpressionAttributeValues={
+                ":active": int(active_count), ":observed": int(item.get("bookedCount", 0)),
+                ":zero": 0, ":one": 1, ":now": now_iso,
+            },
+        )
+        logger.warning(
+            "SLOT_BOOKED_COUNT_REPAIRED slotId=%s from=%s to=%s",
+            item["slotId"], item.get("bookedCount"), active_count,
+        )
+    except ClientError as err:
+        if err.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            logger.exception("SLOT_BOOKED_COUNT_REPAIR_FAILED slotId=%s", item.get("slotId"))
+
+
+def _public_doctor_slots(doctor_id, event):
+    params = _query(event)
+    # Reuse the existing DynamoDB query and response shape.
+    copied = dict(event)
+    query = dict(params)
+    query["doctorId"] = str(doctor_id)
+    copied["queryStringParameters"] = query
+    result = _list_slots(copied)
+    payload = json.loads(result["body"])
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    # RDS holds the real appointments. If DynamoDB still counts a seat for an
+    # appointment that was cancelled, show (and repair) the seat as free.
+    try:
+        active_counts = _active_booking_counts(doctor_id, now_dt)
+    except Exception:
+        logger.exception("SLOT_RECONCILE_UNAVAILABLE doctorId=%s", doctor_id)
+        active_counts = None
+
+    slots_table = _table("SLOTS_TABLE")
+    visible = []
+    for item in payload["items"]:
+        if item.get("startUtc", "") <= now:
+            continue
+        booked = int(item.get("bookedCount", 0))
+        if active_counts is not None:
+            active = active_counts.get(item.get("slotId"), 0)
+            if booked > active and _seconds_since(item.get("updatedAt"), now_dt) >= 120:
+                # DynamoDB still counts a cancelled appointment's seat.
+                _repair_slot_booked_count(slots_table, item, active, now)
+                booked = active
+            elif booked < active:
+                # RDS has an active appointment DynamoDB does not count; without
+                # this the slot could be double booked. RDS is never ahead
+                # legitimately (booking reserves in DynamoDB first).
+                _repair_slot_booked_count(slots_table, item, active, now)
+                booked = active
+            item["bookedCount"] = booked
+        if int(item.get("capacity", 0)) > booked:
+            item["freeSeats"] = int(item["capacity"]) - booked
+            visible.append(item)
+    payload["items"] = visible
+    payload["count"] = len(visible)
+    return _response(200, payload)
+
+
+def _get_slot(slot_id):
+    result = _table("SLOTS_TABLE").get_item(Key={"slotId": slot_id})
+    slot = result.get("Item")
+    if not slot:
+        return _response(404, {"message": "Slot not found"})
+    return _response(200, {"item": slot})
+
+
+# ---------------------------------------------------------
+# MAIN LAMBDA HANDLER
+# ---------------------------------------------------------
+
+def _lambda_handler_impl(event, context):
+    request_id = getattr(context, "aws_request_id", None)
+
+    request_context = event.get("requestContext") or {}
+
+    method = str(
+        event.get("httpMethod")
+        or (request_context.get("http") or {}).get("method")
+        or "GET"
+    ).upper()
+
+    path = _path(event)
+    user_id, role = _principal(event)
+
+    logger.info(
+        json.dumps(
+            {
+                "event": "api_request",
+                "method": method,
+                "path": path,
+                "requestId": request_id,
+                "userId": user_id,
+                "role": role,
+            }
+        )
+    )
+
+    if method == "OPTIONS":
+        return _response(200, {"message": "OK"})
+
+    public_get = (
+        path in {
+            "/health", "/reference/specialisations",
+            "/reference/hospitals", "/doctors/search", "/slots",
+        }
+        or re.fullmatch(r"/doctors/[1-9][0-9]*(?:/slots)?", path)
+        or re.fullmatch(r"/slots/[^/]+", path)
+    )
+    if not user_id and not (method == "GET" and public_get):
+        return _response(
+            401,
+            {"message": "Unauthorized"},
+        )
+
+    try:
+        # Health check
+        if method == "GET" and path == "/health":
+            return _response(
+                200,
+                {
+                    "service": "medislot-api",
+                    "status": "ok",
+                },
+            )
+
+        # Reference data
+        if (
+            method == "GET"
+            and path == "/reference/specialisations"
+        ):
+            return _reference_data("specialisations")
+
+        if (
+            method == "GET"
+            and path == "/reference/hospitals"
+        ):
+            return _reference_data("hospitals")
+
+        # Patient profile by numeric ID.
+        # A patient may only read their own profile; cross-patient requests
+        # are explicitly denied instead of falling through to the generic 404.
+        patient_id_match = re.fullmatch(r"/patients/([1-9][0-9]{0,19})", path)
+        if patient_id_match:
+            if role != "patient":
+                return _response(
+                    403,
+                    {"message": "Only patients can access patient profiles"},
+                )
+
+            requested_patient_id = patient_id_match.group(1)
+            if requested_patient_id != str(user_id):
+                return _response(
+                    403,
+                    {"message": "You are not authorized to access this patient profile"},
+                )
+
+            if method != "GET":
+                return _response(
+                    405,
+                    {"message": "Only GET is supported for /patients/{patientId}"},
+                )
+
+            return _patient_profile(user_id, method, event)
+
+        # Patient portal
+        if path == "/patients/me":
+            if role != "patient":
+                return _response(403, {"message": "Only patients can manage patient profiles"})
+            return _patient_profile(user_id, method, event)
+
+        # Patient in-app notifications
+        if method == "GET" and path == "/patients/me/notifications":
+            if role != "patient":
+                return _response(403, {"message": "Only patients can view notifications"})
+            return _patient_notifications(user_id)
+
+        # Patient appointment cancellation
+        cancel_match = re.fullmatch(r"/appointments/([1-9][0-9]*)/cancel", path)
+        if method == "POST" and cancel_match:
+            if role != "patient":
+                return _response(403, {"message": "Only patients can cancel their appointments"})
+            return _cancel_patient_appointment(int(cancel_match.group(1)), user_id)
+
+        # Patient refund ledger (strictly scoped to authenticated patient)
+        if method == "GET" and path == "/patients/me/refunds":
+            if role != "patient":
+                return _response(403, {"message": "Only patients can view their refunds"})
+            return _patient_refunds(user_id)
+
+        # Appointment detail is always scoped to the authenticated patient or doctor.
+        appointment_detail_match = re.fullmatch(r"/appointments/([1-9][0-9]*)", path)
+        if method == "GET" and appointment_detail_match:
+            return _appointment_detail(int(appointment_detail_match.group(1)), user_id, role)
+
+        # Patient appointment history (strictly scoped to authenticated patient)
+        if method == "GET" and path == "/patients/me/appointments":
+            if role != "patient":
+                return _response(403, {"message": "Only patients can view their appointments"})
+            return _patient_appointments(user_id, event)
+
+        # Public doctor discovery (before the /doctors/me routes)
+        if method == "GET" and path == "/doctors/search":
+            return _doctor_search(event)
+
+        public_match = re.fullmatch(r"/doctors/([1-9][0-9]*)(/slots)?", path)
+        if method == "GET" and public_match:
+            doctor_id = int(public_match.group(1))
+            if public_match.group(2):
+                return _public_doctor_slots(doctor_id, event)
+            return _public_doctor(doctor_id)
+
+        # Authenticated account
+        if method == "GET" and path == "/users/me":
+            return _my_account(user_id)
+
+        # Doctor profile
+        if (
+            path == "/doctors/me"
+            and role == "doctor"
+            and method in {"GET", "POST", "PUT", "PATCH"}
+        ):
+            return _doctor_profile(user_id, method, event)
+
+        # Doctor photo upload
+        if (
+            path == "/doctors/me/photo-upload"
+            and role == "doctor"
+            and method == "POST"
+        ):
+            return _presign_photo(user_id, event)
+
+        if (
+            path == "/doctors/me/photo-complete"
+            and role == "doctor"
+            and method == "POST"
+        ):
+            return _complete_photo_upload(user_id, event)
+
+        # Doctor photo display URL
+        if (
+            path == "/doctors/me/photo-url"
+            and role == "doctor"
+            and method == "GET"
+        ):
+            return _doctor_photo_url(user_id)
+
+        # Doctor-initiated cancellation of an entire slot (all affected patients receive full refunds).
+        doctor_slot_cancel = re.fullmatch(r"/doctors/me/slots/([^/]+)/cancel", path)
+        if method == "POST" and doctor_slot_cancel:
+            if role != "doctor":
+                return _response(403, {"message": "Only doctors can cancel their own slots"})
+            return _cancel_doctor_slot(doctor_slot_cancel.group(1), user_id)
+
+        # Doctor refund ledger
+        if path == "/doctors/me/refunds" and role == "doctor" and method == "GET":
+            return _doctor_refunds(user_id)
+
+        # Doctor appointments
+        if (
+            path == "/doctors/me/appointments"
+            and role == "doctor"
+            and method == "GET"
+        ):
+            return _doctor_appointments(user_id, event)
+
+        # Doctor marks an appointment completed or no-show.
+        outcome_match = re.fullmatch(
+            r"/doctors/me/appointments/([1-9][0-9]*)/status", path
+        )
+        if outcome_match and role == "doctor" and method == "PATCH":
+            return _doctor_update_appointment_outcome(
+                user_id, int(outcome_match.group(1)), event
+            )
+
+        # Doctor scheduling collections
+        routes = [
+            (
+                "/doctors/me/consultation-types",
+                "consultation_types",
+            ),
+            (
+                "/doctors/me/availability-patterns",
+                "availability_patterns",
+            ),
+            (
+                "/doctors/me/blackout-dates",
+                "blackout_dates",
+            ),
+        ]
+
+        for route, table_name in routes:
+            if path == route and role == "doctor":
+                return _collection_and_materialize(
+                    table_name,
+                    user_id,
+                    method,
+                    event,
+                )
+
+            match = re.fullmatch(
+                re.escape(route) + r"/([1-9][0-9]*)",
+                path,
+            )
+
+            if match and role == "doctor":
+                return _collection_and_materialize(
+                    table_name,
+                    user_id,
+                    method,
+                    event,
+                    int(match.group(1)),
+                )
+
+        # Doctor daily schedule
+        if (
+            path == "/doctors/me/schedule"
+            and method == "GET"
+            and role == "doctor"
+        ):
+            return _doctor_day_schedule(user_id, event)
+
+        # Slot operations
+        if method == "GET" and path == "/slots":
+            return _list_slots(event)
+
+        if method == "POST" and path == "/slots":
+            return _create_slot(event, user_id, role)
+
+        match = re.fullmatch(r"/slots/([^/]+)", path)
+
+        if method == "GET" and match:
+            return _get_slot(match.group(1))
+
+        # Patient appointment booking
+        if method == "POST" and path == "/appointments":
+            return _book_appointment(event, user_id, role)
+
+        # Patient waitlist
+        if method == "POST" and path == "/waitlist":
+            return _join_waitlist(event, user_id, role)
+
+        if method == "GET" and path == "/waitlist":
+            if role != "patient":
+                return _response(
+                    403,
+                    {
+                        "message": (
+                            "Only patients can view their waitlist"
+                        )
+                    },
+                )
+
+            return _my_waitlist(user_id)
+
+        match = re.fullmatch(r"/waitlist/([^/]+)", path)
+
+        if method == "DELETE" and match:
+            if role != "patient":
+                return _response(
+                    403,
+                    {
+                        "message": (
+                            "Only patients can leave their waitlist"
+                        )
+                    },
+                )
+
+            return _leave_waitlist(
+                match.group(1),
+                user_id,
+            )
+
+        return _response(
+            404,
+            {
+                "message": "Route not found",
+                "path": path,
+                "method": method,
+            },
+        )
+
+    except (
+        ValueError,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+    ) as exc:
+        return _response(
+            400,
+            {"message": str(exc)},
+        )
+
+    except (
+        BotoCoreError,
+        ClientError,
+        pymysql.MySQLError,
+        RuntimeError,
+    ):
+        logger.exception(
+            json.dumps(
+                {
+                    "event": "api_dependency_error",
+                    "requestId": request_id,
+                }
+            )
+        )
+
+        return _response(
+            500,
+            {
+                "message": "Request could not be completed",
+                "requestId": request_id,
+            },
+        )
+
+    except Exception:
+        logger.exception(
+            json.dumps(
+                {
+                    "event": "api_unexpected_error",
+                    "requestId": request_id,
+                }
+            )
+        )
+
+        return _response(
+            500,
+            {
+                "message": "Internal server error",
+                "requestId": request_id,
+            },
+        )
+
+def _log_http_response(event, context, result, started_at):
+    """Emit one safe, structured response record for every HTTP invocation."""
+    import time as _time
+    status = int((result or {}).get("statusCode", 500))
+    if 200 <= status < 300:
+        level, outcome = "info", "success"
+    elif status in (401, 403):
+        level, outcome = "warning", "access_denied"
+    elif status == 409:
+        level, outcome = "info", "business_conflict"
+    elif status == 404:
+        level, outcome = "info", "resource_not_found"
+    elif 400 <= status < 500:
+        level, outcome = "warning", "client_rejected"
+    else:
+        level, outcome = "error", "server_failure"
+    headers = {str(k).lower(): v for k, v in (event.get("headers") or {}).items()}
+    rc = event.get("requestContext") or {}
+    http = rc.get("http") or {}
+    record = {
+        "event": "http_response",
+        "service": 'application-api',
+        "method": event.get("httpMethod") or http.get("method"),
+        "path": event.get("path") or event.get("rawPath"),
+        "statusCode": status,
+        "statusDescription": (
+            "Request processed successfully" if 200 <= status < 300 else
+            "Authentication is missing, invalid, expired, or inactive" if status == 401 else
+            "Authenticated user is not permitted to perform this operation" if status == 403 else
+            "Requested resource or route was not found" if status == 404 else
+            "Request conflicts with the current resource or idempotency state" if status == 409 else
+            "Request validation or method check was rejected" if 400 <= status < 500 else
+            "Unexpected application or dependency failure"
+        ),
+        "outcome": outcome,
+        "requestId": getattr(context, "aws_request_id", None),
+        "correlationId": headers.get("x-correlation-id") or rc.get("requestId"),
+        "durationMs": round((_time.monotonic() - started_at) * 1000, 2),
+    }
+    payload = json.dumps(record, default=str, separators=(",", ":"))
+    getattr(logger, level)(payload)
+
+
+def lambda_handler(event, context):
+    import time as _time
+    started_at = _time.monotonic()
+    result = _lambda_handler_impl(event, context)
+    _log_http_response(event or {}, context, result, started_at)
+    return result
+
