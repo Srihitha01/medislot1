@@ -12,12 +12,16 @@ DROP TEMPORARY TABLE IF EXISTS tmp_ct;
 DROP TEMPORARY TABLE IF EXISTS tmp_pat;
 DROP TEMPORARY TABLE IF EXISTS tmp_bl;
 CREATE TEMPORARY TABLE tmp_doc (email VARCHAR(254), first_name VARCHAR(75), last_name VARCHAR(75),
-  spec VARCHAR(100), license VARCHAR(50), years TINYINT UNSIGNED, quals VARCHAR(500), langs VARCHAR(200));
+  spec VARCHAR(100), license VARCHAR(50), years TINYINT UNSIGNED, quals VARCHAR(500), langs VARCHAR(200))
+  ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 CREATE TEMPORARY TABLE tmp_ct (email VARCHAR(254), name VARCHAR(40), duration SMALLINT UNSIGNED,
-  fee DECIMAL(10,2), capacity TINYINT UNSIGNED, active TINYINT(1));
-CREATE TEMPORARY TABLE tmp_pat (email VARCHAR(254), ctype VARCHAR(40), dow TINYINT UNSIGNED, st TIME, et TIME);
+  fee DECIMAL(10,2), capacity TINYINT UNSIGNED, active TINYINT(1))
+  ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE TEMPORARY TABLE tmp_pat (email VARCHAR(254), ctype VARCHAR(40), dow TINYINT UNSIGNED, st TIME, et TIME)
+  ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 CREATE TEMPORARY TABLE tmp_bl (email VARCHAR(254), bdate DATE, reason VARCHAR(200),
-  full_day TINYINT(1), st TIME NULL, et TIME NULL);
+  full_day TINYINT(1), st TIME NULL, et TIME NULL)
+  ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO tmp_doc VALUES
   ('ananya.reddy@medislot.demo','Ananya','Reddy','General Medicine','TSMC-D1001',12,'MBBS, MD (General Medicine)','English, Telugu, Hindi'),
