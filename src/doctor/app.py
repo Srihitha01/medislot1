@@ -3599,31 +3599,32 @@ def _patient_appointments(user_id, event):
         conn.close()
 
 
+_APPOINTMENT_DETAIL_SELECT = (
+    "SELECT a.appointment_id AS appointmentId, a.patient_user_id AS patientId, "
+    "a.doctor_user_id AS doctorId, a.slot_id AS slotId, "
+    "a.slot_start_utc AS slotStartUtc, a.slot_end_utc AS slotEndUtc, "
+    "a.status, a.fee_amount AS feeAmount, "
+    "r.refund_id AS refundId, r.reason AS refundReason, "
+    "r.tier AS refundTier, r.refund_percent AS refundPercent, "
+    "r.refund_amount AS refundAmount, r.created_at AS refundCreatedAt "
+    "FROM appointments a LEFT JOIN refund_ledger r "
+    "ON r.appointment_id=a.appointment_id "
+)
+
+# One static query per role, so no SQL text is built at request time.
+_APPOINTMENT_DETAIL_SQL = {
+    "patient": _APPOINTMENT_DETAIL_SELECT
+    + "WHERE a.appointment_id=%s AND a.patient_user_id=%s LIMIT 1",
+    "doctor": _APPOINTMENT_DETAIL_SELECT
+    + "WHERE a.appointment_id=%s AND a.doctor_user_id=%s LIMIT 1",
+}
+
+
 def _appointment_detail(appointment_id, user_id, role):
     """Fetch one appointment only when the authenticated patient or doctor owns it."""
-    if role not in {"patient", "doctor"}:
+    sql = _APPOINTMENT_DETAIL_SQL.get(role)
+    if sql is None:
         return _response(403, {"message": "Only patients and doctors can view appointment details"})
-    # Keep SQL identifiers static. Values remain parameterized in execute().
-    if role == "patient":
-        sql = """SELECT a.appointment_id AS appointmentId, a.patient_user_id AS patientId,
-                         a.doctor_user_id AS doctorId, a.slot_id AS slotId,
-                         a.slot_start_utc AS slotStartUtc, a.slot_end_utc AS slotEndUtc,
-                         a.status, a.fee_amount AS feeAmount,
-                         r.refund_id AS refundId, r.reason AS refundReason,
-                         r.tier AS refundTier, r.refund_percent AS refundPercent,
-                         r.refund_amount AS refundAmount, r.created_at AS refundCreatedAt
-                  FROM appointments a LEFT JOIN refund_ledger r ON r.appointment_id=a.appointment_id
-                  WHERE a.appointment_id=%s AND a.patient_user_id=%s LIMIT 1"""
-    else:
-        sql = """SELECT a.appointment_id AS appointmentId, a.patient_user_id AS patientId,
-                         a.doctor_user_id AS doctorId, a.slot_id AS slotId,
-                         a.slot_start_utc AS slotStartUtc, a.slot_end_utc AS slotEndUtc,
-                         a.status, a.fee_amount AS feeAmount,
-                         r.refund_id AS refundId, r.reason AS refundReason,
-                         r.tier AS refundTier, r.refund_percent AS refundPercent,
-                         r.refund_amount AS refundAmount, r.created_at AS refundCreatedAt
-                  FROM appointments a LEFT JOIN refund_ledger r ON r.appointment_id=a.appointment_id
-                  WHERE a.appointment_id=%s AND a.doctor_user_id=%s LIMIT 1"""
     conn = _db_connection()
     try:
         with conn.cursor() as cur:
