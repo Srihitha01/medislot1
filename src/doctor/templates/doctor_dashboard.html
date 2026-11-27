@@ -2404,10 +2404,11 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
                             <th>Booked</th>
                             <th>Capacity</th>
                             <th>Status</th>
+                            <th>Action</th>
                         </tr>
                     </thead>
                     <tbody id="slotsTable">
-                        <tr><td colspan="6" class="empty">Choose a date to view slots.</td></tr>
+                        <tr><td colspan="7" class="empty">Choose a date to view slots.</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -2981,7 +2982,7 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
         const items = result.items || [];
         const table = $("slotsTable");
         if (!items.length) {
-            table.innerHTML = `<tr><td colspan="6" class="empty">No appointment slots found for this date.</td></tr>`;
+            table.innerHTML = `<tr><td colspan="7" class="empty">No appointment slots found for this date.</td></tr>`;
             return;
         }
         table.innerHTML = items.map(slot => `
@@ -2992,8 +2993,56 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
                 <td>${escapeHTML(slot.bookedCount ?? 0)}</td>
                 <td>${escapeHTML(slot.capacity ?? 0)}</td>
                 <td>${statusBadge(slot.status)}</td>
+                <td>${slotCancelButton(slot)}</td>
             </tr>`
         ).join("");
+    }
+
+    // A doctor can cancel a future slot that is still open or full. The API
+    // refunds every booked patient in full and notifies each of them.
+    function canCancelSlot(slot) {
+        const status = String(slot.status || "").toUpperCase();
+        if (!slot.slotId || !["OPEN", "FULL"].includes(status)) return false;
+        const start = new Date(slot.startUtc);
+        return !Number.isNaN(start.getTime()) && start > new Date();
+    }
+
+    function slotCancelButton(slot) {
+        if (!canCancelSlot(slot)) return `<span class="muted-note">—</span>`;
+        return `<button type="button" class="btn btn-danger btn-small" data-cancel-slot="${escapeHTML(slot.slotId)}" data-booked="${escapeHTML(Number(slot.bookedCount || 0))}" data-time="${escapeHTML(formatTime(slot.startUtc))}">Cancel slot</button>`;
+    }
+
+    async function cancelSlot(button) {
+        const slotId = button.dataset.cancelSlot;
+        const booked = Number(button.dataset.booked || 0);
+        const time = button.dataset.time || "this slot";
+        const warning = booked > 0
+            ? `Cancel the ${time} slot? ${booked} booked patient${booked === 1 ? "" : "s"} will be notified and receive a full refund.`
+            : `Cancel the ${time} slot? No patients are booked on it.`;
+        if (!window.confirm(warning)) return;
+
+        button.disabled = true;
+        const originalLabel = button.textContent;
+        button.textContent = "Cancelling…";
+        try {
+            const result = await apiRequest(
+                `/doctors/me/slots/${encodeURIComponent(slotId)}/cancel`,
+                "POST",
+                {}
+            );
+            const count = Number(result.cancelledAppointments || 0);
+            showMessage(
+                count > 0
+                    ? `Slot cancelled. ${count} patient${count === 1 ? " was" : "s were"} notified and fully refunded.`
+                    : "Slot cancelled.",
+                "success"
+            );
+            await Promise.all([loadSlots(), loadSchedule()]);
+        } catch (error) {
+            button.disabled = false;
+            button.textContent = originalLabel;
+            handleError(error);
+        }
     }
 
     function consultationCardIcon(name) {
@@ -3794,6 +3843,11 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
 
     $("slotDate").addEventListener("change", () => {
         loadSlots().catch(handleError);
+    });
+
+    $("slotsTable").addEventListener("click", event => {
+        const button = event.target.closest("[data-cancel-slot]");
+        if (button) cancelSlot(button);
     });
 
     // Initial dashboard loading.
