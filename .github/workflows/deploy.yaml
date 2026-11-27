@@ -659,8 +659,9 @@ jobs:
 
           test -s src/auth/schema_init/schema_init.py
           test -s src/auth/schema_init/schema.sql
+          test -s database/seed_doctor_availability.sql
 
-          echo "Found schema initializer and src/auth/schema_init/schema.sql."
+          echo "Found schema initializer, schema.sql and database/seed_doctor_availability.sql."
 
       - name: Build and package authentication Lambda code with AWS CLI
         shell: bash
@@ -675,6 +676,8 @@ jobs:
 
           cp -a src/auth/. .build/auth-package/
           cp -a src/slots/materializer/. .build/materializer-package/
+          install -D database/seed_doctor_availability.sql \
+            .build/auth-package/schema_init/seed_doctor_availability.sql
 
           python -m pip install --disable-pip-version-check --no-compile \
             --target .build/auth-package \
@@ -693,6 +696,7 @@ jobs:
 
           test -s .build/auth-package/schema_init/schema_init.py
           test -s .build/auth-package/schema_init/schema.sql
+          test -s .build/auth-package/schema_init/seed_doctor_availability.sql
           test -s .build/materializer-package/materializer.py
 
           python - <<'PYCODE'
@@ -929,6 +933,82 @@ jobs:
                   )
 
           print("Database schema initialization succeeded.")
+          PY
+
+      - name: Seed demo doctors and availability (dev/test only, once)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FUNCTION_NAME="medislot-${ENVIRONMENT}-schema-init"
+
+          aws lambda invoke \
+            --function-name "$FUNCTION_NAME" \
+            --invocation-type RequestResponse \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{"action":"seed_demo_doctors"}' \
+            /tmp/demo-seed-response.json \
+            > /tmp/demo-seed-metadata.json
+
+          cat /tmp/demo-seed-metadata.json
+          cat /tmp/demo-seed-response.json
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          metadata = json.loads(Path("/tmp/demo-seed-metadata.json").read_text())
+          if metadata.get("FunctionError"):
+              raise SystemExit("Demo seed Lambda returned FunctionError")
+
+          result = json.loads(Path("/tmp/demo-seed-response.json").read_text())
+          if result.get("statusCode") != 200:
+              raise SystemExit(f"Demo data seeding failed: {result}")
+
+          body = result.get("body", {})
+          if isinstance(body, str):
+              body = json.loads(body)
+          if not isinstance(body, dict) or body.get("status") != "ok":
+              raise SystemExit(f"Unexpected demo seed response: {result}")
+
+          print(body.get("message", "Demo doctor seed completed"))
+          PY
+
+      - name: Materialize slots for seeded doctors
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FUNCTION_NAME="medislot-${ENVIRONMENT}-slot-materializer"
+
+          aws lambda invoke \
+            --function-name "$FUNCTION_NAME" \
+            --invocation-type RequestResponse \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{}' \
+            /tmp/demo-slots-response.json \
+            > /tmp/demo-slots-metadata.json
+
+          cat /tmp/demo-slots-metadata.json
+          cat /tmp/demo-slots-response.json
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          metadata = json.loads(Path("/tmp/demo-slots-metadata.json").read_text())
+          if metadata.get("FunctionError"):
+              raise SystemExit("Slot materializer returned FunctionError")
+
+          result = json.loads(Path("/tmp/demo-slots-response.json").read_text())
+          if result.get("status") != "ok":
+              raise SystemExit(f"Slot materialization failed: {result}")
+
+          print(
+              "Seeded doctor slots materialized: "
+              f"created={result.get('created', 0)}, "
+              f"examined={result.get('examined', 0)}"
+          )
           PY
 
   # ============================================================

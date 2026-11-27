@@ -19,6 +19,8 @@ logger.setLevel(logging.INFO)
 AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+DEMO_SEED_PATH = Path(__file__).with_name("seed_doctor_availability.sql")
+DEMO_SEED_KEY = "demo-doctor-availability-v1"
 
 # Do not initialize AWS clients during module import.
 _ssm = None
@@ -490,6 +492,63 @@ def _remove_availability_exceptions(cursor, database):
     )
 
 
+
+def _seed_demo_doctors(cursor):
+    """Apply the bundled demo-doctor seed once, without rebuilding it on every deploy.
+
+    A seed-run ledger prevents repeated deployments from deleting and recreating
+    demo availability/blackout rows after a user has edited those schedules.
+    """
+    if not DEMO_SEED_PATH.is_file():
+        raise FileNotFoundError(f"Demo seed SQL not found: {DEMO_SEED_PATH}")
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS medislot_seed_runs (
+            seed_key VARCHAR(100) NOT NULL PRIMARY KEY,
+            applied_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+    )
+    cursor.execute(
+        "SELECT seed_key FROM medislot_seed_runs WHERE seed_key = %s LIMIT 1",
+        (DEMO_SEED_KEY,)
+    )
+    if cursor.fetchone():
+        logger.info("Demo doctor seed already applied; skipping")
+        return False
+
+    content = DEMO_SEED_PATH.read_text(encoding="utf-8")
+    # This source file contains ordinary MySQL statements and whole-line SQL
+    # comments; it does not contain stored procedures or delimiter directives.
+    statements = []
+    for line in content.splitlines():
+        if line.lstrip().startswith("--"):
+            continue
+        statements.append(line)
+
+    sql = "\n".join(statements)
+    for index, statement in enumerate(sql.split(";"), start=1):
+        statement = statement.strip()
+        if not statement:
+            continue
+        try:
+            cursor.execute(statement)
+        except Exception as exc:
+            logger.exception("Demo seed statement %d failed", index)
+            try:
+                exc.failed_step = f"demo seed statement {index}"
+            except Exception:
+                pass
+            raise
+
+    cursor.execute(
+        "INSERT INTO medislot_seed_runs (seed_key) VALUES (%s)",
+        (DEMO_SEED_KEY,)
+    )
+    logger.info("Demo doctor availability seed applied successfully")
+    return True
+
 # ---------------------------------------------------------
 # MAIN LAMBDA HANDLER
 # ---------------------------------------------------------
@@ -502,6 +561,9 @@ def _lambda_handler_impl(event, context):
         Initialize missing schema tables.
         Refuse existing UUID-based user IDs.
 
+    seed_demo_doctors:
+        Apply the bundled demo doctor/availability SQL once.
+
     reset:
         Destructive reset, restricted to dev/test and
         requiring explicit confirmation.
@@ -512,7 +574,7 @@ def _lambda_handler_impl(event, context):
 
     action = event.get("action", "initialize")
 
-    if action not in ("initialize", "reset"):
+    if action not in ("initialize", "seed_demo_doctors", "reset"):
         raise ValueError("Unknown action")
 
     environment = os.environ.get(
@@ -546,6 +608,25 @@ def _lambda_handler_impl(event, context):
         )
 
         with conn.cursor() as cursor:
+
+            if action == "seed_demo_doctors":
+                if environment not in ("dev", "test"):
+                    raise ValueError("Demo data seeding is allowed only in dev or test")
+
+                if _uses_old_uuid_ids(cursor, database):
+                    raise RuntimeError("Cannot seed demo data into the legacy UUID-based schema")
+
+                applied = _seed_demo_doctors(cursor)
+                conn.commit()
+                return response(
+                    200,
+                    {
+                        "status": "ok",
+                        "seed": "demo-doctor-availability-v1",
+                        "applied": applied,
+                        "message": "Demo doctor data seeded" if applied else "Demo doctor seed was already applied; no changes made"
+                    }
+                )
 
             # -------------------------------------------------
             # INITIALIZE
