@@ -1,6 +1,6 @@
 """Live tests against deployed API; no mocks. Creates isolated test patients by default."""
 import os
-import uuid
+import time
 import requests
 from datetime import datetime, timedelta, timezone
 
@@ -23,7 +23,7 @@ def main():
         raise ValueError("TEST_REGISTRATION_PASSWORD must have at least 8 characters")
 
     def create_patient(label):
-        email = "medislot-ci-" + uuid.uuid4().hex[:16] + "@" + domain
+        email = "medislot-ci-" + str(time.time_ns()) + "-" + label.lower() + "@" + domain
         created = call("POST", "/auth/register", json={
             "role": "patient", "name": "MediSlot CI " + label,
             "email": email, "password": password, "phone": "9999999999",

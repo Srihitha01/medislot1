@@ -2891,6 +2891,91 @@ def _patient_refunds(user_id):
     return _refund_ledger_rows(_PATIENT_REFUNDS_SQL, user_id)
 
 
+def _cancel_doctor_slot(slot_id, doctor_id):
+    """Doctor cancels their own future slot; every active patient receives a full ledger refund."""
+    if not isinstance(slot_id, str) or not slot_id.strip() or len(slot_id) > 100:
+        return _response(400, {"message": "A valid slotId is required"})
+    slot_id = slot_id.strip()
+    conn = _db_connection()
+    cancelled = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT appointment_id, patient_user_id, doctor_user_id, slot_id,
+                          slot_start_utc, fee_amount
+                   FROM appointments
+                   WHERE slot_id=%s AND doctor_user_id=%s
+                     AND status IN ('booked','confirmed')
+                   ORDER BY appointment_id
+                   FOR UPDATE""",
+                (slot_id, int(doctor_id)),
+            )
+            appointments = cur.fetchall()
+            if not appointments:
+                conn.rollback()
+                return _response(404, {"message": "No active appointments were found for this slot"})
+            now = datetime.now(timezone.utc)
+            if any(row["slot_start_utc"].replace(tzinfo=timezone.utc) <= now for row in appointments):
+                conn.rollback()
+                return _response(409, {"message": "A slot containing a started appointment cannot be cancelled"})
+            for row in appointments:
+                appointment_id = int(row["appointment_id"])
+                patient_id = int(row["patient_user_id"])
+                fee = Decimal(str(row["fee_amount"]))
+                cur.execute(
+                    """UPDATE appointments SET status='cancelled', active_flag=NULL,
+                              updated_at=CURRENT_TIMESTAMP(3)
+                       WHERE appointment_id=%s AND doctor_user_id=%s
+                         AND status IN ('booked','confirmed')""",
+                    (appointment_id, int(doctor_id)),
+                )
+                if cur.rowcount != 1:
+                    raise RuntimeError(f"Appointment {appointment_id} changed during doctor slot cancellation")
+                cur.execute(
+                    """INSERT INTO refund_ledger
+                       (appointment_id, patient_user_id, reason, tier, refund_percent, fee_amount, refund_amount)
+                       VALUES (%s,%s,'DOCTOR_CANCEL','DOCTOR_FULL',100,%s,%s)""",
+                    (appointment_id, patient_id, fee, fee),
+                )
+                cur.execute("SELECT email FROM users WHERE user_id=%s AND role='patient'", (patient_id,))
+                patient = cur.fetchone() or {}
+                cancelled.append({
+                    "appointmentId": appointment_id, "patientId": patient_id,
+                    "email": patient.get("email"), "fee": fee,
+                })
+            conn.commit()
+        # Mark the slot unavailable after the durable RDS transaction. Never expose it as a free seat.
+        try:
+            _table("SLOTS_TABLE").update_item(
+                Key={"slotId": slot_id},
+                UpdateExpression="SET #st=:cancelled, updatedAt=:now, #v=if_not_exists(#v,:zero)+:one",
+                ConditionExpression="attribute_exists(slotId) AND doctorId=:doctor",
+                ExpressionAttributeNames={"#st": "status", "#v": "version"},
+                ExpressionAttributeValues={":cancelled": "CANCELLED", ":now": datetime.now(timezone.utc).isoformat(), ":zero": 0, ":one": 1, ":doctor": str(doctor_id)},
+            )
+        except Exception:
+            logger.exception("DOCTOR_SLOT_MARK_CANCELLED_FAILED slotId=%s doctorId=%s", slot_id, doctor_id)
+            # RDS remains authoritative for appointments; report partial completion for operational repair.
+            return _response(500, {"message": "Appointments were cancelled and fully refunded, but the slot status update failed", "slotId": slot_id, "cancelledAppointments": len(cancelled), "requiresSlotReconciliation": True})
+        for item in cancelled:
+            aid, pid, fee = item["appointmentId"], item["patientId"], item["fee"]
+            _publish_medislot_event("AppointmentCancelled", {"appointmentId": aid, "patientId": pid, "doctorId": int(doctor_id), "slotId": slot_id, "refundPercent": 100, "refundAmount": str(fee), "refundTier": "DOCTOR_FULL", "cancelledBy": "DOCTOR"})
+            _put_cancellation_tier_metric("DOCTOR_FULL")
+            message = f"Your appointment #{aid} was cancelled by the doctor. A full refund of ₹{fee} has been recorded. No online payment was taken, so this is a ledger record, not a payment transfer."
+            _notify_patient(pid, aid, "APPOINTMENT_CANCELLED", "Appointment cancelled by doctor", message, item["email"])
+        return _response(200, {"message": "Doctor slot cancelled; all affected appointments received full refund ledger entries", "slotId": slot_id, "cancelledAppointments": len(cancelled), "refundPercent": 100, "refundTotal": str(sum((x["fee"] for x in cancelled), Decimal("0.00"))), "paymentStatus": "LEDGER_ONLY_NO_PAYMENT_GATEWAY"})
+    except pymysql.err.IntegrityError:
+        conn.rollback()
+        logger.exception("DOCTOR_SLOT_REFUND_LEDGER_CONFLICT slotId=%s", slot_id)
+        return _response(409, {"message": "A refund ledger entry already exists for an affected appointment"})
+    except Exception:
+        conn.rollback()
+        logger.exception("DOCTOR_SLOT_CANCELLATION_FAILED slotId=%s doctorId=%s", slot_id, doctor_id)
+        return _response(500, {"message": "Doctor slot cancellation failed"})
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------
 # PATIENT PORTAL: PROFILE AND PUBLIC DOCTOR DISCOVERY
 # ---------------------------------------------------------
@@ -3276,7 +3361,9 @@ def _cancel_patient_appointment(appointment_id, patient_id):
             "Any refund will be handled by the clinic."
         )
         _notify_patient(patient_id, appointment_id, "APPOINTMENT_CANCELLED", "Appointment cancelled", msg, patient_email)
-        _publish_medislot_event("AppointmentCancelled", {"appointmentId": int(appointment_id), "patientId": int(patient_id), "slotId": slot_id, "refundPercent": percent, "refundAmount": str(refund), "refundTier": tier})
+        _publish_medislot_event("AppointmentCancelled", {"appointmentId": int(appointment_id), "patientId": int(patient_id), "slotId": slot_id, "refundPercent": percent, "refundAmount": str(refund), "refundTier": tier, "cancelledBy": "PATIENT"})
+        if released:
+            _publish_medislot_event("SlotSeatFreed", {"slotId": slot_id, "appointmentId": int(appointment_id), "patientId": int(patient_id), "availableSeatsIncremented": 1})
         _put_cancellation_tier_metric(tier)
         return _response(200, {
             "message": "Appointment cancelled and refund recorded",
@@ -3358,6 +3445,37 @@ def _patient_appointments(user_id, event):
             for key in ("slotStartUtc", "slotEndUtc", "refundCreatedAt"):
                 row[key] = _utc_z(row.get(key))
         return _response(200, {"items": rows, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+def _appointment_detail(appointment_id, user_id, role):
+    """Fetch one appointment only when the authenticated patient or doctor owns it."""
+    if role not in {"patient", "doctor"}:
+        return _response(403, {"message": "Only patients and doctors can view appointment details"})
+    owner_column = "a.patient_user_id" if role == "patient" else "a.doctor_user_id"
+    sql = f"""SELECT a.appointment_id AS appointmentId, a.patient_user_id AS patientId,
+                     a.doctor_user_id AS doctorId, a.slot_id AS slotId,
+                     a.slot_start_utc AS slotStartUtc, a.slot_end_utc AS slotEndUtc,
+                     a.status, a.fee_amount AS feeAmount,
+                     r.refund_id AS refundId, r.reason AS refundReason,
+                     r.tier AS refundTier, r.refund_percent AS refundPercent,
+                     r.refund_amount AS refundAmount, r.created_at AS refundCreatedAt
+              FROM appointments a LEFT JOIN refund_ledger r ON r.appointment_id=a.appointment_id
+              WHERE a.appointment_id=%s AND {owner_column}=%s LIMIT 1"""
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, (int(appointment_id), int(user_id)))
+            row = cur.fetchone()
+        if not row:
+            return _response(404, {"message": "Appointment not found"})
+        for key in ("slotStartUtc", "slotEndUtc", "refundCreatedAt"):
+            row[key] = _utc_z(row.get(key))
+        for key in ("feeAmount", "refundAmount"):
+            if row.get(key) is not None:
+                row[key] = str(row[key])
+        return _response(200, {"appointment": row})
     finally:
         conn.close()
 
@@ -3687,6 +3805,11 @@ def _lambda_handler_impl(event, context):
                 return _response(403, {"message": "Only patients can view their refunds"})
             return _patient_refunds(user_id)
 
+        # Appointment detail is always scoped to the authenticated patient or doctor.
+        appointment_detail_match = re.fullmatch(r"/appointments/([1-9][0-9]*)", path)
+        if method == "GET" and appointment_detail_match:
+            return _appointment_detail(int(appointment_detail_match.group(1)), user_id, role)
+
         # Patient appointment history (strictly scoped to authenticated patient)
         if method == "GET" and path == "/patients/me/appointments":
             if role != "patient":
@@ -3738,6 +3861,13 @@ def _lambda_handler_impl(event, context):
             and method == "GET"
         ):
             return _doctor_photo_url(user_id)
+
+        # Doctor-initiated cancellation of an entire slot (all affected patients receive full refunds).
+        doctor_slot_cancel = re.fullmatch(r"/doctors/me/slots/([^/]+)/cancel", path)
+        if method == "POST" and doctor_slot_cancel:
+            if role != "doctor":
+                return _response(403, {"message": "Only doctors can cancel their own slots"})
+            return _cancel_doctor_slot(doctor_slot_cancel.group(1), user_id)
 
         # Doctor refund ledger
         if path == "/doctors/me/refunds" and role == "doctor" and method == "GET":

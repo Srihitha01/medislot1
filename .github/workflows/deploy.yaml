@@ -69,6 +69,7 @@ jobs:
           python -m pip install cfn-lint bandit tzdata
           python -m pip install -r src/auth/requirements.txt
           python -m pip install -r src/slots/materializer/requirements.txt
+          python -m pip install pytest requests
 
       - name: Check required templates and lint CloudFormation
         shell: bash
@@ -120,8 +121,12 @@ jobs:
           echo "All Doctor Dashboard application files are present."
 
       - name: Compile Python source
-        run: python -m compileall -q src
+        run: python -m compileall -q src scripts
 
+      - name: Run Milestone 5 refund and API contract tests
+        env:
+          PYTHONPATH: src/api
+        run: pytest -q src/api/tests
 
       - name: Scan Python source
         run: bandit -r src -ll
