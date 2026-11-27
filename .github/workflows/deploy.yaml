@@ -68,6 +68,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install cfn-lint bandit tzdata
           python -m pip install -r src/auth/requirements.txt
+          python -m pip install -r src/api/requirements.txt
           python -m pip install -r src/slots/materializer/requirements.txt
           python -m pip install pytest requests "moto[dynamodb,sns]>=5,<6"
 

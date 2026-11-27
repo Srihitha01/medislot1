@@ -43,8 +43,44 @@ logger.setLevel(logging.INFO)
 
 _DDB = None
 _SSM = None
-_EVENTS = boto3.client("events")
-_CLOUDWATCH = boto3.client("cloudwatch")
+_EVENTS = None
+_CLOUDWATCH = None
+
+
+def _aws_region() -> str:
+    """
+    Resolve the deployment region from the runtime environment.
+
+    Lambda provides AWS_REGION automatically. For local development and tests,
+    AWS_DEFAULT_REGION may be supplied. No deployment region is hardcoded.
+    """
+    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+    if not region:
+        raise RuntimeError(
+            "AWS region is not configured. Set AWS_REGION in Lambda or "
+            "AWS_DEFAULT_REGION for local execution."
+        )
+    return region
+
+
+def _aws_client(service_name: str, **kwargs):
+    """Create an AWS SDK client in the explicitly configured deployment region."""
+    kwargs.setdefault("region_name", _aws_region())
+    return boto3.client(service_name, **kwargs)
+
+
+def _events_client():
+    global _EVENTS
+    if _EVENTS is None:
+        _EVENTS = _aws_client("events")
+    return _EVENTS
+
+
+def _cloudwatch_client():
+    global _CLOUDWATCH
+    if _CLOUDWATCH is None:
+        _CLOUDWATCH = _aws_client("cloudwatch")
+    return _CLOUDWATCH
 
 
 # ---------------------------------------------------------
@@ -55,7 +91,7 @@ def _dynamodb():
     global _DDB
 
     if _DDB is None:
-        _DDB = boto3.resource("dynamodb")
+        _DDB = boto3.resource("dynamodb", region_name=_aws_region())
 
     return _DDB
 
@@ -64,7 +100,7 @@ def _ssm():
     global _SSM
 
     if _SSM is None:
-        _SSM = boto3.client("ssm")
+        _SSM = _aws_client("ssm")
 
     return _SSM
 
@@ -1072,7 +1108,7 @@ def _s3_client():
     """Regional SigV4 client so presigned URLs work from the browser (no 307 redirect)."""
     from botocore.config import Config as _Cfg
 
-    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+    region = _aws_region()
     return boto3.client(
         "s3",
         region_name=region,
@@ -2040,7 +2076,7 @@ def _dispatch_materializer(
     if date_to:
         payload["dateTo"] = str(date_to)
 
-    boto3.client(
+    _aws_client(
         "lambda",
         config=_Cfg(
             connect_timeout=3,
@@ -2335,7 +2371,7 @@ def _publish_medislot_event(detail_type, detail):
     """Publish a domain event. Failures are logged; callers must not undo committed SQL."""
     bus_name = os.environ.get("EVENT_BUS_NAME", "default")
     try:
-        result = _EVENTS.put_events(Entries=[{
+        result = _events_client().put_events(Entries=[{
             "EventBusName": bus_name,
             "Source": "medislot.appointments",
             "DetailType": detail_type,
@@ -2354,7 +2390,7 @@ def _publish_medislot_event(detail_type, detail):
 
 def _put_booking_retry_metric(retries):
     try:
-        _CLOUDWATCH.put_metric_data(
+        _cloudwatch_client().put_metric_data(
             Namespace="MediSlot/Bookings",
             MetricData=[{
                 "MetricName": "BookingConflictRetries",
@@ -2368,9 +2404,25 @@ def _put_booking_retry_metric(retries):
         logger.exception("Unable to publish BookingConflictRetries metric")
 
 
+def _put_booking_conditional_conflict_metric():
+    """Count every failed conditional capacity write, including full-slot conflicts."""
+    try:
+        _cloudwatch_client().put_metric_data(
+            Namespace="MediSlot/Bookings",
+            MetricData=[{
+                "MetricName": "BookingConditionalConflicts",
+                "Unit": "Count",
+                "Value": 1,
+                "Timestamp": datetime.now(timezone.utc),
+            }],
+        )
+    except Exception:
+        logger.exception("Unable to publish BookingConditionalConflicts metric")
+
+
 def _put_cancellation_tier_metric(tier):
     try:
-        _CLOUDWATCH.put_metric_data(
+        _cloudwatch_client().put_metric_data(
             Namespace="MediSlot/Appointments",
             MetricData=[{
                 "MetricName": "CancellationsByTier",
@@ -2625,7 +2677,9 @@ def _book_appointment(event, user_id, role):
             try:
                 updated = slots.update_item(
                     Key={"slotId": slot_id},
-                    UpdateExpression="SET bookedCount = if_not_exists(bookedCount, :zero) + :one, #ver = :next, updatedAt = :now",
+                    UpdateExpression=("SET bookedCount = if_not_exists(bookedCount, :zero) + :one, "
+                                      "pendingReservations = if_not_exists(pendingReservations, :zero) + :one, "
+                                      "#ver = :next, updatedAt = :now"),
                     ConditionExpression=(
                         "attribute_exists(slotId) AND #st = :open "
                         "AND bookedCount < #cap AND startUtc > :now "
@@ -2643,6 +2697,7 @@ def _book_appointment(event, user_id, role):
             except ClientError as conflict:
                 if conflict.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                     raise
+                _put_booking_conditional_conflict_metric()
                 latest = slots.get_item(Key={"slotId": slot_id}, ConsistentRead=True).get("Item")
                 if not latest or latest.get("status") != "OPEN" or int(latest.get("bookedCount", 0)) >= int(latest.get("capacity", 0)) or str(latest.get("startUtc", "")) <= now:
                     _put_booking_retry_metric(retries)
@@ -2696,6 +2751,7 @@ def _book_appointment(event, user_id, role):
             patient_email = patient_record.get("email")
         conn.commit()
         committed = True
+        _finish_slot_reservation(slots, slot_id, now)
         details = _appointment_details_text(appointment_id)
         booking_message = (
             f"Your appointment #{appointment_id} is confirmed.\n\n"
@@ -2784,17 +2840,36 @@ def _book_appointment(event, user_id, role):
             conn.close()
 
 
-def _release_slot_reservation(slots, slot_id, now):
-    """Best-effort compensation for a reserved slot after SQL failure."""
+def _finish_slot_reservation(slots, slot_id, now):
+    """Mark an RDS-persisted booking as no longer in-flight."""
     try:
         slots.update_item(
             Key={"slotId": slot_id},
-            UpdateExpression="SET bookedCount = bookedCount - :one, updatedAt = :now",
-            ConditionExpression="bookedCount >= :one",
-            ExpressionAttributeValues={":one": 1, ":now": now},
+            UpdateExpression="SET pendingReservations = pendingReservations - :one, updatedAt = :now, #v = if_not_exists(#v,:zero) + :one",
+            ConditionExpression="pendingReservations >= :one",
+            ExpressionAttributeNames={"#v": "version"},
+            ExpressionAttributeValues={":one": 1, ":zero": 0, ":now": now},
         )
     except Exception:
-        logger.exception("Booking compensation failed; reconcile slot capacity")
+        # RDS is already committed. Keep the slot fail-closed for cancellation
+        # until the pending reservation counter is reconciled.
+        logger.exception("BOOKING_PENDING_RESERVATION_RELEASE_FAILED slotId=%s; reconciliation required", slot_id)
+
+
+def _release_slot_reservation(slots, slot_id, now):
+    """Compensate a failed booking and clear its in-flight reservation marker."""
+    try:
+        slots.update_item(
+            Key={"slotId": slot_id},
+            UpdateExpression=("SET bookedCount = bookedCount - :one, "
+                              "pendingReservations = pendingReservations - :one, "
+                              "updatedAt = :now, #v = if_not_exists(#v,:zero) + :one"),
+            ConditionExpression="bookedCount >= :one AND pendingReservations >= :one",
+            ExpressionAttributeNames={"#v": "version"},
+            ExpressionAttributeValues={":one": 1, ":zero": 0, ":now": now},
+        )
+    except Exception:
+        logger.exception("Booking compensation failed; reconcile slot capacity and pendingReservations")
 
 
 def _delete_idempotency_record(table, idem_key):
@@ -2892,10 +2967,59 @@ def _patient_refunds(user_id):
 
 
 def _cancel_doctor_slot(slot_id, doctor_id):
-    """Doctor cancels their own future slot; every active patient receives a full ledger refund."""
+    """Close a slot, drain in-flight bookings, then cancel appointments with full ledger refunds."""
     if not isinstance(slot_id, str) or not slot_id.strip() or len(slot_id) > 100:
         return _response(400, {"message": "A valid slotId is required"})
     slot_id = slot_id.strip()
+    slots = _table("SLOTS_TABLE")
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    # Fail closed before touching RDS. Booking reservations require status OPEN.
+    try:
+        current = slots.get_item(Key={"slotId": slot_id}, ConsistentRead=True).get("Item")
+        if not current:
+            return _response(404, {"message": "Slot was not found"})
+        if str(current.get("doctorId")) != str(doctor_id):
+            return _response(403, {"message": "You can only cancel your own slot"})
+        if current.get("status") == "CANCELLED":
+            return _response(200, {"message": "Slot is already cancelled", "slotId": slot_id, "cancelledAppointments": 0})
+        if current.get("status") == "OPEN":
+            slots.update_item(
+                Key={"slotId": slot_id},
+                UpdateExpression="SET #st=:cancelling, pendingReservations=if_not_exists(pendingReservations,:zero), updatedAt=:now, #v=if_not_exists(#v,:zero)+:one",
+                ConditionExpression="#st=:open AND doctorId=:doctor",
+                ExpressionAttributeNames={"#st": "status", "#v": "version"},
+                ExpressionAttributeValues={
+                    ":cancelling": "CANCELLING", ":open": "OPEN", ":now": now_iso,
+                    ":zero": 0, ":one": 1, ":doctor": str(doctor_id),
+                },
+            )
+        elif current.get("status") != "CANCELLING":
+            return _response(409, {"message": f"Slot cannot be cancelled from status {current.get('status')}"})
+
+        deadline = time.monotonic() + float(os.environ.get("SLOT_CANCELLATION_DRAIN_SECONDS", "20"))
+        while True:
+            latest = slots.get_item(Key={"slotId": slot_id}, ConsistentRead=True).get("Item") or {}
+            pending = int(latest.get("pendingReservations", 0))
+            if pending == 0:
+                break
+            if time.monotonic() >= deadline:
+                logger.error("DOCTOR_SLOT_CANCELLATION_DRAIN_TIMEOUT slotId=%s pendingReservations=%s", slot_id, pending)
+                return _response(409, {
+                    "message": "Slot is closed to new bookings, but existing booking requests are still finishing. Retry cancellation shortly.",
+                    "slotId": slot_id, "pendingReservations": pending,
+                    "slotStatus": "CANCELLING", "requiresReconciliation": True,
+                })
+            time.sleep(0.2)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return _response(409, {"message": "Slot status changed; refresh and retry cancellation"})
+        logger.exception("DOCTOR_SLOT_CANCELLATION_START_FAILED slotId=%s doctorId=%s", slot_id, doctor_id)
+        return _response(500, {"message": "Unable to close slot for cancellation"})
+    except Exception:
+        logger.exception("DOCTOR_SLOT_CANCELLATION_START_FAILED slotId=%s doctorId=%s", slot_id, doctor_id)
+        return _response(500, {"message": "Unable to close slot for cancellation"})
+
     conn = _db_connection()
     cancelled = []
     try:
@@ -2906,77 +3030,104 @@ def _cancel_doctor_slot(slot_id, doctor_id):
                    FROM appointments
                    WHERE slot_id=%s AND doctor_user_id=%s
                      AND status IN ('booked','confirmed')
-                   ORDER BY appointment_id
-                   FOR UPDATE""",
+                   ORDER BY appointment_id FOR UPDATE""",
                 (slot_id, int(doctor_id)),
             )
             appointments = cur.fetchall()
-            if not appointments:
+            if any(row["slot_start_utc"].replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc) for row in appointments):
                 conn.rollback()
-                return _response(404, {"message": "No active appointments were found for this slot"})
-            now = datetime.now(timezone.utc)
-            if any(row["slot_start_utc"].replace(tzinfo=timezone.utc) <= now for row in appointments):
-                conn.rollback()
-                return _response(409, {"message": "A slot containing a started appointment cannot be cancelled"})
+                try:
+                    slots.update_item(
+                        Key={"slotId": slot_id},
+                        UpdateExpression="SET #st=:open, updatedAt=:now, #v=if_not_exists(#v,:zero)+:one",
+                        ConditionExpression="#st=:cancelling AND pendingReservations=:zero",
+                        ExpressionAttributeNames={"#st": "status", "#v": "version"},
+                        ExpressionAttributeValues={
+                            ":open": "OPEN", ":cancelling": "CANCELLING",
+                            ":now": datetime.now(timezone.utc).isoformat(), ":zero": 0, ":one": 1,
+                        },
+                    )
+                except Exception:
+                    logger.exception("Unable to restore slot after started-appointment cancellation rejection slotId=%s", slot_id)
+                return _response(409, {"message": "A slot containing a started appointment cannot be cancelled", "slotStatus": "OPEN"})
             for row in appointments:
-                appointment_id = int(row["appointment_id"])
-                patient_id = int(row["patient_user_id"])
+                aid, pid = int(row["appointment_id"]), int(row["patient_user_id"])
                 fee = Decimal(str(row["fee_amount"]))
                 cur.execute(
                     """UPDATE appointments SET status='cancelled', active_flag=NULL,
                               updated_at=CURRENT_TIMESTAMP(3)
                        WHERE appointment_id=%s AND doctor_user_id=%s
                          AND status IN ('booked','confirmed')""",
-                    (appointment_id, int(doctor_id)),
+                    (aid, int(doctor_id)),
                 )
                 if cur.rowcount != 1:
-                    raise RuntimeError(f"Appointment {appointment_id} changed during doctor slot cancellation")
+                    raise RuntimeError(f"Appointment {aid} changed during doctor slot cancellation")
                 cur.execute(
                     """INSERT INTO refund_ledger
                        (appointment_id, patient_user_id, reason, tier, refund_percent, fee_amount, refund_amount)
                        VALUES (%s,%s,'DOCTOR_CANCEL','DOCTOR_FULL',100,%s,%s)""",
-                    (appointment_id, patient_id, fee, fee),
+                    (aid, pid, fee, fee),
                 )
-                cur.execute("SELECT email FROM users WHERE user_id=%s AND role='patient'", (patient_id,))
+                cur.execute("SELECT email FROM users WHERE user_id=%s AND role='patient'", (pid,))
                 patient = cur.fetchone() or {}
-                cancelled.append({
-                    "appointmentId": appointment_id, "patientId": patient_id,
-                    "email": patient.get("email"), "fee": fee,
-                })
+                cancelled.append({"appointmentId": aid, "patientId": pid, "email": patient.get("email"), "fee": fee})
             conn.commit()
-        # Mark the slot unavailable after the durable RDS transaction. Never expose it as a free seat.
-        try:
-            _table("SLOTS_TABLE").update_item(
-                Key={"slotId": slot_id},
-                UpdateExpression="SET #st=:cancelled, updatedAt=:now, #v=if_not_exists(#v,:zero)+:one",
-                ConditionExpression="attribute_exists(slotId) AND doctorId=:doctor",
-                ExpressionAttributeNames={"#st": "status", "#v": "version"},
-                ExpressionAttributeValues={":cancelled": "CANCELLED", ":now": datetime.now(timezone.utc).isoformat(), ":zero": 0, ":one": 1, ":doctor": str(doctor_id)},
-            )
-        except Exception:
-            logger.exception("DOCTOR_SLOT_MARK_CANCELLED_FAILED slotId=%s doctorId=%s", slot_id, doctor_id)
-            # RDS remains authoritative for appointments; report partial completion for operational repair.
-            return _response(500, {"message": "Appointments were cancelled and fully refunded, but the slot status update failed", "slotId": slot_id, "cancelledAppointments": len(cancelled), "requiresSlotReconciliation": True})
+
+        slots.update_item(
+            Key={"slotId": slot_id},
+            UpdateExpression="SET #st=:cancelled, updatedAt=:now, #v=if_not_exists(#v,:zero)+:one",
+            ConditionExpression="#st=:cancelling AND doctorId=:doctor AND pendingReservations=:zero",
+            ExpressionAttributeNames={"#st": "status", "#v": "version"},
+            ExpressionAttributeValues={
+                ":cancelled": "CANCELLED", ":cancelling": "CANCELLING",
+                ":now": datetime.now(timezone.utc).isoformat(), ":zero": 0,
+                ":one": 1, ":doctor": str(doctor_id),
+            },
+        )
+        _publish_medislot_event("SlotCancelled", {
+            "slotId": slot_id, "doctorId": int(doctor_id),
+            "cancelledAppointments": len(cancelled), "cancelledBy": "DOCTOR",
+        })
         for item in cancelled:
+            # Required domain event: the appointment's reservation is released,
+            # but the slot itself remains closed and has zero bookable seats.
+            _publish_medislot_event("SlotSeatFreed", {
+                "slotId": slot_id, "appointmentId": item["appointmentId"],
+                "patientId": item["patientId"], "doctorId": int(doctor_id),
+                "availableSeatsIncremented": 0, "slotStatus": "CANCELLED",
+                "reason": "DOCTOR_SLOT_CANCELLED",
+            })
             aid, pid, fee = item["appointmentId"], item["patientId"], item["fee"]
-            _publish_medislot_event("AppointmentCancelled", {"appointmentId": aid, "patientId": pid, "doctorId": int(doctor_id), "slotId": slot_id, "refundPercent": 100, "refundAmount": str(fee), "refundTier": "DOCTOR_FULL", "cancelledBy": "DOCTOR"})
+            _publish_medislot_event("AppointmentCancelled", {
+                "appointmentId": aid, "patientId": pid, "doctorId": int(doctor_id),
+                "slotId": slot_id, "refundPercent": 100, "refundAmount": str(fee),
+                "refundTier": "DOCTOR_FULL", "cancelledBy": "DOCTOR",
+            })
             _put_cancellation_tier_metric("DOCTOR_FULL")
-            message = f"Your appointment #{aid} was cancelled by the doctor. A full refund of ₹{fee} has been recorded. No online payment was taken, so this is a ledger record, not a payment transfer."
+            message = (
+                f"Your appointment #{aid} was cancelled by the doctor. "
+                f"A full refund of ₹{fee} has been recorded. No online payment was taken, "
+                "so this is a ledger record, not a payment transfer."
+            )
             _notify_patient(pid, aid, "APPOINTMENT_CANCELLED", "Appointment cancelled by doctor", message, item["email"])
-        return _response(200, {"message": "Doctor slot cancelled; all affected appointments received full refund ledger entries", "slotId": slot_id, "cancelledAppointments": len(cancelled), "refundPercent": 100, "refundTotal": str(sum((x["fee"] for x in cancelled), Decimal("0.00"))), "paymentStatus": "LEDGER_ONLY_NO_PAYMENT_GATEWAY"})
+        return _response(200, {
+            "message": "Doctor slot cancelled; all affected appointments received full refund ledger entries",
+            "slotId": slot_id, "cancelledAppointments": len(cancelled), "refundPercent": 100,
+            "refundTotal": str(sum((x["fee"] for x in cancelled), Decimal("0.00"))),
+            "paymentStatus": "LEDGER_ONLY_NO_PAYMENT_GATEWAY", "slotStatus": "CANCELLED",
+        })
     except pymysql.err.IntegrityError:
         conn.rollback()
         logger.exception("DOCTOR_SLOT_REFUND_LEDGER_CONFLICT slotId=%s", slot_id)
-        return _response(409, {"message": "A refund ledger entry already exists for an affected appointment"})
+        return _response(409, {"message": "A refund ledger entry already exists; slot remains closed for reconciliation", "slotStatus": "CANCELLING", "requiresReconciliation": True})
     except Exception:
         conn.rollback()
         logger.exception("DOCTOR_SLOT_CANCELLATION_FAILED slotId=%s doctorId=%s", slot_id, doctor_id)
-        return _response(500, {"message": "Doctor slot cancellation failed"})
+        return _response(500, {"message": "Doctor slot cancellation needs reconciliation; slot remains closed to new bookings", "slotStatus": "CANCELLING", "requiresReconciliation": True})
     finally:
         conn.close()
 
 
-# ---------------------------------------------------------
 # PATIENT PORTAL: PROFILE AND PUBLIC DOCTOR DISCOVERY
 # ---------------------------------------------------------
 
@@ -3102,9 +3253,8 @@ def _patient_profile(user_id, method, event):
 def _sns_client():
     """Create the SNS client in the configured AWS region."""
     from botocore.config import Config
-    return boto3.client(
+    return _aws_client(
         "sns",
-        region_name=os.environ.get("AWS_REGION", "ap-south-1"),
         config=Config(connect_timeout=2, read_timeout=4, retries={"max_attempts": 1}),
     )
 
@@ -3779,6 +3929,32 @@ def _lambda_handler_impl(event, context):
             and path == "/reference/hospitals"
         ):
             return _reference_data("hospitals")
+
+        # Patient profile by numeric ID.
+        # A patient may only read their own profile; cross-patient requests
+        # are explicitly denied instead of falling through to the generic 404.
+        patient_id_match = re.fullmatch(r"/patients/([1-9][0-9]{0,19})", path)
+        if patient_id_match:
+            if role != "patient":
+                return _response(
+                    403,
+                    {"message": "Only patients can access patient profiles"},
+                )
+
+            requested_patient_id = patient_id_match.group(1)
+            if requested_patient_id != str(user_id):
+                return _response(
+                    403,
+                    {"message": "You are not authorized to access this patient profile"},
+                )
+
+            if method != "GET":
+                return _response(
+                    405,
+                    {"message": "Only GET is supported for /patients/{patientId}"},
+                )
+
+            return _patient_profile(user_id, method, event)
 
         # Patient portal
         if path == "/patients/me":

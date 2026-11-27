@@ -7,6 +7,7 @@ one future capacity-3 slot. Successful appointments are cancelled at the end.
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Barrier
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -66,8 +67,11 @@ def main():
         raise AssertionError("No future, empty capacity-3 slot found in the next 14 days")
 
     slot_id = selected["slotId"]
+    start_barrier = Barrier(20)
+
     def book(index):
         idem = f"milestone5-contention-{time.time_ns()}-{index}"
+        start_barrier.wait(timeout=30)
         response = request("POST", "/appointments", patients[index][0],
                            headers={"Idempotency-Key": idem}, json={"slotId": slot_id})
         try:
@@ -111,7 +115,7 @@ def main():
     if cleanup_errors:
         raise AssertionError(f"Test appointments could not all be cancelled: {cleanup_errors}")
 
-    print(f"PASS: slot={slot_id}; 20 simultaneous attempts; exactly 3 bookings; 17 conflicts; idempotency replay returned appointment #{first['appointmentId']}; test bookings cancelled")
+    print(f"PASS: slot={slot_id}; 20 barrier-synchronized attempts; exactly 3 bookings; 17 conflicts; idempotency replay returned appointment #{first['appointmentId']}; test bookings cancelled")
 
 
 if __name__ == "__main__":
