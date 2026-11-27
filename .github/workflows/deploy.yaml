@@ -272,7 +272,7 @@ jobs:
 
           if ! aws s3api head-bucket --bucket "$bucket" 2>/tmp/head-bucket-error.txt; then
             cat /tmp/head-bucket-error.txt
-            echo "::error::Cannot access artifact bucket $bucket. Make sure $IAM_STACK is deployed and current (run scripts/bootstrap-iam.ps1 or scripts/bootstrap-iam.sh once with admin credentials)."
+            echo "::error::Cannot access artifact bucket $bucket. Make sure the $IAM_STACK deploy job has run successfully."
             exit 1
           fi
 
@@ -511,14 +511,14 @@ jobs:
           fi
 
   # ============================================================
-  # 5. VERIFY IAM STACK
+  # 5. IAM STACK
   # The IAM stack contains the GitHub deployment role itself, so
   # this pipeline cannot create or update it. Deploy it manually
   # with administrator credentials; this job only verifies it.
   # ============================================================
 
-  verify_iam:
-    name: Verify IAM Stack
+  deploy_iam:
+    name: Deploy IAM Stack
     needs: [deploy_data, deploy_network]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -529,6 +529,9 @@ jobs:
       id-token: write
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -536,50 +539,87 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Verify IAM stack exists and is healthy
+      - name: Deploy IAM stack using Change Set
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Pipeline is running as:"
-          aws sts get-caller-identity --query '[Account,Arn]' --output text
-          echo "Region: $AWS_REGION"
-          echo "Stacks visible in this account/region:"
-          aws cloudformation list-stacks \
-            --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE ROLLBACK_COMPLETE \
-            --query "StackSummaries[?starts_with(StackName,'medislot')].[StackName,StackStatus]" \
-            --output text || true
-
-          # Keep the real AWS error (AccessDenied vs. does-not-exist) instead of
-          # hiding it, so a permissions problem is not reported as NOT_FOUND.
-          if status=$(aws cloudformation describe-stacks \
+          status=$(aws cloudformation describe-stacks \
             --stack-name "$IAM_STACK" \
             --query 'Stacks[0].StackStatus' \
-            --output text 2>/tmp/iam_err); then
-            :
-          else
-            cat /tmp/iam_err
-            if grep -qi "does not exist" /tmp/iam_err; then
-              status=NOT_FOUND
-            else
-              status="LOOKUP_FAILED"
-            fi
-          fi
+            --output text 2>/dev/null || echo NONE)
 
           case "$status" in
-            CREATE_COMPLETE|UPDATE_COMPLETE|UPDATE_ROLLBACK_COMPLETE)
-              echo "$IAM_STACK status: $status"
+            NONE|REVIEW_IN_PROGRESS)
+              change_type=CREATE
+              ;;
+            ROLLBACK_COMPLETE)
+              echo "::error::Stack $IAM_STACK is in ROLLBACK_COMPLETE. Automatic deletion is disabled to protect existing resources. Inspect the stack events, delete the failed stack manually, and re-run."
+              exit 1
+              ;;
+            *_IN_PROGRESS)
+              echo "::error::Stack $IAM_STACK is busy ($status). Wait for it to finish and re-run."
+              exit 1
               ;;
             *)
-              echo "::error::$IAM_STACK is not healthy (status: $status). Run scripts/bootstrap-iam.ps1 (Windows) or scripts/bootstrap-iam.sh once with administrator credentials, then re-run this workflow."
-              exit 1
+              change_type=UPDATE
               ;;
           esac
 
-          # The IAM stack no longer takes the artifact bucket name as a parameter:
-          # its S3 permissions match the ms-<account>-<env>-art-* prefix, so
-          # recreating the network stack (new bucket name) needs no IAM change.
-          echo "IAM stack is healthy."
+          change_set="${IAM_STACK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          aws cloudformation create-change-set \
+            --stack-name "$IAM_STACK" \
+            --change-set-name "$change_set" \
+            --change-set-type "$change_type" \
+            --template-body file://cloudformation/iam-stack.yaml \
+            --parameters \
+              ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --description "GitHub Actions run ${GITHUB_RUN_ID}"
+
+          if ! aws cloudformation wait change-set-create-complete \
+            --stack-name "$IAM_STACK" \
+            --change-set-name "$change_set"; then
+
+            reason=$(aws cloudformation describe-change-set \
+              --stack-name "$IAM_STACK" \
+              --change-set-name "$change_set" \
+              --query StatusReason \
+              --output text 2>/dev/null || true)
+
+            if [[ "$reason" == *"didn't contain changes"* ]] || \
+               [[ "$reason" == *"No updates are to be performed"* ]]; then
+
+              echo "IAM stack is already up to date."
+
+              aws cloudformation delete-change-set \
+                --stack-name "$IAM_STACK" \
+                --change-set-name "$change_set" || true
+            else
+              echo "::error::IAM Change Set creation failed: $reason"
+              exit 1
+            fi
+
+          else
+            aws cloudformation describe-change-set \
+              --stack-name "$IAM_STACK" \
+              --change-set-name "$change_set" \
+              --query 'Changes[*].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' \
+              --output table
+
+            aws cloudformation execute-change-set \
+              --stack-name "$IAM_STACK" \
+              --change-set-name "$change_set"
+
+            if [[ "$change_type" == CREATE ]]; then
+              aws cloudformation wait stack-create-complete \
+                --stack-name "$IAM_STACK"
+            else
+              aws cloudformation wait stack-update-complete \
+                --stack-name "$IAM_STACK"
+            fi
+          fi
 
   # ============================================================
   # 6. AUTHENTICATION STACK
@@ -587,7 +627,7 @@ jobs:
 
   deploy_auth:
     name: Deploy Authentication Stack
-    needs: [verify_iam, verify_ssm, deploy_network]
+    needs: [deploy_iam, verify_ssm, deploy_network]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: development
@@ -1426,7 +1466,7 @@ jobs:
     needs:
       - deploy_network
       - deploy_data
-      - verify_iam
+      - deploy_iam
       - deploy_auth
       - deploy_api
       - deploy_doctor_dashboard
