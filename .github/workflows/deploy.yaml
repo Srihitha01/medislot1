@@ -272,7 +272,7 @@ jobs:
 
           if ! aws s3api head-bucket --bucket "$bucket" 2>/tmp/head-bucket-error.txt; then
             cat /tmp/head-bucket-error.txt
-            echo "::error::Cannot access artifact bucket $bucket. Make sure the $IAM_STACK deploy job has run successfully."
+            echo "::error::Cannot access artifact bucket $bucket. Check the pipeline role's S3 permissions."
             exit 1
           fi
 
@@ -512,9 +512,9 @@ jobs:
 
   # ============================================================
   # 5. IAM STACK
-  # The IAM stack contains the GitHub deployment role itself, so
-  # this pipeline cannot create or update it. Deploy it manually
-  # with administrator credentials; this job only verifies it.
+  # The pipeline deploys the IAM stack with a change set, like the
+  # other stacks. The role in AWS_ROLE_ARN needs IAM permissions
+  # for creating or updating the roles and policies in iam-stack.yaml.
   # ============================================================
 
   deploy_iam:
