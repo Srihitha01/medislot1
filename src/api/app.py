@@ -2983,19 +2983,22 @@ def _cancel_doctor_slot(slot_id, doctor_id):
             return _response(403, {"message": "You can only cancel your own slot"})
         if current.get("status") == "CANCELLED":
             return _response(200, {"message": "Slot is already cancelled", "slotId": slot_id, "cancelledAppointments": 0})
-        if current.get("status") == "OPEN":
+        current_status = str(current.get("status", "")).upper()
+        if current_status in {"OPEN", "FULL"}:
+            # FULL slots are cancellable too: transition them to CANCELLING
+            # atomically so no new reservation can race with the cancellation.
             slots.update_item(
                 Key={"slotId": slot_id},
                 UpdateExpression="SET #st=:cancelling, pendingReservations=if_not_exists(pendingReservations,:zero), updatedAt=:now, #v=if_not_exists(#v,:zero)+:one",
-                ConditionExpression="#st=:open AND doctorId=:doctor",
+                ConditionExpression="#st=:current AND doctorId=:doctor",
                 ExpressionAttributeNames={"#st": "status", "#v": "version"},
                 ExpressionAttributeValues={
-                    ":cancelling": "CANCELLING", ":open": "OPEN", ":now": now_iso,
+                    ":cancelling": "CANCELLING", ":current": current_status, ":now": now_iso,
                     ":zero": 0, ":one": 1, ":doctor": str(doctor_id),
                 },
             )
-        elif current.get("status") != "CANCELLING":
-            return _response(409, {"message": f"Slot cannot be cancelled from status {current.get('status')}"})
+        elif current_status != "CANCELLING":
+            return _response(409, {"message": f"Slot cannot be cancelled from status {current_status}"})
 
         deadline = time.monotonic() + float(os.environ.get("SLOT_CANCELLATION_DRAIN_SECONDS", "20"))
         while True:
@@ -3037,19 +3040,20 @@ def _cancel_doctor_slot(slot_id, doctor_id):
             if any(row["slot_start_utc"].replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc) for row in appointments):
                 conn.rollback()
                 try:
+                    restored_status = "FULL" if int(latest.get("bookedCount", 0)) >= int(latest.get("capacity", 0) or 0) else "OPEN"
                     slots.update_item(
                         Key={"slotId": slot_id},
-                        UpdateExpression="SET #st=:open, updatedAt=:now, #v=if_not_exists(#v,:zero)+:one",
+                        UpdateExpression="SET #st=:restored, updatedAt=:now, #v=if_not_exists(#v,:zero)+:one",
                         ConditionExpression="#st=:cancelling AND pendingReservations=:zero",
                         ExpressionAttributeNames={"#st": "status", "#v": "version"},
                         ExpressionAttributeValues={
-                            ":open": "OPEN", ":cancelling": "CANCELLING",
+                            ":restored": restored_status, ":cancelling": "CANCELLING",
                             ":now": datetime.now(timezone.utc).isoformat(), ":zero": 0, ":one": 1,
                         },
                     )
                 except Exception:
                     logger.exception("Unable to restore slot after started-appointment cancellation rejection slotId=%s", slot_id)
-                return _response(409, {"message": "A slot containing a started appointment cannot be cancelled", "slotStatus": "OPEN"})
+                return _response(409, {"message": "A slot containing a started appointment cannot be cancelled", "slotStatus": restored_status})
             for row in appointments:
                 aid, pid = int(row["appointment_id"]), int(row["patient_user_id"])
                 fee = Decimal(str(row["fee_amount"]))

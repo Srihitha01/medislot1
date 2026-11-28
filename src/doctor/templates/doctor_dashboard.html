@@ -1956,6 +1956,47 @@ html body .message{border-radius:12px!important;box-shadow:none!important}
 html body .message.success{color:#0f5b3f!important;background:#dcf7ea!important;border-color:#a9e6c9!important}
 html body .message.error{color:#8f1d1d!important;background:#fde4e4!important;border-color:#f3b9b9!important}
 html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
+
+
+/* FINAL SCHEDULE + HEADER READABILITY AND ACTION CONTROLS */
+.page-title h1,
+#pageHeading { color:#172554 !important; font-weight:800 !important; }
+.page-title p { color:#36566a !important; font-weight:600 !important; }
+.doctor-quote { color:#164e63 !important; background:#e1f5f2 !important; border-color:#9fd6cc !important; }
+.doctor-info { background:#ffffff !important; border:1px solid #c9ded9 !important; }
+.doctor-info h4 { color:#172554 !important; font-weight:800 !important; }
+.doctor-info p { color:#36566a !important; font-weight:600 !important; }
+#headerInitials { color:#075985 !important; background:#c9f2e3 !important; }
+#section-schedule .panel-header h3 { color:#172554 !important; font-weight:800 !important; }
+#section-schedule .panel-header p { color:#36566a !important; font-weight:600 !important; }
+#section-schedule .ms-slot-card { background:#ffffff !important; border:1px solid #cbded9 !important; border-left:4px solid #0f8b83 !important; box-shadow:0 7px 20px rgba(24,65,68,.08) !important; }
+#section-schedule .ms-slot-time { color:#102a43 !important; font-size:18px !important; font-weight:800 !important; }
+#section-schedule .ms-slot-duration { color:#36566a !important; font-weight:600 !important; }
+#section-schedule .ms-slot-booking-label,
+#section-schedule .ms-slot-booking-label span { color:#36566a !important; font-weight:600 !important; }
+#section-schedule .ms-slot-booking-label strong { color:#102a43 !important; font-weight:800 !important; }
+#section-schedule .ms-card-state,
+#section-schedule .status-open,
+#section-schedule .status-full,
+#section-schedule .status-cancelled { font-weight:800 !important; opacity:1 !important; }
+#section-schedule .type-pill,
+#section-schedule .ms-slot-consultation { font-weight:800 !important; opacity:1 !important; }
+#section-schedule .type-quick { color:#174a7e !important; background:#e4efff !important; border:1px solid #b8d0f1 !important; }
+#section-schedule .type-standard { color:#17613e !important; background:#e2f5e9 !important; border:1px solid #b4dfc2 !important; }
+#section-schedule .type-detailed { color:#593b83 !important; background:#f0e9fb !important; border:1px solid #d5c4ef !important; }
+#section-schedule .type-video { color:#15566b !important; background:#e1f4fa !important; border:1px solid #b5dfe9 !important; }
+#section-schedule .type-clinic,
+#section-schedule .type-other { color:#684b19 !important; background:#fbf1dc !important; border:1px solid #ead6a9 !important; }
+#section-schedule .status-open { color:#17613e !important; background:#e2f5e9 !important; border:1px solid #b4dfc2 !important; }
+#section-schedule .status-full { color:#8a3b16 !important; background:#fff0df !important; border:1px solid #f0c99f !important; }
+#section-schedule .status-cancelled { color:#982f3b !important; background:#fde8eb !important; border:1px solid #efbbc3 !important; }
+#section-schedule .ms-slot-actions { display:flex; justify-content:flex-end; margin-top:14px; padding-top:12px; border-top:1px solid #e1ece9; }
+#section-schedule .ms-slot-actions .btn-danger { color:#ffffff !important; background:#b42332 !important; border:1px solid #9f1d2a !important; font-weight:800 !important; border-radius:9px !important; padding:9px 14px !important; }
+#section-schedule .ms-slot-actions .btn-danger:hover { background:#921b28 !important; }
+#section-schedule .ms-slot-actions .muted-note { color:#718096 !important; font-weight:600 !important; }
+#section-schedule .ms-progress { background:#e2eeeb !important; }
+#section-schedule .ms-progress span { background:linear-gradient(90deg,#087f8c,#72bfae) !important; }
+
 </style>
 </head>
 
@@ -2950,6 +2991,7 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
                             <div class="ms-slot-booking-label"><span>Booking capacity</span><strong>${escapeHTML(booked)} / ${escapeHTML(slot.capacity ?? 0)}</strong></div>
                             <div class="ms-progress"><span style="width:${percent}%"></span></div>
                         </div>
+                        <div class="ms-slot-actions">${slotCancelButton(slot)}</div>
                     </article>`;
             }).join("");
             return;
@@ -3845,10 +3887,13 @@ html body :focus-visible{outline:3px solid #5a3fd6;outline-offset:2px}
         loadSlots().catch(handleError);
     });
 
-    $("slotsTable").addEventListener("click", event => {
+    function handleSlotCancelClick(event) {
         const button = event.target.closest("[data-cancel-slot]");
         if (button) cancelSlot(button);
-    });
+    }
+
+    $("slotsTable").addEventListener("click", handleSlotCancelClick);
+    $("scheduleTable").addEventListener("click", handleSlotCancelClick);
 
     // Initial dashboard loading.
     async function loadDashboard() {
