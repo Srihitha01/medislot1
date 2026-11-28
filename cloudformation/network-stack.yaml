@@ -184,6 +184,11 @@ Resources:
           FromPort: 443
           ToPort: 443
           SourceSecurityGroupId: !Ref LambdaSecurityGroup
+        - Description: Allow HTTPS from inside the VPC so the dashboard EC2 SSM agent can register (Session Manager)
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.0.0.0/16
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-ssm-endpoint-sg
@@ -258,6 +263,7 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-ssm-endpoint
+
   AwsServicesEndpointSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
